@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -15,7 +17,7 @@ namespace Thalovant
     public static class ThalovantDefaults
     {
         public const string ControlApiUrl = "https://api.thalovant.com";
-        public const string UserAgent = "ThalovantDotNetSDK/0.1.0";
+        public const string UserAgent = "ThalovantDotNetSDK/0.1.1";
     }
 
     /// <summary>
@@ -173,6 +175,213 @@ namespace Thalovant
             }
             AccessToken = accessToken;
             return token;
+        }
+
+        /// <summary>Default device-flow polling interval when the API does not send one.</summary>
+        internal static readonly TimeSpan DefaultDevicePollInterval = TimeSpan.FromSeconds(5);
+
+        /// <summary>Extra back-off added each time the API answers <c>slow_down</c>.</summary>
+        internal static readonly TimeSpan DevicePollSlowDownIncrement = TimeSpan.FromSeconds(5);
+
+        /// <summary>
+        /// Signs in through the browser device flow and stores the API token. This is
+        /// the sign-in path for accounts without a password (for example Google
+        /// sign-in). It requests a device authorization
+        /// (<c>POST /v1/auth/device/authorize</c>), tells the user to visit
+        /// <c>verification_uri</c> and enter the short <c>user_code</c> (pass
+        /// <see cref="DeviceLoginOptions.Prompt"/> to present it yourself), optionally
+        /// opens the browser at <c>verification_uri_complete</c>, and polls
+        /// <c>POST /v1/auth/device/token</c> until the request is approved, denied,
+        /// expired, or <see cref="DeviceLoginOptions.Timeout"/> elapses.
+        ///
+        /// On approval the returned <c>access_token</c> is a durable scoped API token
+        /// and is stored on <see cref="AccessToken"/> exactly like
+        /// <see cref="LoginAsync(string, string, string?, string?, string?, CancellationToken)"/>.
+        /// Denial throws <see cref="ThalovantDeviceAccessDeniedException"/>, an expired
+        /// code throws <see cref="ThalovantDeviceCodeExpiredException"/>, and running
+        /// past the timeout throws <see cref="ThalovantTimeoutException"/>.
+        /// </summary>
+        public async Task<DeviceLoginResult> LoginWithBrowserAsync(
+            DeviceLoginOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            options ??= new DeviceLoginOptions();
+            var payload = new JsonObject();
+            if (options.Scopes is not null)
+            {
+                var scopes = new JsonArray();
+                foreach (var scope in options.Scopes)
+                {
+                    scopes.Add(scope);
+                }
+                payload["scopes"] = scopes;
+            }
+            if (!string.IsNullOrEmpty(options.ClientName))
+            {
+                payload["client_name"] = options.ClientName;
+            }
+            var grant = await RequestObjectAsync("POST", "/v1/auth/device/authorize", payload, auth: false, cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+
+            var deviceCode = JsonUtil.GetString(grant["device_code"]);
+            var userCode = JsonUtil.GetString(grant["user_code"]);
+            var verificationUri = JsonUtil.GetString(grant["verification_uri"]);
+            if (string.IsNullOrEmpty(deviceCode) || string.IsNullOrEmpty(userCode) || string.IsNullOrEmpty(verificationUri))
+            {
+                throw new ThalovantApiException("Thalovant API device authorization response was incomplete.");
+            }
+            var rawInterval = JsonUtil.GetInt(grant["interval"]);
+            var interval = rawInterval is int seconds && seconds >= 0
+                ? TimeSpan.FromSeconds(seconds)
+                : DefaultDevicePollInterval;
+            var authorization = new DeviceAuthorization(
+                deviceCode!,
+                userCode!,
+                verificationUri!,
+                JsonUtil.GetString(grant["verification_uri_complete"]),
+                JsonUtil.GetInt(grant["expires_in"]),
+                interval,
+                grant);
+
+            if (options.Prompt is not null)
+            {
+                options.Prompt(authorization);
+            }
+            else
+            {
+                Console.WriteLine($"To sign in, visit {authorization.VerificationUri} and enter the code {authorization.UserCode}");
+            }
+            if (options.OpenBrowser && !string.IsNullOrEmpty(authorization.VerificationUriComplete))
+            {
+                if (options.BrowserLauncher is not null)
+                {
+                    options.BrowserLauncher(authorization.VerificationUriComplete!);
+                }
+                else
+                {
+                    TryOpenBrowser(authorization.VerificationUriComplete!);
+                }
+            }
+
+            var token = await PollDeviceTokenAsync(
+                authorization.DeviceCode,
+                interval,
+                options.Timeout,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            var accessToken = JsonUtil.GetString(token["access_token"]);
+            if (string.IsNullOrEmpty(accessToken))
+            {
+                throw new ThalovantApiException("Thalovant API token response did not include access_token.");
+            }
+            AccessToken = accessToken;
+            return DeviceLoginResult.FromToken(token, accessToken!);
+        }
+
+        /// <summary>
+        /// Polls <c>POST /v1/auth/device/token</c> until approval or a terminal state.
+        /// HTTP 400 <c>authorization_pending</c> keeps polling, <c>slow_down</c> also
+        /// adds <see cref="DevicePollSlowDownIncrement"/> to the wait; any other error
+        /// is terminal. <paramref name="delay"/> and <paramref name="clock"/> are
+        /// injectable so tests can drive the loop without real waiting.
+        /// </summary>
+        internal async Task<JsonObject> PollDeviceTokenAsync(
+            string deviceCode,
+            TimeSpan interval,
+            TimeSpan timeout,
+            Func<TimeSpan, CancellationToken, Task>? delay = null,
+            Func<TimeSpan>? clock = null,
+            CancellationToken cancellationToken = default)
+        {
+            delay ??= (wait, token) => Task.Delay(wait, token);
+            clock ??= MonotonicClock;
+            var deadline = clock() + timeout;
+            var wait = interval;
+            var body = new JsonObject { ["device_code"] = deviceCode };
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var (statusCode, text) = await SendRawAsync("POST", "/v1/auth/device/token", body, auth: false, cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
+                JsonObject? parsed;
+                try
+                {
+                    parsed = string.IsNullOrWhiteSpace(text) ? null : JsonUtil.ParseObject(text);
+                }
+                catch (Exception)
+                {
+                    parsed = null;
+                }
+                if (statusCode >= 200 && statusCode < 300)
+                {
+                    if (parsed is null)
+                    {
+                        throw new ThalovantApiException("Thalovant API returned an unexpected response shape.");
+                    }
+                    return parsed;
+                }
+                var error = statusCode == 400 && parsed is not null ? JsonUtil.GetString(parsed["error"]) : null;
+                switch (error)
+                {
+                    case "authorization_pending":
+                        break;
+                    case "slow_down":
+                        wait += DevicePollSlowDownIncrement;
+                        break;
+                    case "access_denied":
+                        throw new ThalovantDeviceAccessDeniedException(
+                            "The device sign-in request was denied in the browser.");
+                    case "expired_token":
+                        throw new ThalovantDeviceCodeExpiredException(
+                            "The device sign-in code expired before it was approved. "
+                            + "Call LoginWithBrowserAsync() again to request a new code.");
+                    default:
+                        throw new ThalovantApiException(
+                            $"Thalovant API request failed with HTTP {statusCode}: {text}",
+                            statusCode,
+                            text);
+                }
+                var remaining = deadline - clock();
+                if (remaining <= TimeSpan.Zero)
+                {
+                    throw new ThalovantTimeoutException("Timed out waiting for the device sign-in to be approved.");
+                }
+                await delay(wait < remaining ? wait : remaining, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        internal static TimeSpan MonotonicClock()
+        {
+            return TimeSpan.FromSeconds(Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency);
+        }
+
+        /// <summary>
+        /// Best-effort system browser launch: <c>Process.Start</c> with
+        /// <c>UseShellExecute</c> on Windows, <c>open</c> on macOS, and
+        /// <c>xdg-open</c> elsewhere. Never throws — the prompt has already shown
+        /// the verification URI and user code.
+        /// </summary>
+        internal static void TryOpenBrowser(string url)
+        {
+            try
+            {
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    using (Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }))
+                    {
+                    }
+                }
+                else
+                {
+                    var opener = RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "open" : "xdg-open";
+                    using (Process.Start(opener, url))
+                    {
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // Browser availability is best-effort.
+            }
         }
 
         // -- Hubs ------------------------------------------------------------
@@ -466,7 +675,12 @@ namespace Thalovant
             return request;
         }
 
-        internal async Task<string> RequestDataAsync(
+        /// <summary>
+        /// Sends a request and returns the raw status code and body without
+        /// treating non-2xx statuses as errors (the device-token poll decodes
+        /// its expected HTTP 400 payloads itself).
+        /// </summary>
+        internal async Task<(int StatusCode, string Body)> SendRawAsync(
             string method,
             string path,
             JsonObject? body = null,
@@ -489,16 +703,28 @@ namespace Thalovant
                 var text = response.Content is null
                     ? ""
                     : await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-                var statusCode = (int)response.StatusCode;
-                if (statusCode < 200 || statusCode >= 300)
-                {
-                    throw new ThalovantApiException(
-                        $"Thalovant API request failed with HTTP {statusCode}: {text}",
-                        statusCode,
-                        text);
-                }
-                return text;
+                return ((int)response.StatusCode, text);
             }
+        }
+
+        internal async Task<string> RequestDataAsync(
+            string method,
+            string path,
+            JsonObject? body = null,
+            IReadOnlyDictionary<string, string>? headers = null,
+            bool auth = true,
+            CancellationToken cancellationToken = default)
+        {
+            var (statusCode, text) = await SendRawAsync(method, path, body, headers, auth, cancellationToken)
+                .ConfigureAwait(false);
+            if (statusCode < 200 || statusCode >= 300)
+            {
+                throw new ThalovantApiException(
+                    $"Thalovant API request failed with HTTP {statusCode}: {text}",
+                    statusCode,
+                    text);
+            }
+            return text;
         }
 
         internal async Task<JsonObject> RequestObjectAsync(

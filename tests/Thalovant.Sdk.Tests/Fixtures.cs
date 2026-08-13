@@ -117,6 +117,32 @@ namespace Thalovant.Sdk.Tests
         }
         """;
 
+        /// <summary>
+        /// Device authorization from POST /v1/auth/device/authorize
+        /// (app/schemas/auth.py). interval 0 keeps the poll loop instant in tests.
+        /// </summary>
+        internal const string DeviceGrant = """
+        {
+          "device_code": "device-code-1",
+          "user_code": "WDJB-MJHT",
+          "verification_uri": "https://dash.thalovant.com/activate",
+          "verification_uri_complete": "https://dash.thalovant.com/activate?user_code=WDJB-MJHT",
+          "expires_in": 900,
+          "interval": 0
+        }
+        """;
+
+        /// <summary>Approved device token from POST /v1/auth/device/token.</summary>
+        internal const string DeviceToken = """
+        {
+          "access_token": "device-token",
+          "token_type": "bearer",
+          "scopes": ["hubs:read", "clients:write"],
+          "expires_at": "2027-08-13T00:00:00Z",
+          "token_id": "token-1"
+        }
+        """;
+
         /// <summary>A hub resource carrying protocol settings and data-plane endpoints.</summary>
         internal const string Hub = """
         {

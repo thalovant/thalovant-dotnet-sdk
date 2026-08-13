@@ -71,6 +71,22 @@ namespace Thalovant
         }
     }
 
+    /// <summary>The browser device sign-in request was denied by the user.</summary>
+    public sealed class ThalovantDeviceAccessDeniedException : ThalovantException
+    {
+        public ThalovantDeviceAccessDeniedException(string message) : base(message)
+        {
+        }
+    }
+
+    /// <summary>The device sign-in code expired before it was approved.</summary>
+    public sealed class ThalovantDeviceCodeExpiredException : ThalovantException
+    {
+        public ThalovantDeviceCodeExpiredException(string message) : base(message)
+        {
+        }
+    }
+
     /// <summary>The provided identity document is missing fields or unreadable.</summary>
     public sealed class ThalovantIdentityException : ThalovantException
     {

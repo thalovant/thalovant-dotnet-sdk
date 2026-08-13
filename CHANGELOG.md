@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.1
+
+- `ThalovantControlPlane.LoginWithBrowserAsync`: browser device-flow sign-in
+  for accounts without a password (for example Google sign-in). Requests a
+  device authorization (`POST /v1/auth/device/authorize`), prompts with the
+  plain `verification_uri` and `user_code` (or calls a custom
+  `DeviceLoginOptions.Prompt`), best-effort opens the browser at
+  `verification_uri_complete`, and polls `POST /v1/auth/device/token`
+  honoring the server `interval` and `slow_down` back-off (+5s) until
+  approval, denial, expiry, or the `Timeout` (default 15 minutes). On
+  approval the durable scoped API token is stored on `AccessToken` exactly
+  like `LoginAsync`, and a typed `DeviceLoginResult` (`AccessToken`,
+  `TokenType`, `Scopes`, `ExpiresAt`, `TokenId`, `Raw`) is returned.
+- New exception types `ThalovantDeviceAccessDeniedException` and
+  `ThalovantDeviceCodeExpiredException`; polling past the timeout throws
+  `ThalovantTimeoutException`, and cancellation surfaces as
+  `OperationCanceledException`.
+- Documented pre-provisioned token auth for CI:
+  `new ThalovantControlPlane(accessToken: ...)` or setting the `AccessToken`
+  property directly (already supported since 0.1.0).
+
 ## 0.1.0
 
 Initial release of the Thalovant .NET SDK for enterprise .NET (`net8.0`) and

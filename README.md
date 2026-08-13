@@ -60,6 +60,41 @@ a different URL only for local development or a self-hosted control plane.
 Keep `result.Identity` secret. It contains the client credentials used by the
 hub. Do not log `result.ToJsonObject(includeSecrets: true)`.
 
+## Sign In Through the Browser (Device Flow)
+
+Accounts without a password (for example Google sign-in) can authenticate with
+the device flow. The SDK prints the verification URI and a short user code,
+opens the browser (best-effort; set `OpenBrowser = false` to disable), and
+polls until you approve the request:
+
+```csharp
+var result = await api.LoginWithBrowserAsync(new DeviceLoginOptions
+{
+    Scopes = new[] { "hubs:read", "clients:write" },
+    ClientName = "my-tool",
+});
+Console.WriteLine($"{result.TokenId} expires {result.ExpiresAt}");
+```
+
+The returned `access_token` is a durable scoped API token, stored on
+`api.AccessToken` exactly like `LoginAsync`. Pass a `Prompt` callback to
+present the code yourself, set `Timeout` (default 15 minutes), and pass a
+`CancellationToken` to abort polling. A denied request throws
+`ThalovantDeviceAccessDeniedException`, an expired code throws
+`ThalovantDeviceCodeExpiredException`, and running past the timeout throws
+`ThalovantTimeoutException`.
+
+## Use a Pre-Provisioned API Token (CI)
+
+Non-interactive environments can skip login entirely by constructing the
+client with a token minted earlier (for example through the device flow or the
+dashboard):
+
+```csharp
+var api = new ThalovantControlPlane(accessToken: Environment.GetEnvironmentVariable("THALOVANT_TOKEN"));
+// or later: api.AccessToken = "...";
+```
+
 ## Log In With MFA
 
 Accounts with multi-factor authentication enabled must include a TOTP code or a
@@ -175,7 +210,7 @@ var selected = HubEndpoints.SelectDataPlaneEndpoint(
     HubProtocolSettings.From(hub));
 ```
 
-`ThalovantClient` itself is WSS-only in 0.1.0; constructing it with
+`ThalovantClient` itself is WSS-only in 0.1.x; constructing it with
 `HubProtocol.Https` or `HubProtocol.Mqtt` throws
 `ThalovantUnsupportedProtocolException`.
 
@@ -186,6 +221,8 @@ var selected = HubEndpoints.SelectDataPlaneEndpoint(
 - `ThalovantConnectionException` / `ThalovantTimeoutException` /
   `ThalovantRuntimeException` — data-plane connection, deadline, and hub
   failures.
+- `ThalovantDeviceAccessDeniedException` / `ThalovantDeviceCodeExpiredException`
+  — the browser device sign-in was denied or its code expired.
 - `ThalovantIdentityException` — malformed or insecure identity documents.
 - `ThalovantUnsupportedProtocolException` — the protocol is disabled, missing
   an endpoint, or not supported by this SDK.

@@ -29,5 +29,12 @@ Validate with `dotnet build` and `dotnet test` (CI runs both on ubuntu-latest
 and windows-latest, plus `dotnet pack`). The test suite must stay
 network-free.
 
+Releases are automated: `auto-release.yml` tags and creates the GitHub release
+for an untagged version on `main`, and `publish.yml` packs, attests, and
+publishes `Thalovant.Sdk` to nuget.org. The csproj `<Version>`, the
+`UserAgent` constant (`ThalovantDotNetSDK/<version>`) and the tests asserting
+it, and `CHANGELOG.md` move together in a release. See `RELEASING.md` for the
+required `NUGET_API_KEY` secret and rollback rules.
+
 Rollback by tagging a corrected patch release; never move or delete an
 existing tag that consumers may already resolve.

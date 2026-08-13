@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        with:
+          dotnet-version: "9.0.x"
+      - run: dotnet --info
+      - run: dotnet build --configuration Release
+      - run: dotnet test --configuration Release --no-build
+      - run: dotnet pack src/Thalovant.Sdk/Thalovant.Sdk.csproj --configuration Release --no-build --output artifacts

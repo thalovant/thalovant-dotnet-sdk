@@ -1,0 +1,186 @@
+name: Publish NuGet Package
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Immutable release tag to check out and attach evidence to
+        required: false
+        type: string
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    environment:
+      name: nuget
+      url: https://www.nuget.org/packages/Thalovant.Sdk
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag || '' }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.RELEASE_TAG || github.ref }}
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Read project version
+        id: version
+        run: |
+          VERSION="$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' src/Thalovant.Sdk/Thalovant.Sdk.csproj)"
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Verify release tag matches the project version
+        if: env.RELEASE_TAG != ''
+        env:
+          PROJECT_VERSION: ${{ steps.version.outputs.version }}
+        run: test "$RELEASE_TAG" = "v$PROJECT_VERSION"
+
+      - name: Check whether version is already on NuGet
+        id: registry
+        env:
+          PROJECT_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # The flat-container index 404s until the first version of the
+          # package is published; treat that as "not published yet". Listed
+          # versions are normalized to lowercase.
+          INDEX="$(curl -sf https://api.nuget.org/v3-flatcontainer/thalovant.sdk/index.json || echo '{"versions":[]}')"
+          NORMALIZED="$(printf '%s' "$PROJECT_VERSION" | tr '[:upper:]' '[:lower:]')"
+          if jq -e --arg v "$NORMALIZED" '.versions | index($v) != null' <<< "$INDEX" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build
+        run: dotnet build --configuration Release
+
+      - name: Test
+        run: dotnet test --configuration Release --no-build
+
+      - name: Build package artifacts and CycloneDX SBOM
+        id: artifacts
+        env:
+          PROJECT_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          dotnet pack src/Thalovant.Sdk/Thalovant.Sdk.csproj --configuration Release --no-build --output release-artifacts
+          dotnet tool install --global CycloneDX --version 6.2.0
+          dotnet-CycloneDX src/Thalovant.Sdk/Thalovant.Sdk.csproj \
+            --output release-artifacts \
+            --filename "thalovant-sdk-$PROJECT_VERSION.cdx.json" \
+            --output-format Json \
+            --exclude-dev \
+            --set-name Thalovant.Sdk \
+            --set-version "$PROJECT_VERSION" \
+            --set-type Library \
+            --set-nuget-purl
+          echo "nupkg=$GITHUB_WORKSPACE/release-artifacts/Thalovant.Sdk.$PROJECT_VERSION.nupkg" >> "$GITHUB_OUTPUT"
+          echo "snupkg=$GITHUB_WORKSPACE/release-artifacts/Thalovant.Sdk.$PROJECT_VERSION.snupkg" >> "$GITHUB_OUTPUT"
+          echo "sbom=$GITHUB_WORKSPACE/release-artifacts/thalovant-sdk-$PROJECT_VERSION.cdx.json" >> "$GITHUB_OUTPUT"
+
+      - name: Verify SBOM fields required by actions/attest
+        env:
+          NUPKG: ${{ steps.artifacts.outputs.nupkg }}
+          SBOM: ${{ steps.artifacts.outputs.sbom }}
+        run: |
+          # actions/attest rejects a CycloneDX SBOM that lacks bomFormat,
+          # specVersion, or serialNumber. The CycloneDX tool emits a random
+          # serialNumber today, but if it is ever absent inject a
+          # deterministic urn:uuid derived from the nupkg sha256 so re-runs
+          # of the same release produce the same serial.
+          jq -e '.bomFormat == "CycloneDX" and (.specVersion | type) == "string"' "$SBOM" >/dev/null
+          if ! jq -e '(.serialNumber // "" | tostring | startswith("urn:uuid:"))' "$SBOM" >/dev/null; then
+            HASH="$(sha256sum "$NUPKG" | cut -c1-32)"
+            SERIAL="urn:uuid:${HASH:0:8}-${HASH:8:4}-${HASH:12:4}-${HASH:16:4}-${HASH:20:12}"
+            jq --arg serial "$SERIAL" '.serialNumber = $serial' "$SBOM" > "$SBOM.tmp"
+            mv "$SBOM.tmp" "$SBOM"
+            echo "Injected deterministic serialNumber $SERIAL"
+          fi
+          jq -e '(.bomFormat == "CycloneDX") and ((.specVersion | type) == "string") and (.serialNumber | startswith("urn:uuid:"))' "$SBOM" >/dev/null
+
+      - name: Attest package provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.artifacts.outputs.nupkg }}
+
+      - name: Attest package SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.artifacts.outputs.nupkg }}
+          sbom-path: ${{ steps.artifacts.outputs.sbom }}
+
+      - name: Publish skipped
+        if: steps.registry.outputs.exists == 'true'
+        run: echo "Thalovant.Sdk ${{ steps.version.outputs.version }} is already published on nuget.org; published NuGet versions are immutable, so the republish is skipped."
+
+      - name: Publish to NuGet
+        if: steps.registry.outputs.exists == 'false'
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          # Pushing the .nupkg also pushes the .snupkg symbol package from the
+          # same directory. --skip-duplicate turns a 409 for an
+          # already-existing version into a warning instead of a failure.
+          dotnet nuget push release-artifacts/*.nupkg \
+            --api-key "$NUGET_API_KEY" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+
+      - name: Verify NuGet version
+        env:
+          PROJECT_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # nuget.org validates and indexes uploads asynchronously; a new
+          # version usually appears in the flat-container index within a few
+          # minutes but can take considerably longer. Poll with a generous
+          # timeout.
+          NORMALIZED="$(printf '%s' "$PROJECT_VERSION" | tr '[:upper:]' '[:lower:]')"
+          for attempt in $(seq 1 40); do
+            if curl -sf https://api.nuget.org/v3-flatcontainer/thalovant.sdk/index.json | jq -e --arg v "$NORMALIZED" '.versions | index($v) != null' >/dev/null; then
+              echo "Verified Thalovant.Sdk $PROJECT_VERSION on nuget.org."
+              exit 0
+            fi
+            echo "Attempt $attempt/40: version $PROJECT_VERSION not in the flat-container index yet; waiting 30s."
+            sleep 30
+          done
+          echo "Thalovant.Sdk $PROJECT_VERSION was not visible in the NuGet flat-container index after 20 minutes." >&2
+          echo "This is usually only nuget.org's validation/indexing delay, not a failed publish: check the package" >&2
+          echo "status at https://www.nuget.org/packages/Thalovant.Sdk (and the account's package list for validation" >&2
+          echo "errors) and re-run this step before assuming failure." >&2
+          exit 1
+
+      - name: Attach packages and SBOM to the GitHub release
+        if: env.RELEASE_TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUPKG: ${{ steps.artifacts.outputs.nupkg }}
+          SNUPKG: ${{ steps.artifacts.outputs.snupkg }}
+          SBOM: ${{ steps.artifacts.outputs.sbom }}
+        run: |
+          EXISTING_ASSETS="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
+          for artifact in "$NUPKG" "$SNUPKG" "$SBOM"; do
+            name="$(basename "$artifact")"
+            if grep -Fxq "$name" <<< "$EXISTING_ASSETS"; then
+              echo "$name is already attached to $RELEASE_TAG; preserving the existing asset."
+            else
+              gh release upload "$RELEASE_TAG" "$artifact"
+            fi
+          done

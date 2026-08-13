@@ -136,7 +136,9 @@ jobs:
         if: steps.registry.outputs.exists == 'false'
         uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
         with:
-          user: thalovant
+          # Must be the nuget.org username of the person who CREATED the
+          # trusted-publishing policy, not the package-owner organization.
+          user: ${{ vars.NUGET_TRUSTED_PUBLISHING_USER }}
 
       - name: Publish to NuGet
         if: steps.registry.outputs.exists == 'false'

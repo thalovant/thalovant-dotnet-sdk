@@ -27,6 +27,12 @@ short-lived API key. Create the policy once on nuget.org (account owning
 The Environment must stay in sync with the `environment:` declared in
 `publish.yml`. Local builds and CI test runs need no credentials.
 
+**Repository variable.** Set the Actions variable
+`NUGET_TRUSTED_PUBLISHING_USER` to the nuget.org username of the person
+who created the trusted-publishing policy (the policy creator, not the
+`thalovant` package-owner organization — the token exchange rejects the
+owner name). `gh variable set NUGET_TRUSTED_PUBLISHING_USER --body "<username>"`.
+
 ## Publish
 
 1. Update the `<Version>` in `src/Thalovant.Sdk/Thalovant.Sdk.csproj`, the

@@ -1,0 +1,36 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{5F28005F-DE68-4987-B36D-58920F25503C}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Thalovant.Sdk", "src\Thalovant.Sdk\Thalovant.Sdk.csproj", "{4D949673-7810-4A40-9AC3-4DB88396FA01}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{B7696609-94C2-4CC9-9FA2-33B520516B22}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Thalovant.Sdk.Tests", "tests\Thalovant.Sdk.Tests\Thalovant.Sdk.Tests.csproj", "{71E31EFA-5589-4D17-9CA7-3DE4E9D67D7F}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{4D949673-7810-4A40-9AC3-4DB88396FA01}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4D949673-7810-4A40-9AC3-4DB88396FA01}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4D949673-7810-4A40-9AC3-4DB88396FA01}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4D949673-7810-4A40-9AC3-4DB88396FA01}.Release|Any CPU.Build.0 = Release|Any CPU
+		{71E31EFA-5589-4D17-9CA7-3DE4E9D67D7F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{71E31EFA-5589-4D17-9CA7-3DE4E9D67D7F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{71E31EFA-5589-4D17-9CA7-3DE4E9D67D7F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{71E31EFA-5589-4D17-9CA7-3DE4E9D67D7F}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{4D949673-7810-4A40-9AC3-4DB88396FA01} = {5F28005F-DE68-4987-B36D-58920F25503C}
+		{71E31EFA-5589-4D17-9CA7-3DE4E9D67D7F} = {B7696609-94C2-4CC9-9FA2-33B520516B22}
+	EndGlobalSection
+EndGlobal

@@ -131,11 +131,20 @@ jobs:
         if: steps.registry.outputs.exists == 'true'
         run: echo "Thalovant.Sdk ${{ steps.version.outputs.version }} is already published on nuget.org; published NuGet versions are immutable, so the republish is skipped."
 
+      - name: NuGet login via trusted publishing
+        id: nuget-login
+        if: steps.registry.outputs.exists == 'false'
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        with:
+          user: thalovant
+
       - name: Publish to NuGet
         if: steps.registry.outputs.exists == 'false'
         env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
         run: |
+          # The trusted-publishing login exchanged this job's OIDC token for a
+          # short-lived API key; no long-lived secret is stored.
           # Pushing the .nupkg also pushes the .snupkg symbol package from the
           # same directory. --skip-duplicate turns a 409 for an
           # already-existing version into a warning instead of a failure.

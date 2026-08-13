@@ -9,15 +9,23 @@ version and needs no update.
 
 ## Prerequisites (one-time)
 
-**Repository secret.** The publish workflow requires:
+**NuGet Trusted Publishing policy.** No repository secret is stored. The
+publish workflow authenticates with GitHub Actions OIDC through the
+`NuGet/login` action, which exchanges the job's OIDC token for a
+short-lived API key. Create the policy once on nuget.org (account owning
+`Thalovant.Sdk` → Trusted Publishing → Create):
 
-| Secret | Contents | Where to get it |
-| --- | --- | --- |
-| `NUGET_API_KEY` | nuget.org API key with the **Push** scope, restricted to the `Thalovant.Sdk` package glob | nuget.org → account owning `Thalovant.Sdk` → API Keys → Create (scope: Push new packages and package versions; packages: `Thalovant.Sdk`) |
+| Field | Value |
+| --- | --- |
+| Package Owner | `thalovant` |
+| CI/CD Provider | GitHub Actions |
+| Repository Owner | `thalovant` |
+| Repository | `thalovant-dotnet-sdk` |
+| Workflow File | `publish.yml` |
+| Environment | `nuget` |
 
-nuget.org API keys expire (maximum 365 days); regenerate and update the
-repository secret before expiry. Local builds and CI test runs need no
-secrets.
+The Environment must stay in sync with the `environment:` declared in
+`publish.yml`. Local builds and CI test runs need no credentials.
 
 ## Publish
 

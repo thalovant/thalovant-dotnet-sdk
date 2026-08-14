@@ -1,11 +1,15 @@
 # Releasing the Thalovant .NET SDK
 
 The SDK is published to nuget.org as `Thalovant.Sdk` (with a `snupkg` symbol
-package). The csproj `<Version>`, the `UserAgent` constant
-(`ThalovantDotNetSDK/<version>` in `src/Thalovant.Sdk/ControlPlane.cs` and the
-tests asserting it), and `CHANGELOG.md` must move together in a release. The
-README install snippet (`dotnet add package Thalovant.Sdk`) does not name a
-version and needs no update.
+package). The csproj `<Version>` in
+`src/Thalovant.Sdk/Thalovant.Sdk.csproj` is the **single source of truth** for
+the version: `ThalovantSdkVersion` reads it back off the built assembly's
+`AssemblyInformationalVersionAttribute`, and `ThalovantDefaults.UserAgent`
+(`ThalovantDotNetSDK/<version>`) derives from it, on both target frameworks.
+Never hand-edit a version into a user-agent literal — `VersionTests` fails the
+build if one reappears under `src/`. Only `<Version>` and `CHANGELOG.md` move
+in a release. The README install snippet (`dotnet add package Thalovant.Sdk`)
+does not name a version and needs no update.
 
 ## Prerequisites (one-time)
 
@@ -35,12 +39,9 @@ owner name). `gh variable set NUGET_TRUSTED_PUBLISHING_USER --body "<username>"`
 
 ## Publish
 
-1. Update the `<Version>` in `src/Thalovant.Sdk/Thalovant.Sdk.csproj`, the
-   `UserAgent` constant in `src/Thalovant.Sdk/ControlPlane.cs`, the tests
-   asserting `ThalovantDotNetSDK/<version>`
-   (`tests/Thalovant.Sdk.Tests/RequestBuildingTests.cs`,
-   `tests/Thalovant.Sdk.Tests/WireProtocolTests.cs`), `CHANGELOG.md`, and any
-   affected docs to the same version.
+1. Update the `<Version>` in `src/Thalovant.Sdk/Thalovant.Sdk.csproj`, then
+   `CHANGELOG.md` and any affected docs. The user agent follows automatically;
+   there is nothing else to hand-edit.
 2. Run `dotnet build`, `dotnet test`, and
    `dotnet pack src/Thalovant.Sdk/Thalovant.Sdk.csproj --configuration Release`,
    and inspect the staged `.nupkg`/`.snupkg`.
@@ -48,7 +49,8 @@ owner name). `gh variable set NUGET_TRUSTED_PUBLISHING_USER --body "<username>"`
    no matching `v<version>` tag, re-runs the build, creates the tag and GitHub
    release, and dispatches the **Publish NuGet Package** workflow. (If the
    current version is already tagged but release-relevant files changed, it
-   auto-bumps a patch version across the files listed above first.)
+   auto-bumps a patch version first, rewriting only the csproj `<Version>` and
+   prepending a `CHANGELOG.md` entry.)
 4. The publish workflow builds and tests the tagged commit, packs the
    `.nupkg` and `.snupkg`, generates a CycloneDX SBOM, attests provenance and
    SBOM, pushes to nuget.org with `--skip-duplicate`, then polls
@@ -80,8 +82,8 @@ only be **unlisted**, which hides them from search but keeps them restorable
 for existing consumers.
 
 1. Do not attempt to remove or overwrite a broken version.
-2. Publish a corrected patch release with aligned version, `UserAgent`
-   constant, tests, and changelog.
+2. Publish a corrected patch release: bump the csproj `<Version>` and add a
+   changelog entry.
 3. Deprecate the broken version on nuget.org (Manage package → Deprecation,
    pointing at the corrected version) and unlist it if it should not be
    discovered by new consumers.

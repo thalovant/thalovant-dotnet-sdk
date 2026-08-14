@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.2
+
+- Fix the CI token example in the README to read `THALOVANT_API_TOKEN`, the
+  environment variable name used by the other Thalovant SDKs and the MCP
+  server. The previous `THALOVANT_TOKEN` matched nothing else in the family.
+  The SDK reads no environment variable itself, so this is a documentation
+  fix only.
+- Document the two per-plan API token 429s: `token_rate_limited` for the
+  per-minute rate and `token_quota_exceeded` for the daily or monthly call
+  quota (the body names the `quota`, `limit`, and `used`). Both carry a
+  `Retry-After` header and `retry_after_seconds`. The SDK does not retry
+  automatically.
+
 ## 0.1.1
 
 - `ThalovantControlPlane.LoginWithBrowserAsync`: browser device-flow sign-in

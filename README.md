@@ -91,7 +91,7 @@ client with a token minted earlier (for example through the device flow or the
 dashboard):
 
 ```csharp
-var api = new ThalovantControlPlane(accessToken: Environment.GetEnvironmentVariable("THALOVANT_TOKEN"));
+var api = new ThalovantControlPlane(accessToken: Environment.GetEnvironmentVariable("THALOVANT_API_TOKEN"));
 // or later: api.AccessToken = "...";
 ```
 
@@ -226,6 +226,18 @@ var selected = HubEndpoints.SelectDataPlaneEndpoint(
 - `ThalovantIdentityException` — malformed or insecure identity documents.
 - `ThalovantUnsupportedProtocolException` — the protocol is disabled, missing
   an endpoint, or not supported by this SDK.
+
+API-token calls are limited per plan. Both limits surface as
+`ThalovantApiException` with HTTP 429 in `StatusCode`, a `Retry-After` header,
+and a matching `retry_after_seconds` in the body:
+
+- `token_rate_limited` — the plan's per-minute request rate was exceeded (60
+  requests per minute on the free plan). Retry once the current minute resets.
+- `token_quota_exceeded` — the plan's daily or monthly call quota is exhausted.
+  The body names which in `quota` (`daily` or `monthly`) alongside `limit` and
+  `used`. Retry after the next UTC day or month starts.
+
+The SDK does not retry automatically: honor `Retry-After` before resending.
 
 ## Development
 

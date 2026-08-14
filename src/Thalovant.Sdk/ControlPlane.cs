@@ -17,7 +17,7 @@ namespace Thalovant
     public static class ThalovantDefaults
     {
         public const string ControlApiUrl = "https://api.thalovant.com";
-        public const string UserAgent = "ThalovantDotNetSDK/0.1.1";
+        public const string UserAgent = "ThalovantDotNetSDK/0.1.2";
     }
 
     /// <summary>

@@ -55,7 +55,7 @@ namespace Thalovant
         public ThalovantClient(
             ThalovantIdentity identity,
             HubProtocol hubProtocol = HubProtocol.Wss,
-            string userAgent = ThalovantDefaults.UserAgent,
+            string? userAgent = null,
             TimeSpan? replySettle = null,
             TimeSpan? emptyReplyWait = null)
         {

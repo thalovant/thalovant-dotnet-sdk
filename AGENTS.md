@@ -31,10 +31,14 @@ network-free.
 
 Releases are automated: `auto-release.yml` tags and creates the GitHub release
 for an untagged version on `main`, and `publish.yml` packs, attests, and
-publishes `Thalovant.Sdk` to nuget.org. The csproj `<Version>`, the
-`UserAgent` constant (`ThalovantDotNetSDK/<version>`) and the tests asserting
-it, and `CHANGELOG.md` move together in a release. See `RELEASING.md` for the
-required `NUGET_API_KEY` secret and rollback rules.
+publishes `Thalovant.Sdk` to nuget.org. The csproj `<Version>` is the single
+source of truth for the version and `CHANGELOG.md` moves with it; the user
+agent (`ThalovantDotNetSDK/<version>`) is derived at runtime by
+`ThalovantSdkVersion` from the assembly's informational version, so it is
+never hand-edited. Never hard-code a version inside a user-agent literal:
+`tests/Thalovant.Sdk.Tests/VersionTests.cs` fails the build if one reappears
+under `src/`, and tests must assert the derived value, never a literal. See
+`RELEASING.md` for the required `NUGET_API_KEY` secret and rollback rules.
 
 Rollback by tagging a corrected patch release; never move or delete an
 existing tag that consumers may already resolve.

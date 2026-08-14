@@ -237,7 +237,10 @@ and a matching `retry_after_seconds` in the body:
   The body names which in `quota` (`daily` or `monthly`) alongside `limit` and
   `used`. Retry after the next UTC day or month starts.
 
-The SDK does not retry automatically: honor `Retry-After` before resending.
+The SDK does not retry automatically. `ThalovantApiException` carries the
+status code, the raw `Body`, and the decoded `ErrorCode` — not response
+headers — so read `retry_after_seconds` out of the body to decide when to
+resend rather than reaching for the `Retry-After` header.
 
 ## Development
 

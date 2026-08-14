@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3
+
+- Correct the 429 guidance: `ThalovantApiException` exposes the status code, raw body, and decoded error code but not response headers, so read `retry_after_seconds` from the body instead of the `Retry-After` header.
+
 ## 0.1.2
 
 - Fix the CI token example in the README to read `THALOVANT_API_TOKEN`, the

@@ -17,7 +17,18 @@ namespace Thalovant
     public static class ThalovantDefaults
     {
         public const string ControlApiUrl = "https://api.thalovant.com";
-        public const string UserAgent = "ThalovantDotNetSDK/0.1.3";
+
+        /// <summary>
+        /// The default user agent, <c>ThalovantDotNetSDK/&lt;version&gt;</c>.
+        /// </summary>
+        /// <remarks>
+        /// Derived from <see cref="ThalovantSdkVersion.UserAgent"/> rather than
+        /// hard-coded, so it can never drift from the csproj
+        /// <c>&lt;Version&gt;</c>. It is therefore <c>static readonly</c> and no
+        /// longer a compile-time constant: it cannot be used in <c>const</c>
+        /// expressions, <c>switch</c> case labels, or attribute arguments.
+        /// </remarks>
+        public static readonly string UserAgent = ThalovantSdkVersion.UserAgent;
     }
 
     /// <summary>
@@ -109,12 +120,15 @@ namespace Thalovant
         public ThalovantControlPlane(
             string apiUrl = ThalovantDefaults.ControlApiUrl,
             string? accessToken = null,
-            string userAgent = ThalovantDefaults.UserAgent,
+            string? userAgent = null,
             HttpClient? httpClient = null)
         {
             ApiUrl = NormalizeControlApiUrl(apiUrl);
             AccessToken = accessToken;
-            UserAgent = userAgent;
+            // Resolved here rather than as a parameter default so that the
+            // version is never inlined into a caller's assembly at their
+            // compile time.
+            UserAgent = userAgent ?? ThalovantDefaults.UserAgent;
             _http = httpClient ?? new HttpClient();
         }
 

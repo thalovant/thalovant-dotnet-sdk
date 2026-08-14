@@ -14,8 +14,11 @@ namespace Thalovant.Sdk.Tests
         [Fact]
         public void AuthorizationIsBase64UserAgentColonAccessKey()
         {
-            var token = HiveWire.Authorization("ThalovantDotNetSDK/0.1.3", "access-1");
-            Assert.Equal(Convert.ToBase64String(Encoding.UTF8.GetBytes("ThalovantDotNetSDK/0.1.3:access-1")), token);
+            // Derived, never a literal: a hard-coded version here would just be
+            // one more copy to keep in sync. VersionTests pins the value itself.
+            var userAgent = ThalovantDefaults.UserAgent;
+            var token = HiveWire.Authorization(userAgent, "access-1");
+            Assert.Equal(Convert.ToBase64String(Encoding.UTF8.GetBytes(userAgent + ":access-1")), token);
         }
 
         [Fact]
@@ -180,11 +183,15 @@ namespace Thalovant.Sdk.Tests
                 ["default_master"] = "https://hub.example.com",
                 ["data_plane_endpoints"] = new JsonObject { ["wss"] = "wss://hub.example.com/ws" },
             });
-            using var transport = new HiveMindWssTransport(identity, "ThalovantDotNetSDK/0.1.3");
+            // No explicit user agent: this asserts the data-plane default, the
+            // surface that silently drifted in the Python SDK.
+            using var transport = new HiveMindWssTransport(identity);
+            Assert.Equal(ThalovantDefaults.UserAgent, transport.UserAgent);
             var url = transport.EndpointUri();
             Assert.Equal("hub.example.com", url.Host);
             Assert.Equal("/ws", url.AbsolutePath);
-            var expected = Convert.ToBase64String(Encoding.UTF8.GetBytes("ThalovantDotNetSDK/0.1.3:access-1"));
+            var expected = Convert.ToBase64String(
+                Encoding.UTF8.GetBytes(ThalovantDefaults.UserAgent + ":access-1"));
             Assert.Contains("authorization=" + Uri.EscapeDataString(expected), url.Query, StringComparison.Ordinal);
         }
     }

@@ -82,10 +82,13 @@ namespace Thalovant
         private readonly Dictionary<Guid, Action<JsonObject>> _busHandlers = new Dictionary<Guid, Action<JsonObject>>();
         private readonly Dictionary<Guid, Action<HiveMessage>> _messageHandlers = new Dictionary<Guid, Action<HiveMessage>>();
 
-        public HiveMindWssTransport(ThalovantIdentity identity, string userAgent = ThalovantDefaults.UserAgent)
+        public HiveMindWssTransport(ThalovantIdentity identity, string? userAgent = null)
         {
             Identity = identity;
-            UserAgent = userAgent;
+            // Resolved here rather than as a parameter default so that the
+            // version is never inlined into a caller's assembly at their
+            // compile time.
+            UserAgent = userAgent ?? ThalovantDefaults.UserAgent;
         }
 
         public bool Connected

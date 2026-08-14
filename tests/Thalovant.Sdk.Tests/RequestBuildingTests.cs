@@ -121,7 +121,9 @@ namespace Thalovant.Sdk.Tests
             var request = LastRequest();
             Assert.Equal("POST", request.Method);
             Assert.Equal("https://api.example.com/v1/auth/token", request.Url.AbsoluteUri);
-            Assert.Equal("ThalovantDotNetSDK/0.1.3", request.Header("User-Agent"));
+            // Derived, never a literal: a hard-coded version here would just be
+            // one more copy to keep in sync. VersionTests pins the value itself.
+            Assert.Equal(ThalovantDefaults.UserAgent, request.Header("User-Agent"));
             Assert.Equal("application/json", request.Header("Accept"));
             Assert.StartsWith("application/json", request.Header("Content-Type"));
             Assert.Null(request.Header("Authorization"));

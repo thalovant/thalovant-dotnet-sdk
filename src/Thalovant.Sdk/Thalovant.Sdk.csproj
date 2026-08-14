@@ -13,7 +13,7 @@
 
   <PropertyGroup>
     <PackageId>Thalovant.Sdk</PackageId>
-    <Version>0.1.2</Version>
+    <Version>0.1.3</Version>
     <Authors>Thalovant</Authors>
     <Company>Thalovant</Company>
     <Description>.NET SDK for connecting enterprise .NET and Unity apps to Thalovant hubs: control-plane API client plus the HiveMind WSS data plane with AES-128-GCM encrypted frames.</Description>

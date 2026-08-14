@@ -14,8 +14,8 @@ namespace Thalovant.Sdk.Tests
         [Fact]
         public void AuthorizationIsBase64UserAgentColonAccessKey()
         {
-            var token = HiveWire.Authorization("ThalovantDotNetSDK/0.1.2", "access-1");
-            Assert.Equal(Convert.ToBase64String(Encoding.UTF8.GetBytes("ThalovantDotNetSDK/0.1.2:access-1")), token);
+            var token = HiveWire.Authorization("ThalovantDotNetSDK/0.1.3", "access-1");
+            Assert.Equal(Convert.ToBase64String(Encoding.UTF8.GetBytes("ThalovantDotNetSDK/0.1.3:access-1")), token);
         }
 
         [Fact]
@@ -180,11 +180,11 @@ namespace Thalovant.Sdk.Tests
                 ["default_master"] = "https://hub.example.com",
                 ["data_plane_endpoints"] = new JsonObject { ["wss"] = "wss://hub.example.com/ws" },
             });
-            using var transport = new HiveMindWssTransport(identity, "ThalovantDotNetSDK/0.1.2");
+            using var transport = new HiveMindWssTransport(identity, "ThalovantDotNetSDK/0.1.3");
             var url = transport.EndpointUri();
             Assert.Equal("hub.example.com", url.Host);
             Assert.Equal("/ws", url.AbsolutePath);
-            var expected = Convert.ToBase64String(Encoding.UTF8.GetBytes("ThalovantDotNetSDK/0.1.2:access-1"));
+            var expected = Convert.ToBase64String(Encoding.UTF8.GetBytes("ThalovantDotNetSDK/0.1.3:access-1"));
             Assert.Contains("authorization=" + Uri.EscapeDataString(expected), url.Query, StringComparison.Ordinal);
         }
     }

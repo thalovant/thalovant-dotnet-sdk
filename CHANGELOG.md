@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.7
+
+- Automated patch release of the unreleased changes on `main` since v0.1.6.
+
 ## 0.1.6
 
 - Automated patch release of the unreleased changes on `main` since v0.1.5.

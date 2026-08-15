@@ -22,11 +22,6 @@ namespace Thalovant
         public string Username { get; }
         public string Password { get; }
         public string? TopicPrefix { get; }
-        public string? HubId { get; }
-        public string? C2sTopic { get; }
-        public string? S2cTopic { get; }
-        public string? StatusTopic { get; }
-        public bool HashTopics { get; }
         public int Qos { get; }
         public bool Tls { get; }
 
@@ -36,11 +31,6 @@ namespace Thalovant
             Username = Required(json, "mqtt.username", "username", "broker_username", "brokerUsername");
             Password = Required(json, "mqtt.password", "password", "broker_password", "brokerPassword");
             TopicPrefix = JsonUtil.OptionalString(JsonUtil.First(json, "topic_prefix", "topicPrefix"));
-            HubId = JsonUtil.OptionalString(JsonUtil.First(json, "hub_id", "hubId"));
-            C2sTopic = JsonUtil.OptionalString(JsonUtil.First(json, "c2s_topic", "c2sTopic"));
-            S2cTopic = JsonUtil.OptionalString(JsonUtil.First(json, "s2c_topic", "s2cTopic"));
-            StatusTopic = JsonUtil.OptionalString(JsonUtil.First(json, "status_topic", "statusTopic"));
-            HashTopics = JsonUtil.EnabledValue(JsonUtil.First(json, "hash_topics", "hashTopics"), fallback: false);
             Qos = JsonUtil.GetInt(json["qos"]) ?? 1;
             Tls = JsonUtil.EnabledValue(json["tls"], fallback: Endpoint.StartsWith("mqtts://", StringComparison.Ordinal));
         }
@@ -85,26 +75,6 @@ namespace Thalovant
                 if (TopicPrefix is not null)
                 {
                     data["topic_prefix"] = TopicPrefix;
-                }
-                if (HubId is not null)
-                {
-                    data["hub_id"] = HubId;
-                }
-                if (C2sTopic is not null)
-                {
-                    data["c2s_topic"] = C2sTopic;
-                }
-                if (S2cTopic is not null)
-                {
-                    data["s2c_topic"] = S2cTopic;
-                }
-                if (StatusTopic is not null)
-                {
-                    data["status_topic"] = StatusTopic;
-                }
-                if (HashTopics)
-                {
-                    data["hash_topics"] = true;
                 }
                 if (Qos != 1)
                 {

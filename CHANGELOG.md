@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.1.5
+
+- Hub provisioning on `ThalovantControlPlane`: `CreateHubAsync`,
+  `UpdateHubAsync`, `DeleteHubAsync`, `ReleaseHubAsync`, `SetHubRatingAsync`,
+  `ClearHubRatingAsync`, and `GetHubRuntimeCapabilitiesAsync`, with the
+  `CreateHubOptions`, `UpdateHubOptions`, and `ReleaseOptions` bodies.
+- Runtime groups: `ListRuntimeGroupsAsync`, `GetRuntimeGroupAsync`,
+  `CreateRuntimeGroupAsync`, `UpdateRuntimeGroupAsync`,
+  `GetRuntimeGroupConfigAsync`, `UpdateRuntimeGroupConfigAsync`,
+  `ReleaseRuntimeGroupAsync`, `DeleteRuntimeGroupAsync`,
+  `InstallRuntimeGroupSkillAsync`, and `UninstallRuntimeGroupSkillAsync`, with
+  `CreateRuntimeGroupOptions`, `UpdateRuntimeGroupOptions`, and
+  `InstallRuntimeGroupSkillOptions`.
+- Skill discovery: `ListMarketplaceSkillsAsync` (with
+  `MarketplaceSkillListOptions`), `ListRuntimeGroupMarketplaceAsync`, and
+  `ListRuntimeGroupInventoryAsync`.
+- `UpdateHubAsync` and `DeleteHubAsync` take `etag` as a **required**
+  parameter, not an option: the API compares it as `If-Match` against the hub's
+  current etag and answers HTTP 412 `ETag mismatch` when it is stale *or
+  absent*. No runtime-group route reads `If-Match`, so none of them take an
+  etag.
+- `CreateHubAsync` sends a generated `Idempotency-Key` unless
+  `CreateHubOptions.IdempotencyKey` supplies one, so a retried create after a
+  timeout returns the first hub instead of making a second. It is the only
+  route in this surface that reads the header; runtime-group creates and skill
+  installs do not, and the SDK does not send one there.
+- The provisioning writes are paid-gated (`hubs:write` plus a paid plan) and
+  answer HTTP 402 `API access requires a paid plan.` on the free tier; a
+  missing scope answers HTTP 403 `Insufficient scopes` first. The hub rating
+  routes need `hubs:write` but are **not** paid-gated, and the discovery reads
+  need only `hubs:read` (marketplace catalog) or `hubs:inspect` (group-scoped
+  reads and hub runtime capabilities) and are likewise not paid-gated.
+- `GetHubRuntimeCapabilitiesAsync` is the only read here that answers HTTP 409
+  when no client is connected. `ListRuntimeGroupInventoryAsync` returns an
+  empty `data` list with a pending `source` instead, and
+  `ListRuntimeGroupMarketplaceAsync` still returns the catalog.
+- `MarketplaceSkillListOptions.OwnerId` and `IncludeInactive` are admin-only
+  and are *silently* ignored for other callers rather than rejected, so a 200
+  is not proof they applied.
+
+## 0.1.4
+
+- Derive the user agent from the assembly version so the csproj `<Version>` is
+  the single place in the repository that names it; `ThalovantDefaults.UserAgent`
+  became `static readonly` rather than a compile-time `const`.
+
 ## 0.1.3
 
 - Correct the 429 guidance: `ThalovantApiException` exposes the status code, raw body, and decoded error code but not response headers, so read `retry_after_seconds` from the body instead of the `Retry-After` header.

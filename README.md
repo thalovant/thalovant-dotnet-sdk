@@ -120,6 +120,155 @@ foreach (var hub in page["data"]!.AsArray())
 }
 ```
 
+## Provision Hubs
+
+Hubs, runtime groups, and skills can be created and managed from code. These
+routes need a **paid plan** and a token with the **`hubs:write`** scope ("Create
+and update your hubs" on the dashboard's API Tokens page). A missing scope fails
+first with HTTP 403 `Insufficient scopes`; a free-plan token with the right scope
+fails with HTTP 402 `API access requires a paid plan.` Both surface as
+`ThalovantApiException` with the status code on `StatusCode`.
+
+```csharp
+using Thalovant;
+using System.Text.Json.Nodes;  // hub and runtime-group specs are JsonObject
+
+var api = new ThalovantControlPlane(
+    accessToken: Environment.GetEnvironmentVariable("THALOVANT_API_TOKEN"));
+
+// 1. Discover what is installable before committing to anything. This read is
+//    NOT paid-gated, so a free-plan token can browse the catalog first.
+var catalog = await api.ListMarketplaceSkillsAsync();
+foreach (var skill in catalog["data"]!.AsArray())
+{
+    Console.WriteLine($"{skill!["skill_id"]} {skill["access_tier"]}");
+}
+
+// 2. Create a runtime group to run the skills.
+var group = await api.CreateRuntimeGroupAsync(
+    new CreateRuntimeGroupOptions("kiosks") { Description = "Lobby kiosks" });
+var groupId = (string)group["id"]!;
+
+// 3. Create a hub attached to it.
+var hub = await api.CreateHubAsync(new CreateHubOptions(
+    "joke-garden",
+    new JsonObject { ["protocols"] = new JsonObject { ["wss"] = new JsonObject { ["enabled"] = true } } })
+{
+    RuntimeGroupId = groupId,
+});
+var hubId = (string)hub["id"]!;
+
+// 4. Install a skill from the marketplace catalog.
+await api.InstallRuntimeGroupSkillAsync(
+    groupId, new InstallRuntimeGroupSkillOptions("skill-weather"));
+
+// 5. Release: roll the runtime and the hub onto a release channel.
+await api.ReleaseRuntimeGroupAsync(groupId, new ReleaseOptions { Channel = "stable" });
+await api.ReleaseHubAsync(hubId, new ReleaseOptions { Channel = "stable" });
+```
+
+Creating a hub is idempotent. `CreateHubAsync` sends a generated
+`Idempotency-Key` header, so a retried call after a timeout returns the hub that
+was already created instead of making a second one. Set
+`CreateHubOptions.IdempotencyKey` to control the key yourself. It is the only
+route in this surface that reads the header — runtime-group creates and skill
+installs do not.
+
+Updating and deleting a hub use optimistic locking, so `etag` is a **required**
+parameter rather than an option. Pass the `etag` from the hub resource you read;
+the SDK sends it as `If-Match`, and the API rejects a stale *or missing* value
+with HTTP 412 without changing anything:
+
+```csharp
+hub = await api.GetHubAsync(hubId);
+var etag = (string)hub["etag"]!;
+
+hub = await api.UpdateHubAsync(hubId, new UpdateHubOptions { Active = false }, etag);
+await api.DeleteHubAsync(hubId, (string)hub["etag"]!);
+```
+
+Deleting a hub also deletes its clients and ACLs. `name`, `namespace`, and
+`domain` are immutable on update (HTTP 400), and `UpdateHubOptions.IsLocked` is
+admin-only (HTTP 403). Runtime groups have no `If-Match` requirement at all, but
+the API refuses to delete the workspace default group or a group that still has
+hubs attached (HTTP 409).
+
+Runtime configuration is merged, not replaced, and `personas` is sent only when
+you pass it:
+
+```csharp
+await api.UpdateRuntimeGroupConfigAsync(groupId, new JsonObject { ["lang"] = "en-us" });
+var config = await api.GetRuntimeGroupConfigAsync(groupId);
+Console.WriteLine(config["config"]);
+```
+
+Rating a public hub needs `hubs:write` but is **not** paid-gated, so a free-plan
+token can rate hubs it does not own:
+
+```csharp
+await api.SetHubRatingAsync(hubId, 5);
+await api.ClearHubRatingAsync(hubId);
+```
+
+## Discover Skills
+
+The marketplace catalog is readable with the **`hubs:read`** scope and, unlike
+the provisioning routes above, is **not paid-gated** — a free-plan token can
+browse the whole catalog before upgrading, and only the install needs a paid
+plan. Each entry carries what an install needs (`skill_id`, `source_type`,
+`source_ref`, `config_schema`, `secret_schema`) next to presentation fields
+(`title`, `tags`, `verified`, `access_tier`).
+
+```csharp
+var catalog = await api.ListMarketplaceSkillsAsync(new MarketplaceSkillListOptions
+{
+    ForceRefresh = true,  // re-syncs the global catalog from source first; slower
+});
+```
+
+`MarketplaceSkillListOptions.OwnerId` and `IncludeInactive` are honored for admin
+tokens only. The API does not reject them for anyone else — it *silently* scopes
+a non-admin caller to their own tenant and to active entries, so do not read a
+200 as proof they applied. `ForceRefresh` works for every caller.
+
+Two group-scoped reads need the **`hubs:inspect`** scope and are likewise not
+paid-gated. The first resolves the catalog against one runtime group, so each
+entry reports whether it is already desired, whether it was observed running, and
+whether the tenant plan allows installing it:
+
+```csharp
+var view = await api.ListRuntimeGroupMarketplaceAsync(groupId);
+foreach (var entry in view["data"]!.AsArray())
+{
+    if ((bool?)entry!["installable"] == true && (bool?)entry["active"] != true)
+    {
+        Console.WriteLine($"available: {entry["skill_id"]}");
+    }
+}
+```
+
+The second answers what the group is actually running right now, rather than what
+could be installed:
+
+```csharp
+var inventory = await api.ListRuntimeGroupInventoryAsync(groupId, refresh: true);
+Console.WriteLine($"{inventory["source"]} {inventory["data"]!.AsArray().Count}");
+```
+
+Both answer from a cached snapshot by default; pass `refreshInventory: true` or
+`refresh: true` to force a live read from the runtime operator. Neither fails
+when nothing is reporting yet — `ListRuntimeGroupInventoryAsync` returns an empty
+`data` list with a pending `source`, and `ListRuntimeGroupMarketplaceAsync` still
+returns the catalog. Reading what one *hub* is running is the exception:
+
+```csharp
+var capabilities = await api.GetHubRuntimeCapabilitiesAsync(hubId);
+Console.WriteLine(capabilities["counts"]!["total_intents"]);
+```
+
+`GetHubRuntimeCapabilitiesAsync` needs `hubs:inspect` and is the one read that
+answers **HTTP 409** when the hub has no connected client to report inventory.
+
 ## Operations
 
 Mutating endpoints return durable operations you can poll:

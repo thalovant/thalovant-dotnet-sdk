@@ -434,6 +434,423 @@ namespace Thalovant
             return RequestObjectAsync("GET", "/v1/public/hubs/" + Uri.EscapeDataString(hubRef), auth: false, cancellationToken: cancellationToken);
         }
 
+        // -- Hub provisioning ------------------------------------------------
+
+        /// <summary>
+        /// <c>POST /v1/hubs</c>. Creates a hub.
+        /// <para>
+        /// The request is idempotent: an <c>Idempotency-Key</c> header is generated
+        /// unless <see cref="CreateHubOptions.IdempotencyKey"/> supplies one, so a
+        /// retried create after a timeout returns the hub the first attempt made
+        /// instead of making a second one.
+        /// </para>
+        /// <para>
+        /// Requires a paid plan and a token with the <c>hubs:write</c> scope; a
+        /// free-plan token fails with HTTP 402 and a token without the scope with
+        /// HTTP 403.
+        /// </para>
+        /// </summary>
+        public Task<JsonObject> CreateHubAsync(CreateHubOptions options, CancellationToken cancellationToken = default)
+        {
+            var headers = new Dictionary<string, string>
+            {
+                ["Idempotency-Key"] = options.IdempotencyKey ?? NewIdempotencyKey(),
+            };
+            return RequestObjectAsync("POST", "/v1/hubs", options.ToJsonObject(), headers, cancellationToken: cancellationToken);
+        }
+
+        /// <summary>
+        /// <c>PATCH /v1/hubs/{hub_id}</c>. Partially updates a hub.
+        /// <para>
+        /// The API enforces optimistic locking here, so <paramref name="etag"/> is
+        /// required rather than optional: pass the <c>etag</c> from the hub resource
+        /// you read and it is sent as <c>If-Match</c>. A stale or missing value fails
+        /// with HTTP 412 and changes nothing; re-read the hub with
+        /// <see cref="GetHubAsync(string, CancellationToken)"/> and retry with the new
+        /// <c>etag</c>.
+        /// </para>
+        /// <para>
+        /// The API treats <c>name</c>, <c>namespace</c>, and <c>domain</c> as
+        /// immutable and answers HTTP 400 when one of them is changed, and
+        /// <see cref="UpdateHubOptions.IsLocked"/> is admin-only (HTTP 403 otherwise).
+        /// </para>
+        /// <para>Requires a paid plan and a token with the <c>hubs:write</c> scope.</para>
+        /// </summary>
+        public Task<JsonObject> UpdateHubAsync(
+            string hubId,
+            UpdateHubOptions options,
+            string etag,
+            CancellationToken cancellationToken = default)
+        {
+            var headers = new Dictionary<string, string> { ["If-Match"] = etag };
+            return RequestObjectAsync(
+                "PATCH",
+                "/v1/hubs/" + Uri.EscapeDataString(hubId),
+                options.ToJsonObject(),
+                headers,
+                cancellationToken: cancellationToken);
+        }
+
+        /// <summary>
+        /// <c>DELETE /v1/hubs/{hub_id}</c>. Deletes a hub along with its dependent
+        /// clients and ACLs.
+        /// <para>
+        /// Like <see cref="UpdateHubAsync(string, UpdateHubOptions, string, CancellationToken)"/>
+        /// this route requires the hub's current <paramref name="etag"/>, sent as
+        /// <c>If-Match</c>; a stale or missing value fails with HTTP 412.
+        /// </para>
+        /// <para>Requires a paid plan and a token with the <c>hubs:write</c> scope.</para>
+        /// </summary>
+        public Task DeleteHubAsync(string hubId, string etag, CancellationToken cancellationToken = default)
+        {
+            var headers = new Dictionary<string, string> { ["If-Match"] = etag };
+            return RequestDataAsync(
+                "DELETE",
+                "/v1/hubs/" + Uri.EscapeDataString(hubId),
+                headers: headers,
+                cancellationToken: cancellationToken);
+        }
+
+        /// <summary>
+        /// <c>POST /v1/hubs/{hub_id}/release</c>. Applies a hub release policy and
+        /// returns the updated hub. Every option is optional; omitted fields fall back
+        /// to the workspace release policy.
+        /// <para>Requires a paid plan and a token with the <c>hubs:write</c> scope.</para>
+        /// </summary>
+        public Task<JsonObject> ReleaseHubAsync(
+            string hubId,
+            ReleaseOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            options ??= new ReleaseOptions();
+            return RequestObjectAsync(
+                "POST",
+                "/v1/hubs/" + Uri.EscapeDataString(hubId) + "/release",
+                options.ToJsonObject(),
+                cancellationToken: cancellationToken);
+        }
+
+        /// <summary>
+        /// <c>PUT /v1/hubs/{hub_id}/rating</c>. Rates a public hub from 1 to 5 and
+        /// returns the updated hub. Only public hubs can be rated, and owners cannot
+        /// rate their own hubs.
+        /// <para>
+        /// Requires a token with the <c>hubs:write</c> scope. Unlike the provisioning
+        /// routes, rating is <b>not</b> paid-gated.
+        /// </para>
+        /// </summary>
+        public Task<JsonObject> SetHubRatingAsync(string hubId, int rating, CancellationToken cancellationToken = default)
+        {
+            var body = new JsonObject { ["rating"] = rating };
+            return RequestObjectAsync(
+                "PUT",
+                "/v1/hubs/" + Uri.EscapeDataString(hubId) + "/rating",
+                body,
+                cancellationToken: cancellationToken);
+        }
+
+        /// <summary>
+        /// <c>DELETE /v1/hubs/{hub_id}/rating</c>. Removes the caller's rating from a
+        /// public hub and returns the hub.
+        /// <para>
+        /// Requires a token with the <c>hubs:write</c> scope; like
+        /// <see cref="SetHubRatingAsync(string, int, CancellationToken)"/> it is not
+        /// paid-gated.
+        /// </para>
+        /// </summary>
+        public Task<JsonObject> ClearHubRatingAsync(string hubId, CancellationToken cancellationToken = default)
+        {
+            return RequestObjectAsync(
+                "DELETE",
+                "/v1/hubs/" + Uri.EscapeDataString(hubId) + "/rating",
+                cancellationToken: cancellationToken);
+        }
+
+        /// <summary>
+        /// <c>GET /v1/hubs/{hub_id}/runtime-capabilities</c>. Reads the live skill and
+        /// intent inventory a hub runtime exposes.
+        /// <para>
+        /// Requires a token with the <c>hubs:inspect</c> scope. This is the one
+        /// discovery read that fails when nothing is reporting: the API answers HTTP
+        /// 409 when the hub has no connected client that can report inventory, where
+        /// <see cref="ListRuntimeGroupInventoryAsync(string, bool, CancellationToken)"/>
+        /// returns an empty list with a pending source instead.
+        /// </para>
+        /// </summary>
+        public Task<JsonObject> GetHubRuntimeCapabilitiesAsync(string hubId, CancellationToken cancellationToken = default)
+        {
+            return RequestObjectAsync(
+                "GET",
+                "/v1/hubs/" + Uri.EscapeDataString(hubId) + "/runtime-capabilities",
+                cancellationToken: cancellationToken);
+        }
+
+        // -- Runtime groups --------------------------------------------------
+
+        /// <summary>
+        /// <c>GET /v1/runtime-groups</c>. Lists the runtime groups visible to the
+        /// authenticated user. <paramref name="ownerId"/> is admin-only and is sent
+        /// only when non-blank. Requires a token with the <c>hubs:read</c> scope.
+        /// </summary>
+        public Task<JsonObject> ListRuntimeGroupsAsync(string? ownerId = null, CancellationToken cancellationToken = default)
+        {
+            var parameters = new List<(string, string)>();
+            AppendParameter(parameters, "owner_id", ownerId);
+            return RequestObjectAsync("GET", PathWithQuery("/v1/runtime-groups", parameters), cancellationToken: cancellationToken);
+        }
+
+        /// <summary>
+        /// <c>GET /v1/runtime-groups/{runtime_group_id}</c>. Requires a token with the
+        /// <c>hubs:read</c> scope.
+        /// </summary>
+        public Task<JsonObject> GetRuntimeGroupAsync(string runtimeGroupId, CancellationToken cancellationToken = default)
+        {
+            return RequestObjectAsync(
+                "GET",
+                "/v1/runtime-groups/" + Uri.EscapeDataString(runtimeGroupId),
+                cancellationToken: cancellationToken);
+        }
+
+        /// <summary>
+        /// <c>POST /v1/runtime-groups</c>. Creates a runtime group. This route reads no
+        /// <c>Idempotency-Key</c>, so no key is sent.
+        /// <para>Requires a paid plan and a token with the <c>hubs:write</c> scope.</para>
+        /// </summary>
+        public Task<JsonObject> CreateRuntimeGroupAsync(CreateRuntimeGroupOptions options, CancellationToken cancellationToken = default)
+        {
+            return RequestObjectAsync("POST", "/v1/runtime-groups", options.ToJsonObject(), cancellationToken: cancellationToken);
+        }
+
+        /// <summary>
+        /// <c>PATCH /v1/runtime-groups/{runtime_group_id}</c>. Updates a runtime group's
+        /// name, description, or spec. Unlike the hub update route this one reads no
+        /// <c>If-Match</c>, so there is no <c>etag</c> parameter.
+        /// <para>Requires a paid plan and a token with the <c>hubs:write</c> scope.</para>
+        /// </summary>
+        public Task<JsonObject> UpdateRuntimeGroupAsync(
+            string runtimeGroupId,
+            UpdateRuntimeGroupOptions options,
+            CancellationToken cancellationToken = default)
+        {
+            return RequestObjectAsync(
+                "PATCH",
+                "/v1/runtime-groups/" + Uri.EscapeDataString(runtimeGroupId),
+                options.ToJsonObject(),
+                cancellationToken: cancellationToken);
+        }
+
+        /// <summary>
+        /// <c>GET /v1/runtime-groups/{runtime_group_id}/config</c>. Reads a runtime
+        /// group's runtime configuration and personas. Requires a token with the
+        /// <c>hubs:read</c> scope.
+        /// </summary>
+        public Task<JsonObject> GetRuntimeGroupConfigAsync(string runtimeGroupId, CancellationToken cancellationToken = default)
+        {
+            return RequestObjectAsync(
+                "GET",
+                "/v1/runtime-groups/" + Uri.EscapeDataString(runtimeGroupId) + "/config",
+                cancellationToken: cancellationToken);
+        }
+
+        /// <summary>
+        /// <c>PATCH /v1/runtime-groups/{runtime_group_id}/config</c>. Merges runtime
+        /// configuration into a runtime group.
+        /// <para>
+        /// The API merges <paramref name="config"/> into the stored configuration
+        /// rather than replacing it, and marks the group pending so the runtime
+        /// operator reconciles the change. <paramref name="personas"/> is replaced,
+        /// and only when provided.
+        /// </para>
+        /// <para>Requires a paid plan and a token with the <c>hubs:write</c> scope.</para>
+        /// </summary>
+        public Task<JsonObject> UpdateRuntimeGroupConfigAsync(
+            string runtimeGroupId,
+            JsonObject config,
+            JsonObject? personas = null,
+            CancellationToken cancellationToken = default)
+        {
+            var body = new JsonObject { ["config"] = JsonUtil.CloneObject(config) };
+            if (personas is not null)
+            {
+                body["personas"] = JsonUtil.CloneObject(personas);
+            }
+            return RequestObjectAsync(
+                "PATCH",
+                "/v1/runtime-groups/" + Uri.EscapeDataString(runtimeGroupId) + "/config",
+                body,
+                cancellationToken: cancellationToken);
+        }
+
+        /// <summary>
+        /// <c>POST /v1/runtime-groups/{runtime_group_id}/release</c>. Applies a runtime
+        /// image policy and returns the updated runtime group. Options behave exactly
+        /// like <see cref="ReleaseHubAsync(string, ReleaseOptions?, CancellationToken)"/>.
+        /// <para>Requires a paid plan and a token with the <c>hubs:write</c> scope.</para>
+        /// </summary>
+        public Task<JsonObject> ReleaseRuntimeGroupAsync(
+            string runtimeGroupId,
+            ReleaseOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            options ??= new ReleaseOptions();
+            return RequestObjectAsync(
+                "POST",
+                "/v1/runtime-groups/" + Uri.EscapeDataString(runtimeGroupId) + "/release",
+                options.ToJsonObject(),
+                cancellationToken: cancellationToken);
+        }
+
+        /// <summary>
+        /// <c>DELETE /v1/runtime-groups/{runtime_group_id}</c>. The API answers HTTP 409
+        /// for the workspace default group and for a group that still has hubs
+        /// attached.
+        /// <para>Requires a paid plan and a token with the <c>hubs:write</c> scope.</para>
+        /// </summary>
+        public Task DeleteRuntimeGroupAsync(string runtimeGroupId, CancellationToken cancellationToken = default)
+        {
+            return RequestDataAsync(
+                "DELETE",
+                "/v1/runtime-groups/" + Uri.EscapeDataString(runtimeGroupId),
+                cancellationToken: cancellationToken);
+        }
+
+        /// <summary>
+        /// <c>POST /v1/runtime-groups/{runtime_group_id}/skills</c>. Installs (or
+        /// re-installs) a skill in a runtime group; installing a skill that is already
+        /// present updates the existing entry.
+        /// <para>
+        /// Requires a paid plan and a token with the <c>hubs:write</c> scope. Paid
+        /// marketplace skills additionally need marketplace access on the tenant plan.
+        /// </para>
+        /// </summary>
+        public Task<JsonObject> InstallRuntimeGroupSkillAsync(
+            string runtimeGroupId,
+            InstallRuntimeGroupSkillOptions options,
+            CancellationToken cancellationToken = default)
+        {
+            return RequestObjectAsync(
+                "POST",
+                "/v1/runtime-groups/" + Uri.EscapeDataString(runtimeGroupId) + "/skills",
+                options.ToJsonObject(),
+                cancellationToken: cancellationToken);
+        }
+
+        /// <summary>
+        /// <c>DELETE /v1/runtime-groups/{runtime_group_id}/skills/{skill_id}</c>.
+        /// Removes a skill from a runtime group.
+        /// <para>Requires a paid plan and a token with the <c>hubs:write</c> scope.</para>
+        /// </summary>
+        public Task UninstallRuntimeGroupSkillAsync(
+            string runtimeGroupId,
+            string skillId,
+            CancellationToken cancellationToken = default)
+        {
+            return RequestDataAsync(
+                "DELETE",
+                "/v1/runtime-groups/" + Uri.EscapeDataString(runtimeGroupId)
+                    + "/skills/" + Uri.EscapeDataString(skillId),
+                cancellationToken: cancellationToken);
+        }
+
+        // -- Skill discovery -------------------------------------------------
+
+        /// <summary>
+        /// <c>GET /v1/marketplace/skills</c>. Lists the marketplace skill catalog
+        /// visible to the authenticated user, as <c>{"data": [...]}</c>. Each entry
+        /// carries the catalog fields an install needs (<c>skill_id</c>,
+        /// <c>source_type</c>, <c>source_ref</c>, <c>config_schema</c>,
+        /// <c>secret_schema</c>) alongside presentation and access fields
+        /// (<c>category</c>, <c>tags</c>, <c>verified</c>, <c>access_tier</c>).
+        /// <para>
+        /// Requires a token with the <c>hubs:read</c> scope. Unlike the provisioning
+        /// routes this catalog is <b>not</b> paid-gated, so free-tier callers can
+        /// browse before upgrading; only the install itself needs a paid plan.
+        /// </para>
+        /// </summary>
+        public Task<JsonObject> ListMarketplaceSkillsAsync(
+            MarketplaceSkillListOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            options ??= new MarketplaceSkillListOptions();
+            var parameters = new List<(string, string)>();
+            AppendParameter(parameters, "owner_id", options.OwnerId);
+            if (options.IncludeInactive)
+            {
+                parameters.Add(("include_inactive", "true"));
+            }
+            if (options.ForceRefresh)
+            {
+                parameters.Add(("force_refresh", "true"));
+            }
+            return RequestObjectAsync("GET", PathWithQuery("/v1/marketplace/skills", parameters), cancellationToken: cancellationToken);
+        }
+
+        /// <summary>
+        /// <c>GET /v1/runtime-groups/{runtime_group_id}/marketplace</c>. Lists the
+        /// marketplace catalog resolved against one runtime group — the discovery view
+        /// to use before installing, since every entry folds in whether the skill is
+        /// desired, whether it was observed running, and the access verdict for the
+        /// tenant plan (<c>purchase_required</c>, <c>installable</c>).
+        /// <para>
+        /// <paramref name="refreshInventory"/> forces a live read from the runtime
+        /// operator instead of answering from the cached snapshot. It also decides the
+        /// envelope's <c>source</c> when nothing is reporting: the default cached read
+        /// answers <c>runtime-group-cache-empty</c>, and only a refreshing read
+        /// answers <c>ovos-runtime-operator-pending</c>. Either way <c>data</c> still
+        /// carries the catalog entries — this route lists what could be installed, so
+        /// it is never empty just because the operator is quiet.
+        /// </para>
+        /// <para>
+        /// Requires a token with the <c>hubs:inspect</c> scope and is not paid-gated.
+        /// The API answers HTTP 404 for an unknown group and HTTP 403 when the caller
+        /// does not own it, but does not 409 when no client is connected.
+        /// </para>
+        /// </summary>
+        public Task<JsonObject> ListRuntimeGroupMarketplaceAsync(
+            string runtimeGroupId,
+            bool refreshInventory = false,
+            CancellationToken cancellationToken = default)
+        {
+            var parameters = new List<(string, string)>();
+            if (refreshInventory)
+            {
+                parameters.Add(("refresh_inventory", "true"));
+            }
+            var path = "/v1/runtime-groups/" + Uri.EscapeDataString(runtimeGroupId) + "/marketplace";
+            return RequestObjectAsync("GET", PathWithQuery(path, parameters), cancellationToken: cancellationToken);
+        }
+
+        /// <summary>
+        /// <c>GET /v1/runtime-groups/{runtime_group_id}/inventory</c>. Lists the skills
+        /// a runtime group is actually observed running. The envelope reports
+        /// <c>source</c> — one of <c>ovos-runtime-operator</c>,
+        /// <c>runtime-group-cache</c>, or <c>ovos-runtime-operator-pending</c> — plus
+        /// <c>operator_phase</c> and <c>operator_message</c>.
+        /// <para>
+        /// <paramref name="refresh"/> forces a live operator read; the API also
+        /// refreshes on its own when it holds no cached snapshot. Unlike
+        /// <see cref="GetHubRuntimeCapabilitiesAsync(string, CancellationToken)"/> this
+        /// route does not answer HTTP 409 when nothing is reporting — it returns an
+        /// empty <c>data</c> list with a pending <c>source</c> instead.
+        /// </para>
+        /// <para>
+        /// Requires a token with the <c>hubs:inspect</c> scope; no paid plan is needed.
+        /// </para>
+        /// </summary>
+        public Task<JsonObject> ListRuntimeGroupInventoryAsync(
+            string runtimeGroupId,
+            bool refresh = false,
+            CancellationToken cancellationToken = default)
+        {
+            var parameters = new List<(string, string)>();
+            if (refresh)
+            {
+                parameters.Add(("refresh", "true"));
+            }
+            var path = "/v1/runtime-groups/" + Uri.EscapeDataString(runtimeGroupId) + "/inventory";
+            return RequestObjectAsync("GET", PathWithQuery(path, parameters), cancellationToken: cancellationToken);
+        }
+
         // -- Operations ------------------------------------------------------
 
         public async Task<OperationResource> GetOperationAsync(string operationId, CancellationToken cancellationToken = default)

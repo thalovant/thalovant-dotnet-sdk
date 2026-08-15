@@ -16,7 +16,7 @@
     <!-- The single source of truth for the SDK version. ThalovantSdkVersion
          reads it back off the built assembly, so every user agent derives from
          this one line; nothing else in the repository names the version. -->
-    <Version>0.1.5</Version>
+    <Version>0.1.6</Version>
     <Authors>Thalovant</Authors>
     <Company>Thalovant</Company>
     <Description>.NET SDK for connecting enterprise .NET and Unity apps to Thalovant hubs: control-plane API client plus the HiveMind WSS data plane with AES-128-GCM encrypted frames.</Description>

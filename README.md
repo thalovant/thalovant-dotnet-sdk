@@ -57,8 +57,11 @@ await client.CloseAsync();
 `new ThalovantControlPlane()` uses `https://api.thalovant.com` by default. Pass
 a different URL only for local development or a self-hosted control plane.
 
-Keep `result.Identity` secret. It contains the client credentials used by the
-hub. Do not log `result.ToJsonObject(includeSecrets: true)`.
+Keep `result.Identity` secret: it holds the client credentials the hub trusts.
+`result.ToJsonObject()` redacts every secret it carries — the identity and the
+secret subkeys of the raw hub/client resources — so that default form is safe
+to log or persist for display. Only `result.ToJsonObject(includeSecrets: true)`
+returns the credentials in the clear; never log or print that form.
 
 ## Sign In Through the Browser (Device Flow)
 
@@ -290,9 +293,6 @@ var overview = await api.AnalyticsOverviewAsync(new AnalyticsOverviewOptions
 });
 Console.WriteLine(overview["totals"]);
 ```
-
-Admins can set `Admin = true` (and optionally `OwnerId`) to read the
-platform-wide `/v1/admin/analytics/overview` rollup instead.
 
 ## Durable Memory
 

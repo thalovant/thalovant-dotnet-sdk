@@ -8,6 +8,14 @@ namespace Thalovant
     /// Client-scoped MQTT broker credentials
     /// (<c>mqtt.{endpoint,username,password,topic_prefix,tls}</c> per the API clients schema).
     /// </summary>
+    /// <remarks>
+    /// Intentionally a plain <c>sealed class</c> with no <c>ToString()</c> override
+    /// so its human-readable form is the default type name and never renders the
+    /// broker <c>Password</c>/<c>Username</c>. Do not convert it to a
+    /// <c>record</c>: the synthesized <c>ToString()</c> would print every property
+    /// and leak the credentials. <see cref="ToJsonObject(bool)"/> is the only path
+    /// that emits them, and only when <c>includeSecrets</c> is set.
+    /// </remarks>
     public sealed class MqttBrokerCredentials
     {
         public string Endpoint { get; }
@@ -113,6 +121,14 @@ namespace Thalovant
     /// <c>default_port</c>, <c>default_master</c>, and optional <c>mqtt</c> credentials
     /// per the API clients schema).
     /// </summary>
+    /// <remarks>
+    /// Intentionally a plain <c>sealed class</c> with no <c>ToString()</c> override
+    /// so its human-readable form is the default type name and never renders the
+    /// <c>AccessKey</c>/<c>Password</c>/<c>CryptoKey</c> secrets. Do not convert it
+    /// to a <c>record</c>: the synthesized <c>ToString()</c> would print every
+    /// property and leak them. <see cref="ToJsonObject(bool)"/> is the only path
+    /// that emits secrets, and only when <c>includeSecrets</c> is set.
+    /// </remarks>
     public sealed class ThalovantIdentity
     {
         public string AccessKey { get; }
@@ -228,6 +244,13 @@ namespace Thalovant
                         $"Identity file is too permissive: {path}. Run `chmod 600 {path}`.");
                 }
             }
+#else
+            // netstandard2.1 (Unity) intentionally performs no permission check:
+            // there is no portable file-mode API before net7.0's
+            // File.GetUnixFileMode, and P/Invoking stat would be unsafe across the
+            // platforms this target ships to (Windows, consoles, iOS/Android). The
+            // caller is still responsible for `chmod 600 <path>` on POSIX hosts;
+            // this is documented on FromFile so it cannot be mistaken for a check.
 #endif
         }
 
@@ -285,7 +308,14 @@ namespace Thalovant
             }
             if (Metadata.Count > 0)
             {
-                data["metadata"] = JsonUtil.CloneObject(Metadata);
+                var metadata = JsonUtil.CloneObject(Metadata);
+                if (!includeSecrets)
+                {
+                    // Metadata is arbitrary pass-through: scrub any secret-named
+                    // keys and embedded URL credentials from the redacted view.
+                    JsonUtil.RedactSecretsInPlace(metadata);
+                }
+                data["metadata"] = metadata;
             }
             if (includeSecrets)
             {

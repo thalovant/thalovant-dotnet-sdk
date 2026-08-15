@@ -100,33 +100,14 @@ namespace Thalovant
         }
 
         /// <summary>
-        /// Secret subkeys carried by the passed-through <c>hub</c>/<c>client</c>
-        /// resources. The <c>client</c> from POST /v1/clients holds the
-        /// <c>initial_identify</c> credentials (<c>access_key</c>,
-        /// <c>password</c>, <c>crypto_key</c>, and the nested <c>mqtt.password</c>),
-        /// the bootstrap <c>initial_identify_token</c>, and the echoed
-        /// <c>spec</c> (<c>apiKey</c>, <c>password</c>, <c>cryptoKey</c>). Matched
-        /// case-insensitively in both snake_case and camelCase.
-        /// </summary>
-        private static readonly HashSet<string> PassthroughSecretKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "password",
-            "access_key",
-            "accessKey",
-            "crypto_key",
-            "cryptoKey",
-            "api_key",
-            "apiKey",
-            "initial_identify_token",
-        };
-
-        /// <summary>
         /// Serializes the result. Secrets are gated behind
         /// <paramref name="includeSecrets"/>: the default (<c>false</c>) form
-        /// redacts the identity <b>and</b> the secret subkeys of the
-        /// passed-through <c>hub</c>/<c>client</c> resources, so it is safe to log
-        /// or persist for display. Only <c>includeSecrets: true</c> returns the
-        /// raw credentials; never log that form.
+        /// redacts the identity <b>and</b> the secret subkeys — plus any embedded
+        /// URL credentials — of the passed-through <c>hub</c>/<c>client</c>
+        /// resources (see <see cref="JsonUtil.RedactSecretsInPlace(JsonNode)"/>),
+        /// so it is safe to log or persist for display. Only
+        /// <c>includeSecrets: true</c> returns the raw credentials; never log that
+        /// form.
         /// </summary>
         public JsonObject ToJsonObject(bool includeSecrets = false)
         {
@@ -136,8 +117,8 @@ namespace Thalovant
             {
                 // Redaction affects only this display/serialization copy; the raw
                 // Hub/Client properties and the includeSecrets path are untouched.
-                RedactPassthroughSecrets(hub);
-                RedactPassthroughSecrets(client);
+                JsonUtil.RedactSecretsInPlace(hub);
+                JsonUtil.RedactSecretsInPlace(client);
             }
             var data = new JsonObject
             {
@@ -151,41 +132,6 @@ namespace Thalovant
                 data["selectedEndpoint"] = Endpoint.Endpoint;
             }
             return data;
-        }
-
-        /// <summary>
-        /// Removes <see cref="PassthroughSecretKeys"/> anywhere in a cloned
-        /// passthrough resource, mirroring how the identity omits its own secrets
-        /// in the redacted view.
-        /// </summary>
-        private static void RedactPassthroughSecrets(JsonNode? node)
-        {
-            if (node is JsonObject obj)
-            {
-                var names = new List<string>();
-                foreach (var pair in obj)
-                {
-                    names.Add(pair.Key);
-                }
-                foreach (var name in names)
-                {
-                    if (PassthroughSecretKeys.Contains(name))
-                    {
-                        obj.Remove(name);
-                    }
-                    else
-                    {
-                        RedactPassthroughSecrets(obj[name]);
-                    }
-                }
-            }
-            else if (node is JsonArray array)
-            {
-                foreach (var item in array)
-                {
-                    RedactPassthroughSecrets(item);
-                }
-            }
         }
     }
 
@@ -1283,11 +1229,13 @@ namespace Thalovant
 
         /// <summary>
         /// Builds the message for a failed control-plane request: the HTTP status
-        /// plus a short, single-line summary of the server response. The raw body
-        /// is never interpolated verbatim because it can echo back secrets the
-        /// request sent (for example the POST /v1/clients <c>apiKey</c>,
-        /// <c>password</c>, and <c>cryptoKey</c> reflected in a validation error).
-        /// The full body stays available on <see cref="ThalovantApiException.Body"/>.
+        /// plus, only when present, a known human-readable field of a JSON error
+        /// envelope. Arbitrary response-body text is never echoed — so a 4xx that
+        /// reflects the request (for example a validation error carrying the
+        /// POST /v1/clients <c>apiKey</c>, <c>password</c>, or <c>cryptoKey</c> the
+        /// SDK generated) cannot launder those secrets into the message. The full
+        /// body stays available on <see cref="ThalovantApiException.Body"/> and
+        /// still feeds <see cref="ThalovantApiException.ErrorCode"/>.
         /// </summary>
         internal static string FormatRequestFailed(int statusCode, string? body)
         {
@@ -1297,11 +1245,21 @@ namespace Thalovant
                 : $"Thalovant API request failed with HTTP {statusCode}: {detail}";
         }
 
+        private static readonly string[] KnownDetailFields =
+        {
+            "message", "error_description", "error", "title", "code",
+        };
+
         /// <summary>
-        /// Collapses a response body to a single bounded line: runs of whitespace
-        /// and control characters become one space and the result is capped at
-        /// <see cref="MaxServerDetailLength"/> characters, with no leading or
-        /// trailing space. Returns an empty string for a blank body.
+        /// Extracts a short, safe server detail for an exception message: the first
+        /// known scalar field of a JSON error envelope (<c>detail</c> string,
+        /// <c>detail.message</c>/<c>detail.code</c>, then <c>message</c>,
+        /// <c>error_description</c>, <c>error</c>, <c>title</c>, <c>code</c>),
+        /// whitespace-collapsed and capped at <see cref="MaxServerDetailLength"/>.
+        /// A <c>detail</c> that is an array or any other object (FastAPI validation
+        /// errors echo the offending input there) is skipped, and a body that is
+        /// not a JSON object — or carries no known field — yields an empty string,
+        /// so no raw or reflected body text ever reaches the message.
         /// </summary>
         internal static string SummarizeServerDetail(string? body)
         {
@@ -1309,9 +1267,82 @@ namespace Thalovant
             {
                 return "";
             }
-            var builder = new StringBuilder(MaxServerDetailLength);
+            var detail = ExtractKnownDetail(body!);
+            return detail is null ? "" : CollapseWhitespace(detail, MaxServerDetailLength);
+        }
+
+        private static string? ExtractKnownDetail(string body)
+        {
+            JsonObject envelope;
+            try
+            {
+                envelope = JsonUtil.ParseObject(body);
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+
+            // `detail` is the primary FastAPI error field. Its shape varies:
+            var detail = envelope["detail"];
+
+            // A plain string is a safe server message.
+            if (JsonUtil.GetString(detail) is string detailText && detailText.Trim().Length > 0)
+            {
+                return detailText;
+            }
+
+            // An array is a FastAPI 422 validation error: each entry's `input`
+            // echoes the SUBMITTED request (including the apiKey/password/cryptoKey
+            // the SDK generated), so surface ONLY each entry's `msg` string and
+            // never `input`/`loc` or a stringified entry.
+            if (detail is JsonArray detailArray)
+            {
+                var messages = new List<string>();
+                foreach (var entry in detailArray)
+                {
+                    if (entry is JsonObject entryObject
+                        && JsonUtil.GetString(entryObject["msg"]) is string msg
+                        && msg.Trim().Length > 0)
+                    {
+                        messages.Add(msg.Trim());
+                    }
+                }
+                return messages.Count == 0 ? null : string.Join("; ", messages);
+            }
+
+            // An object: surface only its known scalar message/code.
+            if (detail is JsonObject detailObject
+                && FirstKnownField(detailObject, "message", "code") is string nested)
+            {
+                return nested;
+            }
+
+            return FirstKnownField(envelope, KnownDetailFields);
+        }
+
+        private static string? FirstKnownField(JsonObject source, params string[] keys)
+        {
+            foreach (var key in keys)
+            {
+                if (JsonUtil.GetString(source[key]) is string value && value.Trim().Length > 0)
+                {
+                    return value;
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Collapses runs of whitespace and control characters to a single space
+        /// and caps the result at <paramref name="maxLength"/> characters, with no
+        /// leading or trailing space.
+        /// </summary>
+        private static string CollapseWhitespace(string text, int maxLength)
+        {
+            var builder = new StringBuilder(Math.Min(text.Length, maxLength));
             var pendingSpace = false;
-            foreach (var character in body!)
+            foreach (var character in text)
             {
                 if (char.IsControl(character) || char.IsWhiteSpace(character))
                 {
@@ -1319,7 +1350,7 @@ namespace Thalovant
                     continue;
                 }
                 var needed = (pendingSpace ? 1 : 0) + 1;
-                if (builder.Length + needed > MaxServerDetailLength)
+                if (builder.Length + needed > maxLength)
                 {
                     break;
                 }

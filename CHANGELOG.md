@@ -3,18 +3,26 @@
 ## Unreleased
 
 - **Security (F1):** `BootstrapIdentityResult.ToJsonObject()` now redacts the
-  secret subkeys of the passed-through `hub`/`client` resources in its default
+  secrets of the passed-through `hub`/`client` resources in its default
   (non-secrets) form, the same way the identity is already redacted. Previously
   the default form returned the raw `client` from `POST /v1/clients`, leaking
   the `initial_identify` credentials (`access_key`, `password`, `crypto_key`,
-  `mqtt.password`), the `initial_identify_token`, and the echoed `spec`
-  (`apiKey`, `password`, `cryptoKey`). The `includeSecrets: true` path is
-  unchanged and still returns the raw credentials.
+  `mqtt.password`, and the broker `username`/`broker_username`, which can equal
+  the access key), the `initial_identify_token`, the echoed `spec` (`apiKey`,
+  `password`, `cryptoKey`), any secret-named keys in arbitrary `metadata`, and
+  `user:pass@` credentials embedded in endpoint URLs. Identity `metadata` is
+  scrubbed the same way. The `includeSecrets: true` path is unchanged and still
+  returns the raw credentials.
 - **Security (F9):** `ThalovantApiException` messages for failed control-plane
   requests (including `auth/token`, `auth/device/token`, and `POST /v1/clients`)
-  now carry only the HTTP status and a short, single-line, length-bounded server
-  detail instead of the raw response body, which can echo back secrets the
-  request sent. The full body stays available on `ThalovantApiException.Body`.
+  now carry only the HTTP status plus, when present, a known human-readable field
+  of a JSON error envelope (`detail` string, `detail.message`/`code`, the `msg`
+  strings of a FastAPI validation-error array, or `message`/`error`/`title`/
+  `code`) — never arbitrary or reflected response-body text. A 4xx that echoes
+  the request (for example a 422 whose `input` reflects the `apiKey`/`password`/
+  `cryptoKey` the SDK generated) can no longer launder those secrets into the
+  message. The full body stays on `ThalovantApiException.Body` and still feeds
+  `ErrorCode`.
 - **BREAKING:** removed the admin analytics surface. `AnalyticsOverviewOptions`
   no longer exposes `Admin` or `OwnerId`, and `AnalyticsOverviewAsync` no longer
   calls `GET /v1/admin/analytics/overview` — it always uses the workspace

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -168,6 +169,109 @@ namespace Thalovant
                 default:
                     return false;
             }
+        }
+
+        /// <summary>
+        /// Field names whose values are secrets and must be dropped from the
+        /// redacted (non-includeSecrets) serialization of passed-through resources
+        /// and identity metadata. Covers the client-identify credentials, the
+        /// bootstrap token, and the MQTT broker username/password — the broker
+        /// username can equal the access key, so it is redacted too. Matched
+        /// case-insensitively, so only the snake_case/camelCase spellings are
+        /// listed.
+        /// </summary>
+        internal static readonly HashSet<string> SecretFieldNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "password",
+            "access_key",
+            "accessKey",
+            "crypto_key",
+            "cryptoKey",
+            "api_key",
+            "apiKey",
+            "initial_identify_token",
+            "username",
+            "broker_username",
+            "brokerUsername",
+            "broker_password",
+            "brokerPassword",
+        };
+
+        /// <summary>
+        /// Recursively redacts secrets from a mutable node in place: removes every
+        /// property whose name is in <see cref="SecretFieldNames"/> (at any depth,
+        /// covering arbitrary metadata pass-through) and strips embedded
+        /// <c>user:pass@</c> credentials from every URL string value. Intended only
+        /// for clones used in the redacted display form — never on the
+        /// wire/persistence or includeSecrets path.
+        /// </summary>
+        internal static void RedactSecretsInPlace(JsonNode? node)
+        {
+            switch (node)
+            {
+                case JsonObject obj:
+                    var names = new List<string>(obj.Count);
+                    foreach (var pair in obj)
+                    {
+                        names.Add(pair.Key);
+                    }
+                    foreach (var name in names)
+                    {
+                        if (SecretFieldNames.Contains(name))
+                        {
+                            obj.Remove(name);
+                            continue;
+                        }
+                        var child = obj[name];
+                        if (child is JsonValue)
+                        {
+                            var replacement = RedactUserInfo(child);
+                            if (replacement is not null)
+                            {
+                                obj[name] = replacement;
+                            }
+                        }
+                        else
+                        {
+                            RedactSecretsInPlace(child);
+                        }
+                    }
+                    break;
+                case JsonArray array:
+                    for (var index = 0; index < array.Count; index++)
+                    {
+                        var item = array[index];
+                        if (item is JsonValue)
+                        {
+                            var replacement = RedactUserInfo(item);
+                            if (replacement is not null)
+                            {
+                                array[index] = replacement;
+                            }
+                        }
+                        else
+                        {
+                            RedactSecretsInPlace(item);
+                        }
+                    }
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// Returns a replacement node with URL user-info credentials stripped, or
+        /// null when the value is not a credential-bearing URL and should be left
+        /// as-is.
+        /// </summary>
+        private static JsonNode? RedactUserInfo(JsonNode? value)
+        {
+            var text = GetString(value);
+            if (text is null)
+            {
+                return null;
+            }
+            var stripped = HubEndpoints.RedactedCredentials(text);
+            return string.Equals(stripped, text, StringComparison.Ordinal) ? null : JsonValue.Create(stripped);
         }
     }
 }

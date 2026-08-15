@@ -308,7 +308,14 @@ namespace Thalovant
             }
             if (Metadata.Count > 0)
             {
-                data["metadata"] = JsonUtil.CloneObject(Metadata);
+                var metadata = JsonUtil.CloneObject(Metadata);
+                if (!includeSecrets)
+                {
+                    // Metadata is arbitrary pass-through: scrub any secret-named
+                    // keys and embedded URL credentials from the redacted view.
+                    JsonUtil.RedactSecretsInPlace(metadata);
+                }
+                data["metadata"] = metadata;
             }
             if (includeSecrets)
             {

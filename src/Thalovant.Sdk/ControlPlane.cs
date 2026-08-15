@@ -32,15 +32,13 @@ namespace Thalovant
     }
 
     /// <summary>
-    /// Filters for <c>GET /v1/analytics/overview</c> (and, with <see cref="Admin"/>,
-    /// <c>GET /v1/admin/analytics/overview</c>). <see cref="OwnerId"/> is admin-only.
+    /// Filters for <c>GET /v1/analytics/overview</c>, the workspace analytics
+    /// rollup any authenticated caller can read.
     /// </summary>
     public sealed class AnalyticsOverviewOptions
     {
-        public bool Admin { get; set; }
         public string? Range { get; set; }
         public string? Bucket { get; set; }
-        public string? OwnerId { get; set; }
         public string? HubId { get; set; }
         public string? ClientId { get; set; }
         public string? Country { get; set; }
@@ -74,6 +72,16 @@ namespace Thalovant
     /// Result of <see cref="ThalovantControlPlane.CreateClientIdentityAsync(string, CreateClientIdentityOptions, CancellationToken)"/>:
     /// the provisioned identity plus the hub and client resources it was derived from.
     /// </summary>
+    /// <remarks>
+    /// Intentionally a plain <c>sealed class</c> with no <c>ToString()</c> override:
+    /// it holds secret-bearing data (the identity credentials plus the raw
+    /// <c>client</c> resource with the POST /v1/clients secrets), so its
+    /// human-readable form must stay the default type name and never render its
+    /// members. Do not convert it to a <c>record</c> — the synthesized
+    /// <c>ToString()</c> would print <see cref="Hub"/>/<see cref="Client"/>
+    /// (whose <c>JsonObject.ToString()</c> emits the raw JSON) and leak those
+    /// secrets.
+    /// </remarks>
     public sealed class BootstrapIdentityResult
     {
         public ThalovantIdentity Identity { get; }
@@ -91,13 +99,51 @@ namespace Thalovant
             Endpoint = endpoint;
         }
 
+        /// <summary>
+        /// Secret subkeys carried by the passed-through <c>hub</c>/<c>client</c>
+        /// resources. The <c>client</c> from POST /v1/clients holds the
+        /// <c>initial_identify</c> credentials (<c>access_key</c>,
+        /// <c>password</c>, <c>crypto_key</c>, and the nested <c>mqtt.password</c>),
+        /// the bootstrap <c>initial_identify_token</c>, and the echoed
+        /// <c>spec</c> (<c>apiKey</c>, <c>password</c>, <c>cryptoKey</c>). Matched
+        /// case-insensitively in both snake_case and camelCase.
+        /// </summary>
+        private static readonly HashSet<string> PassthroughSecretKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "password",
+            "access_key",
+            "accessKey",
+            "crypto_key",
+            "cryptoKey",
+            "api_key",
+            "apiKey",
+            "initial_identify_token",
+        };
+
+        /// <summary>
+        /// Serializes the result. Secrets are gated behind
+        /// <paramref name="includeSecrets"/>: the default (<c>false</c>) form
+        /// redacts the identity <b>and</b> the secret subkeys of the
+        /// passed-through <c>hub</c>/<c>client</c> resources, so it is safe to log
+        /// or persist for display. Only <c>includeSecrets: true</c> returns the
+        /// raw credentials; never log that form.
+        /// </summary>
         public JsonObject ToJsonObject(bool includeSecrets = false)
         {
+            var hub = JsonUtil.CloneObject(Hub);
+            var client = JsonUtil.CloneObject(Client);
+            if (!includeSecrets)
+            {
+                // Redaction affects only this display/serialization copy; the raw
+                // Hub/Client properties and the includeSecrets path are untouched.
+                RedactPassthroughSecrets(hub);
+                RedactPassthroughSecrets(client);
+            }
             var data = new JsonObject
             {
                 ["identity"] = Identity.ToJsonObject(includeSecrets),
-                ["hub"] = JsonUtil.CloneObject(Hub),
-                ["client"] = JsonUtil.CloneObject(Client),
+                ["hub"] = hub,
+                ["client"] = client,
             };
             if (Endpoint is not null)
             {
@@ -105,6 +151,41 @@ namespace Thalovant
                 data["selectedEndpoint"] = Endpoint.Endpoint;
             }
             return data;
+        }
+
+        /// <summary>
+        /// Removes <see cref="PassthroughSecretKeys"/> anywhere in a cloned
+        /// passthrough resource, mirroring how the identity omits its own secrets
+        /// in the redacted view.
+        /// </summary>
+        private static void RedactPassthroughSecrets(JsonNode? node)
+        {
+            if (node is JsonObject obj)
+            {
+                var names = new List<string>();
+                foreach (var pair in obj)
+                {
+                    names.Add(pair.Key);
+                }
+                foreach (var name in names)
+                {
+                    if (PassthroughSecretKeys.Contains(name))
+                    {
+                        obj.Remove(name);
+                    }
+                    else
+                    {
+                        RedactPassthroughSecrets(obj[name]);
+                    }
+                }
+            }
+            else if (node is JsonArray array)
+            {
+                foreach (var item in array)
+                {
+                    RedactPassthroughSecrets(item);
+                }
+            }
         }
     }
 
@@ -350,7 +431,7 @@ namespace Thalovant
                             + "Call LoginWithBrowserAsync() again to request a new code.");
                     default:
                         throw new ThalovantApiException(
-                            $"Thalovant API request failed with HTTP {statusCode}: {text}",
+                            FormatRequestFailed(statusCode, text),
                             statusCode,
                             text);
                 }
@@ -938,14 +1019,9 @@ namespace Thalovant
         public Task<JsonObject> AnalyticsOverviewAsync(AnalyticsOverviewOptions? options = null, CancellationToken cancellationToken = default)
         {
             options ??= new AnalyticsOverviewOptions();
-            var endpoint = options.Admin ? "/v1/admin/analytics/overview" : "/v1/analytics/overview";
             var parameters = new List<(string, string)>();
             AppendParameter(parameters, "range", options.Range);
             AppendParameter(parameters, "bucket", options.Bucket);
-            if (options.Admin)
-            {
-                AppendParameter(parameters, "owner_id", options.OwnerId);
-            }
             AppendParameter(parameters, "hub_id", options.HubId);
             AppendParameter(parameters, "client_id", options.ClientId);
             AppendParameter(parameters, "country", options.Country);
@@ -962,7 +1038,7 @@ namespace Thalovant
             {
                 parameters.Add(("hour", hour.ToString(CultureInfo.InvariantCulture)));
             }
-            return RequestObjectAsync("GET", PathWithQuery(endpoint, parameters), cancellationToken: cancellationToken);
+            return RequestObjectAsync("GET", PathWithQuery("/v1/analytics/overview", parameters), cancellationToken: cancellationToken);
         }
 
         // -- Clients ---------------------------------------------------------
@@ -1151,7 +1227,7 @@ namespace Thalovant
             if (statusCode < 200 || statusCode >= 300)
             {
                 throw new ThalovantApiException(
-                    $"Thalovant API request failed with HTTP {statusCode}: {text}",
+                    FormatRequestFailed(statusCode, text),
                     statusCode,
                     text);
             }
@@ -1201,6 +1277,61 @@ namespace Thalovant
         }
 
         // -- Helpers ---------------------------------------------------------
+
+        /// <summary>Maximum length of the server detail echoed into an exception message.</summary>
+        internal const int MaxServerDetailLength = 200;
+
+        /// <summary>
+        /// Builds the message for a failed control-plane request: the HTTP status
+        /// plus a short, single-line summary of the server response. The raw body
+        /// is never interpolated verbatim because it can echo back secrets the
+        /// request sent (for example the POST /v1/clients <c>apiKey</c>,
+        /// <c>password</c>, and <c>cryptoKey</c> reflected in a validation error).
+        /// The full body stays available on <see cref="ThalovantApiException.Body"/>.
+        /// </summary>
+        internal static string FormatRequestFailed(int statusCode, string? body)
+        {
+            var detail = SummarizeServerDetail(body);
+            return detail.Length == 0
+                ? $"Thalovant API request failed with HTTP {statusCode}."
+                : $"Thalovant API request failed with HTTP {statusCode}: {detail}";
+        }
+
+        /// <summary>
+        /// Collapses a response body to a single bounded line: runs of whitespace
+        /// and control characters become one space and the result is capped at
+        /// <see cref="MaxServerDetailLength"/> characters, with no leading or
+        /// trailing space. Returns an empty string for a blank body.
+        /// </summary>
+        internal static string SummarizeServerDetail(string? body)
+        {
+            if (string.IsNullOrWhiteSpace(body))
+            {
+                return "";
+            }
+            var builder = new StringBuilder(MaxServerDetailLength);
+            var pendingSpace = false;
+            foreach (var character in body!)
+            {
+                if (char.IsControl(character) || char.IsWhiteSpace(character))
+                {
+                    pendingSpace = builder.Length > 0;
+                    continue;
+                }
+                var needed = (pendingSpace ? 1 : 0) + 1;
+                if (builder.Length + needed > MaxServerDetailLength)
+                {
+                    break;
+                }
+                if (pendingSpace)
+                {
+                    builder.Append(' ');
+                    pendingSpace = false;
+                }
+                builder.Append(character);
+            }
+            return builder.ToString();
+        }
 
         internal static string PathWithQuery(string path, List<(string Name, string Value)> parameters)
         {

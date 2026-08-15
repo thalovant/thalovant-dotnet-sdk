@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+- **Security (F1):** `BootstrapIdentityResult.ToJsonObject()` now redacts the
+  secret subkeys of the passed-through `hub`/`client` resources in its default
+  (non-secrets) form, the same way the identity is already redacted. Previously
+  the default form returned the raw `client` from `POST /v1/clients`, leaking
+  the `initial_identify` credentials (`access_key`, `password`, `crypto_key`,
+  `mqtt.password`), the `initial_identify_token`, and the echoed `spec`
+  (`apiKey`, `password`, `cryptoKey`). The `includeSecrets: true` path is
+  unchanged and still returns the raw credentials.
+- **Security (F9):** `ThalovantApiException` messages for failed control-plane
+  requests (including `auth/token`, `auth/device/token`, and `POST /v1/clients`)
+  now carry only the HTTP status and a short, single-line, length-bounded server
+  detail instead of the raw response body, which can echo back secrets the
+  request sent. The full body stays available on `ThalovantApiException.Body`.
+- **BREAKING:** removed the admin analytics surface. `AnalyticsOverviewOptions`
+  no longer exposes `Admin` or `OwnerId`, and `AnalyticsOverviewAsync` no longer
+  calls `GET /v1/admin/analytics/overview` — it always uses the workspace
+  `GET /v1/analytics/overview`. Code that set `Admin`/`OwnerId` will no longer
+  compile.
+- The secret-bearing types (`ThalovantIdentity`, `MqttBrokerCredentials`,
+  `BootstrapIdentityResult`) are documented and tested as plain `sealed` classes
+  with no `ToString()` override, pinning that behavior so a future refactor to
+  `record` (whose synthesized `ToString()` would leak secrets) fails the tests.
+- Docs: clarified that `BootstrapIdentityResult.ToJsonObject()` (default) is the
+  redacted, safe-to-log form while only `includeSecrets: true` returns
+  credentials, and made the netstandard2.1 identity-file permission-check skip
+  explicit in source (no portable file-mode API before net7.0).
+
 ## 0.1.5
 
 - Hub provisioning on `ThalovantControlPlane`: `CreateHubAsync`,

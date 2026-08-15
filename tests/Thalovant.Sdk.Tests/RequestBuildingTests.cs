@@ -287,14 +287,13 @@ namespace Thalovant.Sdk.Tests
         }
 
         [Fact]
-        public async Task AnalyticsOverviewWorkspaceIgnoresOwnerId()
+        public async Task AnalyticsOverviewBuildsWorkspaceQuery()
         {
             _api.AccessToken = "token";
             await _api.AnalyticsOverviewAsync(new AnalyticsOverviewOptions
             {
                 Range = "7d",
                 Bucket = "1h",
-                OwnerId = "owner-1",
                 HubId = "hub-1",
                 ClientId = "client-1",
                 Country = "CA",
@@ -308,27 +307,14 @@ namespace Thalovant.Sdk.Tests
             });
             var request = LastRequest();
             Assert.StartsWith("https://api.example.com/v1/analytics/overview?", request.Url.AbsoluteUri, StringComparison.Ordinal);
+            // The admin flag and its owner_id are gone: this route is workspace-only.
             Assert.DoesNotContain("owner_id", request.Url.Query, StringComparison.Ordinal);
+            Assert.DoesNotContain("/admin/", request.Url.AbsoluteUri, StringComparison.Ordinal);
             Assert.Equal(
                 "https://api.example.com/v1/analytics/overview"
                     + "?range=7d&bucket=1h&hub_id=hub-1&client_id=client-1&country=CA&message=msg&utterance=utt"
                     + "&intent=intent-1&time_start=2026-08-01T00%3A00%3A00Z&time_end=2026-08-08T00%3A00%3A00Z&weekday=2&hour=13",
                 request.Url.AbsoluteUri);
-        }
-
-        [Fact]
-        public async Task AnalyticsOverviewAdminSwitchesEndpointAndSendsOwnerId()
-        {
-            _api.AccessToken = "token";
-            await _api.AnalyticsOverviewAsync(new AnalyticsOverviewOptions
-            {
-                Admin = true,
-                Range = "24h",
-                OwnerId = "owner-1",
-            });
-            Assert.Equal(
-                "https://api.example.com/v1/admin/analytics/overview?range=24h&owner_id=owner-1",
-                LastRequest().Url.AbsoluteUri);
         }
 
         [Fact]

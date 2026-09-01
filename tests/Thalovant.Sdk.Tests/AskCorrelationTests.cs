@@ -133,6 +133,18 @@ namespace Thalovant.Sdk.Tests
         }
 
         [Fact]
+        public void IntentUnmatchedAndLegacyIntentFailureAreBothFailures()
+        {
+            // OVOS renamed the "no intent matched" bus event from the legacy
+            // Mycroft "complete_intent_failure" to "ovos.intent.unmatched".
+            // Both names must classify as a failure (issue #22).
+            Assert.True(new ThalovantEvent("ovos.intent.unmatched").IsFailure);
+            Assert.True(new ThalovantEvent(ThalovantEvents.IntentUnmatched).IsFailure);
+            Assert.True(new ThalovantEvent("complete_intent_failure").IsFailure);
+            Assert.True(new ThalovantEvent(ThalovantEvents.IntentFailure).IsFailure);
+        }
+
+        [Fact]
         public void ClientRejectsNonWssProtocols()
         {
             var identity = new ThalovantIdentity((JsonObject)JsonNode.Parse(Fixtures.ClientIdentify)!);

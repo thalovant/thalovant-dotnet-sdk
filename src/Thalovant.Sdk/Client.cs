@@ -397,12 +397,12 @@ namespace Thalovant
                     }
                     ProgressGate.Open();
                     break;
+                // An utterance matching no intent is terminal: fail fast rather
+                // than waiting out the timeout, matching the sibling SDKs.
+                // IntentFailure is the legacy Mycroft name; IntentUnmatched is
+                // the current OVOS name (see issue #22).
                 case ThalovantEvents.IntentFailure:
-                    lock (_lock)
-                    {
-                        _events.Add(busEvent);
-                    }
-                    break;
+                case ThalovantEvents.IntentUnmatched:
                 case ThalovantEvents.PolicyDenied:
                 case ThalovantEvents.QueryTimeout:
                     lock (_lock)

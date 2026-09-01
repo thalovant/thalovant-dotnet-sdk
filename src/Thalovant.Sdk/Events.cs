@@ -12,13 +12,17 @@ namespace Thalovant
         public const string Speak = "speak";
         public const string OvosUtteranceSpeak = "ovos.utterance.speak";
         public const string UtteranceHandled = "ovos.utterance.handled";
+        // Legacy Mycroft name for an utterance that matched no intent.
         public const string IntentFailure = "complete_intent_failure";
+        // Current OVOS name; OVOS renamed the bus event from the Mycroft one above.
+        public const string IntentUnmatched = "ovos.intent.unmatched";
         public const string PolicyDenied = "hive.policy.denied";
         public const string QueryTimeout = "hive.query.timeout";
 
         internal static readonly HashSet<string> FailureEventSet = new HashSet<string>
         {
             IntentFailure,
+            IntentUnmatched,
             PolicyDenied,
             QueryTimeout,
         };

@@ -71,20 +71,26 @@ namespace Thalovant.Sdk.Tests
             Assert.True(state.ProgressGate.IsOpen);
         }
 
-        [Fact]
-        public void IntentFailureIsRecordedButDoesNotFailOrOpenGates()
+        [Theory]
+        // Legacy Mycroft name and current OVOS name for "no intent matched".
+        [InlineData("complete_intent_failure")]
+        [InlineData("ovos.intent.unmatched")]
+        public void IntentFailureAndUnmatchedFailFastAndOpenGates(string eventName)
         {
+            // An utterance matching no intent is terminal (issue #22): the ask
+            // must complete promptly with the failure event set and the progress
+            // gate opened, rather than waiting out its timeout.
             var state = new AskState();
             var failure = new ThalovantEvent(
-                ThalovantEvents.IntentFailure,
+                eventName,
                 new JsonObject(),
                 ThalovantContext.WithCorrelation(null, requestId: "r-1"));
             state.Process(failure, "r-1");
             var snapshot = state.Snapshot();
             Assert.Single(snapshot.Events);
-            Assert.Null(snapshot.FailureEvent);
-            Assert.False(snapshot.Handled);
-            Assert.False(state.ProgressGate.IsOpen);
+            Assert.Equal(eventName, snapshot.FailureEvent?.Name);
+            Assert.True(snapshot.Handled);
+            Assert.True(state.ProgressGate.IsOpen);
         }
 
         [Fact]
@@ -130,6 +136,18 @@ namespace Thalovant.Sdk.Tests
             Assert.Equal(new[] { "<speak>Hello</speak>" }, busEvent.Utterances);
             Assert.True(new ThalovantEvent(ThalovantEvents.IntentFailure).IsFailure);
             Assert.False(new ThalovantEvent("speak").IsFailure);
+        }
+
+        [Fact]
+        public void IntentUnmatchedAndLegacyIntentFailureAreBothFailures()
+        {
+            // OVOS renamed the "no intent matched" bus event from the legacy
+            // Mycroft "complete_intent_failure" to "ovos.intent.unmatched".
+            // Both names must classify as a failure (issue #22).
+            Assert.True(new ThalovantEvent("ovos.intent.unmatched").IsFailure);
+            Assert.True(new ThalovantEvent(ThalovantEvents.IntentUnmatched).IsFailure);
+            Assert.True(new ThalovantEvent("complete_intent_failure").IsFailure);
+            Assert.True(new ThalovantEvent(ThalovantEvents.IntentFailure).IsFailure);
         }
 
         [Fact]

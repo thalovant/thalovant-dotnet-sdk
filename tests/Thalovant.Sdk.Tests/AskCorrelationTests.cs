@@ -71,20 +71,26 @@ namespace Thalovant.Sdk.Tests
             Assert.True(state.ProgressGate.IsOpen);
         }
 
-        [Fact]
-        public void IntentFailureIsRecordedButDoesNotFailOrOpenGates()
+        [Theory]
+        // Legacy Mycroft name and current OVOS name for "no intent matched".
+        [InlineData("complete_intent_failure")]
+        [InlineData("ovos.intent.unmatched")]
+        public void IntentFailureAndUnmatchedFailFastAndOpenGates(string eventName)
         {
+            // An utterance matching no intent is terminal (issue #22): the ask
+            // must complete promptly with the failure event set and the progress
+            // gate opened, rather than waiting out its timeout.
             var state = new AskState();
             var failure = new ThalovantEvent(
-                ThalovantEvents.IntentFailure,
+                eventName,
                 new JsonObject(),
                 ThalovantContext.WithCorrelation(null, requestId: "r-1"));
             state.Process(failure, "r-1");
             var snapshot = state.Snapshot();
             Assert.Single(snapshot.Events);
-            Assert.Null(snapshot.FailureEvent);
-            Assert.False(snapshot.Handled);
-            Assert.False(state.ProgressGate.IsOpen);
+            Assert.Equal(eventName, snapshot.FailureEvent?.Name);
+            Assert.True(snapshot.Handled);
+            Assert.True(state.ProgressGate.IsOpen);
         }
 
         [Fact]

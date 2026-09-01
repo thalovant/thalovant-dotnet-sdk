@@ -268,12 +268,15 @@ namespace Thalovant
                 }
 
                 var final = state.Snapshot();
-                if (final.FailureEvent is null && final.Fragments.Count == 0)
+                // A soft intent-miss becomes the surfaced failure only if no reply
+                // (not even a fallback) arrived; a reply means a fallback recovered.
+                var effectiveFailure = final.FailureEvent ?? (final.Fragments.Count == 0 ? final.SoftFailureEvent : null);
+                if (effectiveFailure is null && final.Fragments.Count == 0)
                 {
                     throw new ThalovantTimeoutException(
                         $"Hub handled the utterance but did not emit a speak reply within {(int)effectiveEmptyReplyWait.TotalMilliseconds}ms.");
                 }
-                if (final.FailureEvent is ThalovantEvent failure && final.Fragments.Count == 0)
+                if (effectiveFailure is ThalovantEvent failure && final.Fragments.Count == 0)
                 {
                     var message = failure.Text.Length == 0 ? $"Hub reported {failure.Name}." : failure.Text;
                     throw new ThalovantRuntimeException(message);
@@ -283,12 +286,12 @@ namespace Thalovant
                     replyText,
                     ThalovantContext.StripSsml(replyText),
                     final.Fragments,
-                    handled: final.FailureEvent is null,
-                    ok: final.FailureEvent is null,
+                    handled: effectiveFailure is null,
+                    ok: effectiveFailure is null,
                     sessionId: effectiveSessionId,
                     requestId: effectiveRequestId,
                     events: final.Events,
-                    failureEvent: final.FailureEvent);
+                    failureEvent: effectiveFailure);
             }
             finally
             {
@@ -324,13 +327,15 @@ namespace Thalovant
             internal IReadOnlyList<string> Fragments { get; }
             internal IReadOnlyList<ThalovantEvent> Events { get; }
             internal ThalovantEvent? FailureEvent { get; }
+            internal ThalovantEvent? SoftFailureEvent { get; }
             internal bool Handled { get; }
 
-            internal StateSnapshot(IReadOnlyList<string> fragments, IReadOnlyList<ThalovantEvent> events, ThalovantEvent? failureEvent, bool handled)
+            internal StateSnapshot(IReadOnlyList<string> fragments, IReadOnlyList<ThalovantEvent> events, ThalovantEvent? failureEvent, ThalovantEvent? softFailureEvent, bool handled)
             {
                 Fragments = fragments;
                 Events = events;
                 FailureEvent = failureEvent;
+                SoftFailureEvent = softFailureEvent;
                 Handled = handled;
             }
         }
@@ -339,6 +344,9 @@ namespace Thalovant
         private readonly List<string> _fragments = new List<string>();
         private readonly List<ThalovantEvent> _events = new List<ThalovantEvent>();
         private ThalovantEvent? _failureEvent;
+        // An intent miss is a soft failure: it ends phase 1 but leaves _failureEvent
+        // null so the empty-reply wait still runs and a fallback reply can win.
+        private ThalovantEvent? _softFailureEvent;
         private bool _handled;
 
         /// <summary>Opens when the utterance is handled or the first fragment arrives.</summary>
@@ -351,7 +359,7 @@ namespace Thalovant
         {
             lock (_lock)
             {
-                return new StateSnapshot(_fragments.ToArray(), _events.ToArray(), _failureEvent, _handled);
+                return new StateSnapshot(_fragments.ToArray(), _events.ToArray(), _failureEvent, _softFailureEvent, _handled);
             }
         }
 
@@ -397,12 +405,21 @@ namespace Thalovant
                     }
                     ProgressGate.Open();
                     break;
-                // An utterance matching no intent is terminal: fail fast rather
-                // than waiting out the timeout, matching the sibling SDKs.
-                // IntentFailure is the legacy Mycroft name; IntentUnmatched is
-                // the current OVOS name (see issue #22).
+                // An intent miss is a SOFT failure: end phase 1 promptly, but leave
+                // _failureEvent null so the empty-reply wait still runs and a
+                // fallback reply can take over. IntentFailure is the legacy Mycroft
+                // name; IntentUnmatched is the current OVOS name (see issue #22).
                 case ThalovantEvents.IntentFailure:
                 case ThalovantEvents.IntentUnmatched:
+                    lock (_lock)
+                    {
+                        _events.Add(busEvent);
+                        _softFailureEvent = busEvent;
+                        _handled = true;
+                    }
+                    ProgressGate.Open();
+                    break;
+                // Hard failures are terminal, with no fallback wait.
                 case ThalovantEvents.PolicyDenied:
                 case ThalovantEvents.QueryTimeout:
                     lock (_lock)

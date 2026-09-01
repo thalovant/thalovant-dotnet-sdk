@@ -75,22 +75,41 @@ namespace Thalovant.Sdk.Tests
         // Legacy Mycroft name and current OVOS name for "no intent matched".
         [InlineData("complete_intent_failure")]
         [InlineData("ovos.intent.unmatched")]
-        public void IntentFailureAndUnmatchedFailFastAndOpenGates(string eventName)
+        public void IntentMissIsASoftFailure(string eventName)
         {
-            // An utterance matching no intent is terminal (issue #22): the ask
-            // must complete promptly with the failure event set and the progress
-            // gate opened, rather than waiting out its timeout.
+            // An intent miss (issue #22) is a SOFT failure: it ends phase 1
+            // (opens the progress gate) so ask() does not wait the full timeout,
+            // but must NOT set FailureEvent -- that would skip the empty-reply
+            // wait and defeat a fallback reply. It is recorded as SoftFailureEvent
+            // and only surfaced if no reply arrives.
             var state = new AskState();
-            var failure = new ThalovantEvent(
+            var miss = new ThalovantEvent(
                 eventName,
                 new JsonObject(),
                 ThalovantContext.WithCorrelation(null, requestId: "r-1"));
-            state.Process(failure, "r-1");
+            state.Process(miss, "r-1");
             var snapshot = state.Snapshot();
             Assert.Single(snapshot.Events);
-            Assert.Equal(eventName, snapshot.FailureEvent?.Name);
-            Assert.True(snapshot.Handled);
+            Assert.Equal(eventName, snapshot.SoftFailureEvent?.Name);
+            Assert.Null(snapshot.FailureEvent);
             Assert.True(state.ProgressGate.IsOpen);
+            Assert.False(state.ReplyGate.IsOpen);
+        }
+
+        [Fact]
+        public void FallbackReplyRecoversAnIntentMiss()
+        {
+            // An intent miss followed by a fallback skill's speak: the fragment
+            // wins, so the turn is not surfaced as a failure.
+            var state = new AskState();
+            var context = ThalovantContext.WithCorrelation(null, requestId: "r-1");
+            state.Process(new ThalovantEvent("ovos.intent.unmatched", new JsonObject(), context), "r-1");
+            var speak = new JsonObject { ["utterance"] = "Here is a fallback answer." };
+            state.Process(new ThalovantEvent("speak", speak, context), "r-1");
+            var snapshot = state.Snapshot();
+            Assert.Equal(new[] { "Here is a fallback answer." }, snapshot.Fragments);
+            Assert.True(state.ReplyGate.IsOpen);
+            Assert.Null(snapshot.FailureEvent);
         }
 
         [Fact]

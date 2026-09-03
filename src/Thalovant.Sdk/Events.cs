@@ -36,6 +36,29 @@ namespace Thalovant
     /// </summary>
     public sealed class ThalovantEvent
     {
+        /// <summary>True when a reply's session id is the one we asked for.</summary>
+        /// <remarks>
+        /// A hub rewrites a client-declared session id before the orchestrator
+        /// sees it: hivemind-core derives a Layer-1 identity as
+        /// "{conn_nonce}:{declared}" so two clients cannot collide on the same
+        /// declared name (HIVEMIND-BRIDGE-1 section 4), and only admin
+        /// connections are exempt. Replies can therefore carry either form, and
+        /// comparing for equality rejected every one of them: Ask() timed out
+        /// while the hub had already answered and emitted
+        /// ovos.utterance.handled. Matching the part after the first ':'
+        /// mirrors what the hub does on the way out, and is deliberately not a
+        /// bare EndsWith - a declared id of "b" must not match "a:xb".
+        /// </remarks>
+        public static bool SessionIdsMatch(string expected, string actual)
+        {
+            if (actual == expected)
+            {
+                return true;
+            }
+            var separator = actual.IndexOf(':');
+            return separator >= 0 && actual[(separator + 1)..] == expected;
+        }
+
         public string Name { get; }
         public JsonObject Data { get; }
         public JsonObject Context { get; }

@@ -138,7 +138,7 @@ namespace Thalovant
                 {
                     return;
                 }
-                if (sessionId is not null && busEvent.SessionId is string eventSession && eventSession != sessionId)
+                if (sessionId is not null && busEvent.SessionId is string eventSession && !ThalovantEvent.SessionIdsMatch(sessionId, eventSession))
                 {
                     return;
                 }

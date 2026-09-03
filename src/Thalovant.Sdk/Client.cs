@@ -138,11 +138,19 @@ namespace Thalovant
                 {
                     return;
                 }
-                if (sessionId is not null && busEvent.SessionId is string eventSession && !ThalovantEvent.SessionIdsMatch(sessionId, eventSession))
+                // The request id decides when both sides carry one: a hub does
+                // not echo a client-declared session id, it substitutes its own
+                // (observed live on 2026-09-03), so comparing session ids
+                // rejected replies the request id had already identified as
+                // ours and Ask() timed out.
+                if (requestId is not null && busEvent.RequestId is string eventRequest)
                 {
-                    return;
+                    if (eventRequest != requestId)
+                    {
+                        return;
+                    }
                 }
-                if (requestId is not null && busEvent.RequestId is string eventRequest && eventRequest != requestId)
+                else if (sessionId is not null && busEvent.SessionId is string eventSession && eventSession != sessionId)
                 {
                     return;
                 }

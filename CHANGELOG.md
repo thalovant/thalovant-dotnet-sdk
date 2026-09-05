@@ -32,6 +32,13 @@
 - A runtime that attaches each row's `definition` to `ovos.intent.list` when
   asked with `include_definitions` is used as such; one that does not is
   described row by row.
+- Send describes in batches of at most 32, each batch its own subscription
+  window, instead of putting every request in flight at once. A hub with 69
+  intents in two languages is 138 requests and, with every reply delivered
+  twice, 276 inbound events; an SDK whose reply queue is bounded drops replies
+  past its capacity and returns an inventory missing sentences. Reported by the
+  Rust port's review. The per-batch deadline also means a hub that answers
+  nothing fails after one batch rather than holding every request open.
 - The four points the ports settled with the reference (Python SDK 0.4.37):
   `HasPhrases` is true only when at least one intent carries at least one
   sentence; the languages given to `IntentsAsync` are trimmed and folded before

@@ -50,6 +50,7 @@ namespace Thalovant.Sdk.Tests
         {
             private readonly object _lock = new object();
             private readonly Dictionary<Guid, Action<JsonObject>> _handlers = new Dictionary<Guid, Action<JsonObject>>();
+            private int _window;
 
             public HashSet<string> Refuse { get; } = new HashSet<string>();
             public HashSet<string> Silent { get; } = new HashSet<string>();
@@ -62,6 +63,13 @@ namespace Thalovant.Sdk.Tests
             public bool Connected { get; private set; }
             public List<(string Type, JsonObject Data, JsonObject Context)> Emitted { get; } =
                 new List<(string Type, JsonObject Data, JsonObject Context)>();
+
+            /// <summary>
+            /// The subscription window each <c>ovos.intent.describe</c> went out in.
+            /// A window opens when a handler is registered with none live, so one
+            /// window is one <c>DescribeManyAsync</c> batch.
+            /// </summary>
+            public List<int> DescribeWindows { get; } = new List<int>();
 
             // -- transport surface -------------------------------------------
 
@@ -82,6 +90,10 @@ namespace Thalovant.Sdk.Tests
                 var id = Guid.NewGuid();
                 lock (_lock)
                 {
+                    if (_handlers.Count == 0)
+                    {
+                        _window++;
+                    }
                     _handlers[id] = handler;
                 }
                 return id;
@@ -196,6 +208,13 @@ namespace Thalovant.Sdk.Tests
             protected void Record(string type, JsonObject data, JsonObject context)
             {
                 Emitted.Add((type, (JsonObject)data.DeepClone(), (JsonObject)context.DeepClone()));
+                if (type == ThalovantEvents.IntentDescribe)
+                {
+                    lock (_lock)
+                    {
+                        DescribeWindows.Add(_window);
+                    }
+                }
             }
 
             private static JsonObject Definition(string skillId, string intentName, string lang, string[] samples)
@@ -674,6 +693,53 @@ namespace Thalovant.Sdk.Tests
             Assert.Equal("adapt", weather.Engine);
             var shadow = inventory.Intents.Single(intent => intent.Name == "custos.incidents");
             Assert.Equal("padatious", shadow.Engine);
+        }
+
+        [Fact]
+        public async Task DescribesGoOutInBoundedBatches()
+        {
+            // A hub with many intents must not put more requests in flight than a
+            // bounded reply queue can hold: 69 intents is 69 describes, and every
+            // reply arrives twice. They go out 32 at a time, each batch its own
+            // subscription window.
+            var many = Enumerable.Range(0, 69)
+                .Select(n => ("en-us", Weather, $"intent.{n:D3}", new[] { $"sentence {n}" }))
+                .ToArray();
+            var hub = new FakeHubBus { Registrations = many };
+            var inventory = await Client(hub).IntentsAsync(new[] { "en-us" });
+
+            Assert.Equal(32, HubIntentQueries.DescribeBatch);
+            Assert.Equal(69, hub.DescribeWindows.Count);
+            var sizes = hub.DescribeWindows.GroupBy(window => window).Select(group => group.Count()).ToArray();
+            Assert.Equal(new[] { 32, 32, 5 }, sizes);
+            Assert.All(sizes, size => Assert.True(size <= HubIntentQueries.DescribeBatch));
+
+            Assert.Equal(69, inventory.Intents.Count);
+            Assert.All(inventory.Intents, intent => Assert.NotEmpty(intent.PhrasesFor("en-us")));
+            Assert.Equal(new[] { "sentence 0" }, inventory.Intents[0].PhrasesFor("en-us"));
+        }
+
+        [Fact]
+        public async Task DescribeManyReturnsEveryRegistrationAcrossBatches()
+        {
+            var many = Enumerable.Range(0, 69)
+                .Select(n => ("en-us", Weather, $"intent.{n:D3}", new[] { $"sentence {n}" }))
+                .ToArray();
+            var hub = new FakeHubBus { Registrations = many };
+            var wanted = Enumerable.Range(0, 69)
+                .Select(n => new IntentKey(Weather, $"intent.{n:D3}", "en-us"))
+                .ToArray();
+            var described = await HubIntentQueries.DescribeManyAsync(
+                Client(hub), wanted, TimeSpan.FromSeconds(5), HubIntentQueries.DescribeBatch, CancellationToken.None);
+            Assert.Equal(69, described.Count);
+            Assert.Equal(3, hub.DescribeWindows.Distinct().Count());
+
+            // batch: 0 restores the old behaviour, every request in flight at once.
+            var unbounded = new FakeHubBus { Registrations = many };
+            var all = await HubIntentQueries.DescribeManyAsync(
+                Client(unbounded), wanted, TimeSpan.FromSeconds(5), 0, CancellationToken.None);
+            Assert.Equal(69, all.Count);
+            Assert.Single(unbounded.DescribeWindows.Distinct());
         }
 
         [Fact]

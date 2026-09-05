@@ -536,6 +536,17 @@ namespace Thalovant
     /// </summary>
     internal static class HubIntentQueries
     {
+        /// <summary>
+        /// How many describes may be in flight at once. A hub with 69 intents in
+        /// two languages is 138 requests and, with every reply delivered twice,
+        /// 276 inbound events; an SDK whose reply queue is bounded drops replies
+        /// past its capacity and the inventory comes back missing sentences.
+        /// Batching also spares the hub a burst it never asked for, and the
+        /// per-batch deadline means a hub that answers nothing fails after one
+        /// batch rather than holding every request open.
+        /// </summary>
+        internal const int DescribeBatch = 32;
+
         private const string MethodTemplate = "template";
         private const string MethodKeyword = "keyword";
         private const string EngineAdapt = "adapt";
@@ -731,16 +742,18 @@ namespace Thalovant
         }
 
         /// <summary>
-        /// Describes many registrations with the requests in flight together:
-        /// one subscription, one request id per registration, replies matched by
-        /// that id (or by the definition's own names when a hub does not echo the
-        /// id), repeats dropped. The deadline covers the whole batch, and a batch
-        /// the hub only partly answered in time is returned as far as it got.
+        /// Describes many registrations, at most <paramref name="batch"/> of them
+        /// in flight: one subscription per batch, one request id per registration,
+        /// replies matched by that id (or by the definition's own names when a hub
+        /// does not echo the id), repeats dropped. The deadline covers each batch,
+        /// and a batch the hub only partly answered in time is returned as far as
+        /// it got. A <paramref name="batch"/> of zero sends them all at once.
         /// </summary>
         internal static async Task<Dictionary<IntentKey, IReadOnlyList<IntentDefinition>>> DescribeManyAsync(
             ThalovantClient client,
             IEnumerable<IntentKey> requested,
             TimeSpan timeout,
+            int batch,
             CancellationToken cancellationToken)
         {
             var wanted = new List<IntentKey>();
@@ -754,6 +767,19 @@ namespace Thalovant
             var found = new Dictionary<IntentKey, IReadOnlyList<IntentDefinition>>();
             if (wanted.Count == 0)
             {
+                return found;
+            }
+            if (batch > 0 && wanted.Count > batch)
+            {
+                for (var start = 0; start < wanted.Count; start += batch)
+                {
+                    var slice = wanted.GetRange(start, Math.Min(batch, wanted.Count - start));
+                    var described = await DescribeManyAsync(client, slice, timeout, 0, cancellationToken).ConfigureAwait(false);
+                    foreach (var pair in described)
+                    {
+                        found[pair.Key] = pair.Value;
+                    }
+                }
                 return found;
             }
             var byRequest = new Dictionary<string, IntentKey>(StringComparer.Ordinal);
@@ -955,7 +981,7 @@ namespace Thalovant
                 }
             }
             var described = options.Describe && wanted.Count > 0
-                ? await DescribeManyAsync(client, wanted, options.Timeout, cancellationToken).ConfigureAwait(false)
+                ? await DescribeManyAsync(client, wanted, options.Timeout, DescribeBatch, cancellationToken).ConfigureAwait(false)
                 : new Dictionary<IntentKey, IReadOnlyList<IntentDefinition>>();
 
             var order = new List<(string SkillId, string Name)>();

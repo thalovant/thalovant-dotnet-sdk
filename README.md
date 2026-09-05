@@ -399,10 +399,12 @@ var namesOnly = await client.IntentsAsync(new[] { "en-us" }, new IntentInventory
 Queries are correlated by `context.request_id` like every other request; a
 reply delivered more than once is taken once, and a describe the hub never
 answers leaves that intent without sentences rather than failing the whole
-inventory. A reply that carries no request id is taken for the request in
-flight (a hub that echoes ids gets strict matching), so do not run two
-single-reply intent queries concurrently on one client against a hub that does
-not echo request ids.
+inventory. Describes go out in batches of at most 32, each batch its own
+subscription window, so a hub with many intents is never sent every request at
+once. A reply that carries no request id is taken for the request in flight (a
+hub that echoes ids gets strict matching), so do not run two single-reply
+intent queries concurrently on one client against a hub that does not echo
+request ids.
 
 A hub whose connection may not publish `ovos.intent.list` answers
 `hive.policy.denied` at once, which surfaces as `ThalovantPolicyDeniedException`

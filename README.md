@@ -401,7 +401,8 @@ reply delivered more than once is taken once, and a describe the hub never
 answers leaves that intent without sentences rather than failing the whole
 inventory. Describes go out in batches of at most 32, each batch its own
 subscription window, so a hub with many intents is never sent every request at
-once. A reply that carries no request id is taken for the request in flight (a
+once; a window the hub does not answer costs only its own sentences, and the
+call fails only when no window answered at all. A reply that carries no request id is taken for the request in flight (a
 hub that echoes ids gets strict matching), so do not run two single-reply
 intent queries concurrently on one client against a hub that does not echo
 request ids.

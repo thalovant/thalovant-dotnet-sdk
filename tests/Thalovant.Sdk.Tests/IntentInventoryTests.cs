@@ -702,9 +702,7 @@ namespace Thalovant.Sdk.Tests
             // bounded reply queue can hold: 69 intents is 69 describes, and every
             // reply arrives twice. They go out 32 at a time, each batch its own
             // subscription window.
-            var many = Enumerable.Range(0, 69)
-                .Select(n => ("en-us", Weather, $"intent.{n:D3}", new[] { $"sentence {n}" }))
-                .ToArray();
+            var many = ManyRegistrations(69);
             var hub = new FakeHubBus { Registrations = many };
             var inventory = await Client(hub).IntentsAsync(new[] { "en-us" });
 
@@ -722,9 +720,7 @@ namespace Thalovant.Sdk.Tests
         [Fact]
         public async Task DescribeManyReturnsEveryRegistrationAcrossBatches()
         {
-            var many = Enumerable.Range(0, 69)
-                .Select(n => ("en-us", Weather, $"intent.{n:D3}", new[] { $"sentence {n}" }))
-                .ToArray();
+            var many = ManyRegistrations(69);
             var hub = new FakeHubBus { Registrations = many };
             var wanted = Enumerable.Range(0, 69)
                 .Select(n => new IntentKey(Weather, $"intent.{n:D3}", "en-us"))
@@ -740,6 +736,82 @@ namespace Thalovant.Sdk.Tests
                 Client(unbounded), wanted, TimeSpan.FromSeconds(5), 0, CancellationToken.None);
             Assert.Equal(69, all.Count);
             Assert.Single(unbounded.DescribeWindows.Distinct());
+        }
+
+        /// <summary>A hub that stops answering describes from one intent index on.</summary>
+        private sealed class GoesQuietHub : FakeHubBus
+        {
+            private readonly int _quietFrom;
+
+            public GoesQuietHub(int quietFrom)
+            {
+                _quietFrom = quietFrom;
+            }
+
+            public override Task EmitBusAsync(string type, JsonObject data, JsonObject context, CancellationToken cancellationToken = default)
+            {
+                if (type == ThalovantEvents.IntentDescribe)
+                {
+                    var name = (string?)data["intent_name"] ?? "";
+                    var suffix = name.Substring(name.LastIndexOf('.') + 1);
+                    if (int.TryParse(suffix, out var index) && index >= _quietFrom)
+                    {
+                        Record(type, data, context);
+                        return Task.CompletedTask;
+                    }
+                }
+                return base.EmitBusAsync(type, data, context, cancellationToken);
+            }
+        }
+
+        private static (string Lang, string SkillId, string IntentName, string[] Samples)[] ManyRegistrations(int count)
+        {
+            return Enumerable.Range(0, count)
+                .Select(n => ("en-us", Weather, $"intent.{n:D3}", new[] { $"sentence {n}" }))
+                .ToArray();
+        }
+
+        [Fact]
+        public async Task ASilentWindowKeepsWhatTheEarlierWindowsFound()
+        {
+            // Windows are contiguous slices, so a skill that stops answering can
+            // own a whole window. Losing its sentences is right; losing the
+            // inventory is not.
+            const int quietFrom = 40;
+            var hub = new GoesQuietHub(quietFrom) { Registrations = ManyRegistrations(69) };
+            var inventory = await Client(hub).IntentsAsync(
+                new[] { "en-us" },
+                new IntentInventoryOptions { Timeout = TimeSpan.FromMilliseconds(300) });
+
+            // Every intent is still listed.
+            Assert.Equal(69, inventory.Intents.Count);
+            // Windows are 0-31, 32-63, 64-68. The first answers in full, the
+            // second in part, the third not at all -- and the third does not
+            // discard the rest.
+            var withSentences = inventory.Intents.Where(intent => intent.PhrasesFor("en-us").Count > 0).ToList();
+            Assert.Equal(quietFrom, withSentences.Count);
+            Assert.Equal(
+                Enumerable.Range(0, quietFrom).Select(n => $"intent.{n:D3}"),
+                withSentences.Select(intent => intent.Name));
+            Assert.True(inventory.HasPhrases);
+            Assert.Equal(3, hub.DescribeWindows.Distinct().Count());
+        }
+
+        [Fact]
+        public async Task AHubSilentFromTheFirstWindowStillFailsFast()
+        {
+            var hub = new FakeHubBus
+            {
+                Registrations = ManyRegistrations(69),
+                Silent = { ThalovantEvents.IntentDescribe },
+            };
+            var wanted = Enumerable.Range(0, 69)
+                .Select(n => new IntentKey(Weather, $"intent.{n:D3}", "en-us"))
+                .ToArray();
+            await Assert.ThrowsAsync<ThalovantTimeoutException>(() => HubIntentQueries.DescribeManyAsync(
+                Client(hub), wanted, TimeSpan.FromMilliseconds(200), HubIntentQueries.DescribeBatch, CancellationToken.None));
+            // It gives up after one window, not after all 69.
+            Assert.Equal(32, EmittedOf(hub, ThalovantEvents.IntentDescribe).Count());
         }
 
         [Fact]

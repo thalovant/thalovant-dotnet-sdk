@@ -32,6 +32,13 @@
 - A runtime that attaches each row's `definition` to `ovos.intent.list` when
   asked with `include_definitions` is used as such; one that does not is
   described row by row.
+- A describe window that receives no reply contributes nothing instead of
+  discarding the other windows' definitions; the call fails only when no window
+  produced one, so a hub silent from the start still fails at the first window.
+  Windows are contiguous slices, so without this an unresponsive skill with more
+  than one window's worth of intents turned the whole inventory into a timeout
+  while the same skill with fewer intents only lost its sentences. Reported by
+  the Rust port's review.
 - Send describes in batches of at most 32, each batch its own subscription
   window, instead of putting every request in flight at once. A hub with 69
   intents in two languages is 138 requests and, with every reply delivered

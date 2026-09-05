@@ -774,10 +774,27 @@ namespace Thalovant
                 for (var start = 0; start < wanted.Count; start += batch)
                 {
                     var slice = wanted.GetRange(start, Math.Min(batch, wanted.Count - start));
-                    var described = await DescribeManyAsync(client, slice, timeout, 0, cancellationToken).ConfigureAwait(false);
-                    foreach (var pair in described)
+                    try
                     {
-                        found[pair.Key] = pair.Value;
+                        var described = await DescribeManyAsync(client, slice, timeout, 0, cancellationToken).ConfigureAwait(false);
+                        foreach (var pair in described)
+                        {
+                            found[pair.Key] = pair.Value;
+                        }
+                    }
+                    catch (ThalovantTimeoutException)
+                    {
+                        // A partial answer is an answer, across windows as within
+                        // one: windows are contiguous slices, so an unresponsive
+                        // skill with more than one window's worth of intents would
+                        // otherwise turn the whole inventory into a timeout while
+                        // the same skill with fewer intents only loses its
+                        // sentences. A hub silent from the start still fails at
+                        // the first window, since nothing is found.
+                        if (found.Count == 0)
+                        {
+                            throw;
+                        }
                     }
                 }
                 return found;

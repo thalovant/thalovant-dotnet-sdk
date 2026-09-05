@@ -269,6 +269,47 @@ namespace Thalovant.Sdk.Tests
             }
         }
 
+        /// <summary>A hub that answers the listing with <c>ok: false</c> instead of rows.</summary>
+        private sealed class NegativeListingHub : FakeHubBus
+        {
+            /// <summary>The hub's <c>error</c> text; null omits the key entirely.</summary>
+            public string? Error { get; set; } = "manifest unavailable";
+
+            public override Task EmitBusAsync(string type, JsonObject data, JsonObject context, CancellationToken cancellationToken = default)
+            {
+                if (type == ThalovantEvents.IntentList)
+                {
+                    Record(type, data, context);
+                    var payload = new JsonObject { ["ok"] = false };
+                    if (Error is not null)
+                    {
+                        payload["error"] = Error;
+                    }
+                    Deliver(ThalovantEvents.IntentListResponse, payload, context);
+                    return Task.CompletedTask;
+                }
+                return base.EmitBusAsync(type, data, context, cancellationToken);
+            }
+        }
+
+        /// <summary>A hub that knows no registration it is asked to describe.</summary>
+        private sealed class NegativeDescribeHub : FakeHubBus
+        {
+            public override Task EmitBusAsync(string type, JsonObject data, JsonObject context, CancellationToken cancellationToken = default)
+            {
+                if (type == ThalovantEvents.IntentDescribe)
+                {
+                    Record(type, data, context);
+                    Deliver(
+                        ThalovantEvents.IntentDescribeResponse,
+                        new JsonObject { ["ok"] = false, ["error"] = "unknown intent" },
+                        context);
+                    return Task.CompletedTask;
+                }
+                return base.EmitBusAsync(type, data, context, cancellationToken);
+            }
+        }
+
         private static ThalovantClient Client(FakeHubBus hub)
         {
             var identity = new ThalovantIdentity((JsonObject)JsonNode.Parse(Fixtures.ClientIdentify)!);
@@ -409,6 +450,52 @@ namespace Thalovant.Sdk.Tests
             var hub = new FakeHubBus { Refuse = { ThalovantEvents.IntentDescribe } };
             var error = await Assert.ThrowsAsync<ThalovantPolicyDeniedException>(() => Client(hub).IntentsAsync(new[] { "en-us" }));
             Assert.Equal("ovos.intent.describe", error.DeniedType);
+        }
+
+        [Fact]
+        public async Task ARefusedListingIsAnErrorNotAnEmptyHub()
+        {
+            // `ok: false` on a listing means the query failed. Reporting it as
+            // no intents would show a person a device that can do nothing.
+            var hub = new NegativeListingHub();
+            var error = await Assert.ThrowsAsync<ThalovantRuntimeException>(
+                () => Client(hub).IntentsAsync(new[] { "en-us" }));
+            Assert.Contains("ovos.intent.list", error.Message);
+            Assert.Contains("manifest unavailable", error.Message);
+            // It is not a policy denial, so the engine-manifest fallback -- on by
+            // default here -- does not cover it and nothing further was asked.
+            Assert.Empty(EmittedOf(hub, ThalovantEvents.PadatiousManifestGet));
+            Assert.Empty(EmittedOf(hub, ThalovantEvents.AdaptManifestGet));
+            Assert.Empty(EmittedOf(hub, ThalovantEvents.IntentDescribe));
+        }
+
+        [Fact]
+        public async Task ARefusedListingWithoutAnErrorStillSaysWhatHappened()
+        {
+            var silent = await Assert.ThrowsAsync<ThalovantRuntimeException>(
+                () => Client(new NegativeListingHub { Error = null }).ListIntentsAsync("en-us"));
+            Assert.Contains("the hub refused the listing", silent.Message);
+
+            var blank = await Assert.ThrowsAsync<ThalovantRuntimeException>(
+                () => Client(new NegativeListingHub { Error = "   " }).ListIntentsAsync("en-us"));
+            Assert.Contains("the hub refused the listing", blank.Message);
+        }
+
+        [Fact]
+        public async Task ADescribeThatDoesNotKnowTheIntentIsNotAnError()
+        {
+            // The other half of the rule: a describe answering `ok: false` has
+            // answered -- the hub does not know that registration -- so the
+            // intent is listed without sentences rather than failing the call.
+            var hub = new NegativeDescribeHub();
+            Assert.Empty(await Client(hub).DescribeIntentAsync(Weather, "current.weather", "en-us"));
+
+            var inventory = await Client(hub).IntentsAsync(new[] { "en-us" });
+            Assert.Equal(
+                new[] { $"{Shadow}:custos.incidents", $"{Weather}:current.weather" },
+                inventory.Intents.Select(intent => intent.Id));
+            Assert.False(inventory.HasPhrases);
+            Assert.Equal(HubIntentInventory.SourceIntentManifest, inventory.Source);
         }
 
         [Fact]
@@ -554,6 +641,33 @@ namespace Thalovant.Sdk.Tests
             Assert.Equal("speak", withoutList.DeniedType);
             Assert.Empty(withoutList.Allowed);
             Assert.Contains("acl_disallowed_type", withoutList.Message);
+        }
+
+        [Fact]
+        public void OnlyStringEntriesSurviveInTheAllowedList()
+        {
+            // A number, a null, an object or a bare boolean in `allowed` is not a
+            // message type; stringifying one would put "3" in front of an
+            // operator reading which types to allow.
+            var error = ThalovantPolicyDeniedException.FromEvent(new ThalovantEvent(ThalovantEvents.PolicyDenied, new JsonObject
+            {
+                ["denied_type"] = "ovos.intent.list",
+                ["code"] = "acl_disallowed_type",
+                ["data"] = new JsonObject
+                {
+                    ["allowed"] = new JsonArray
+                    {
+                        "speak",
+                        3,
+                        null,
+                        true,
+                        "   ",
+                        new JsonObject { ["msg_type"] = "ovos.intent.list" },
+                        " recognizer_loop:utterance ",
+                    },
+                },
+            }));
+            Assert.Equal(new[] { "speak", "recognizer_loop:utterance" }, error.Allowed);
         }
 
         [Fact]

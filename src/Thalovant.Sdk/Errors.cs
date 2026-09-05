@@ -173,7 +173,11 @@ namespace Thalovant
             {
                 foreach (var item in listed)
                 {
-                    if (JsonUtil.OptionalString(item) is string type)
+                    // Only strings: a number or a null in the list is not a
+                    // message type, and stringifying one would put "3" or
+                    // "null" in front of an operator reading which types to
+                    // allow.
+                    if (JsonUtil.GetString(item)?.Trim() is string type && type.Length > 0)
                     {
                         allowed.Add(type);
                     }

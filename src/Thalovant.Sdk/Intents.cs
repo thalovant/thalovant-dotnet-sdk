@@ -28,6 +28,12 @@ namespace Thalovant
     //   ovos.intent.describe.response {"ok", "definitions": [{method,
     //   definition}]} or {"ok": false, "error"}.
     //
+    // "ok": false does not mean the same thing on both. A listing that answers
+    // it has refused the query and told us nothing, so it throws; reporting it
+    // as no intents would show a person a device that can do nothing. A
+    // describe that answers it has answered: the hub does not know that
+    // registration, and the intent simply has no sentences.
+    //
     // A hub whose connection may not publish a type answers hive.policy.denied
     // naming it; that becomes ThalovantPolicyDeniedException at once rather than
     // a timeout. The engines' own manifests (intent.service.adapt.manifest.get
@@ -687,7 +693,11 @@ namespace Thalovant
 
         // -- the two queries --------------------------------------------------
 
-        /// <summary>The hub's intent manifest for one language.</summary>
+        /// <summary>
+        /// The hub's intent manifest for one language. A listing answered
+        /// <c>ok: false</c> throws <see cref="ThalovantRuntimeException"/>
+        /// carrying the hub's <c>error</c>.
+        /// </summary>
         internal static async Task<IReadOnlyList<IntentRegistration>> ListIntentsAsync(
             ThalovantClient client,
             string lang,
@@ -707,6 +717,15 @@ namespace Thalovant
                 lang,
                 options.Timeout,
                 cancellationToken).ConfigureAwait(false);
+            if (IsRefused(reply.Data))
+            {
+                // A refused listing is not an empty hub. Describe answers
+                // `ok: false` for an intent it does not know, which is a real
+                // answer; a listing that fails has told us nothing, and
+                // reporting it as no intents would show a person an empty hub.
+                var detail = JsonUtil.OptionalString(reply.Data["error"]) ?? "the hub refused the listing";
+                throw new ThalovantRuntimeException($"{ThalovantEvents.IntentList} failed: {detail}");
+            }
             var rows = new List<IntentRegistration>();
             if (reply.Data["intents"] is JsonArray listed)
             {

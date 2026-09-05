@@ -366,7 +366,12 @@ namespace Thalovant
             return HubIntentQueries.InventoryAsync(this, chosen, options ?? new IntentInventoryOptions(), cancellationToken);
         }
 
-        /// <summary>The hub's intent manifest for one language, one row per registration.</summary>
+        /// <summary>
+        /// The hub's intent manifest for one language, one row per registration.
+        /// A hub that answers <c>ovos.intent.list</c> with <c>ok: false</c> has
+        /// refused the query, not reported an empty hub: that throws
+        /// <see cref="ThalovantRuntimeException"/> carrying the hub's error.
+        /// </summary>
         public Task<IReadOnlyList<IntentRegistration>> ListIntentsAsync(
             string? lang = null,
             IntentListOptions? options = null,
@@ -375,7 +380,11 @@ namespace Thalovant
             return HubIntentQueries.ListIntentsAsync(this, lang ?? DefaultLang, options ?? new IntentListOptions(), cancellationToken);
         }
 
-        /// <summary>The registrations behind one intent in one language, sentences included.</summary>
+        /// <summary>
+        /// The registrations behind one intent in one language, sentences
+        /// included. Empty when the hub answers <c>ok: false</c>, which there is
+        /// a real answer: it does not know that registration.
+        /// </summary>
         public Task<IReadOnlyList<IntentDefinition>> DescribeIntentAsync(
             string skillId,
             string intentName,

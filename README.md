@@ -415,9 +415,21 @@ engines' own manifests instead and returns names only: `inventory.Source` is
 `engine-manifests`, `inventory.Denied` names the refused query, and
 `inventory.HasPhrases` is false. The first engine to name an intent decides its
 `Engine` there (`adapt` is asked before `padatious`). A hub that refuses those
-too throws the exception. Connections the control plane provisions for SDK clients allow
-these read-only queries by default; the exception's message names what to add
-to the connection's allow-list otherwise.
+too throws the exception. The connection must be allowed to publish
+`ovos.intent.list`, and `ovos.intent.describe` only when the sentences are
+asked for — `IntentInventoryOptions.Describe` is on by default, and with it off
+the listing alone is enough. Connections the control plane provisions for SDK
+clients allow these read-only queries by default; the exception's message names
+what to add to the connection's allow-list otherwise.
+
+A refusal is not the only negative answer. A hub that answers
+`ovos.intent.list` with `ok: false` has failed the query rather than reported an
+empty hub, so `ListIntentsAsync` (and the inventory behind it) throws
+`ThalovantRuntimeException` carrying the hub's `error` text — showing a person a
+device that can do nothing would be worse than saying the query failed. The
+same `ok: false` from `ovos.intent.describe` is a real answer, meaning the hub
+does not know that registration: `DescribeIntentAsync` returns an empty list and
+the intent is listed without sentences.
 
 ## Protocol Selection
 

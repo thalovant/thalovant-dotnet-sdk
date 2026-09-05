@@ -643,31 +643,41 @@ namespace Thalovant.Sdk.Tests
             Assert.Contains("acl_disallowed_type", withoutList.Message);
         }
 
-        [Fact]
-        public void OnlyStringEntriesSurviveInTheAllowedList()
+        /// <summary>The <c>Allowed</c> list a <c>hive.policy.denied</c> carrying these entries produces.</summary>
+        private static IReadOnlyList<string> AllowedFrom(params JsonNode?[] entries)
         {
-            // A number, a null, an object or a bare boolean in `allowed` is not a
-            // message type; stringifying one would put "3" in front of an
-            // operator reading which types to allow.
-            var error = ThalovantPolicyDeniedException.FromEvent(new ThalovantEvent(ThalovantEvents.PolicyDenied, new JsonObject
+            return ThalovantPolicyDeniedException.FromEvent(new ThalovantEvent(ThalovantEvents.PolicyDenied, new JsonObject
             {
                 ["denied_type"] = "ovos.intent.list",
                 ["code"] = "acl_disallowed_type",
-                ["data"] = new JsonObject
-                {
-                    ["allowed"] = new JsonArray
-                    {
-                        "speak",
-                        3,
-                        null,
-                        true,
-                        "   ",
-                        new JsonObject { ["msg_type"] = "ovos.intent.list" },
-                        " recognizer_loop:utterance ",
-                    },
-                },
-            }));
-            Assert.Equal(new[] { "speak", "recognizer_loop:utterance" }, error.Allowed);
+                ["data"] = new JsonObject { ["allowed"] = new JsonArray(entries) },
+            })).Allowed;
+        }
+
+        [Fact]
+        public void TheAllowedListKeepsNonEmptyStringEntriesTrimmed()
+        {
+            // The contract's wording, and the reference's: non-empty string
+            // entries, trimmed.
+
+            // A number, a null, a bare boolean or an object is not a message
+            // type; stringifying one would put "3" in front of an operator
+            // reading which types to allow.
+            Assert.Equal(
+                new[] { "speak" },
+                AllowedFrom("speak", 3, null, true, new JsonObject { ["msg_type"] = "ovos.intent.list" }));
+
+            // A blank entry names nothing at all.
+            Assert.Equal(new[] { "speak" }, AllowedFrom("", "   ", "speak"));
+
+            // What is left is trimmed, and the order the hub gave is kept.
+            Assert.Equal(
+                new[] { "recognizer_loop:utterance", "speak" },
+                AllowedFrom(" recognizer_loop:utterance ", "speak"));
+
+            // A hub whose list holds nothing usable leaves it empty rather than
+            // showing the operator entries that name no type.
+            Assert.Empty(AllowedFrom(0, null, " "));
         }
 
         [Fact]

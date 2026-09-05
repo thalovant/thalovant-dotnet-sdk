@@ -28,7 +28,7 @@ namespace Thalovant.Sdk.Tests
         /// What the hub registered: per language, per intent, the sentences.
         /// Weather speaks both languages; the shadow skill only English.
         /// </summary>
-        private static readonly (string Lang, string SkillId, string IntentName, string[] Samples)[] Registrations =
+        private static readonly (string Lang, string SkillId, string IntentName, string[] Samples)[] DefaultRegistrations =
         {
             ("en-us", Weather, "current.weather", new[]
             {
@@ -56,6 +56,9 @@ namespace Thalovant.Sdk.Tests
             public bool DefinitionsInList { get; set; }
             public bool EchoRequestId { get; set; } = true;
             public int Repeats { get; set; } = 2;
+
+            /// <summary>What this hub registered; the observed set unless a test says otherwise.</summary>
+            public (string Lang, string SkillId, string IntentName, string[] Samples)[] Registrations { get; set; } = DefaultRegistrations;
             public bool Connected { get; private set; }
             public List<(string Type, JsonObject Data, JsonObject Context)> Emitted { get; } =
                 new List<(string Type, JsonObject Data, JsonObject Context)>();
@@ -206,7 +209,7 @@ namespace Thalovant.Sdk.Tests
                 };
             }
 
-            private void Deliver(string eventName, JsonObject data, JsonObject context)
+            protected void Deliver(string eventName, JsonObject data, JsonObject context)
             {
                 for (var repeat = 0; repeat < Repeats; repeat++)
                 {
@@ -541,6 +544,136 @@ namespace Thalovant.Sdk.Tests
             Assert.True(ThalovantContext.SameLanguage(" fr-FR ", "FR-fr"));
             Assert.False(ThalovantContext.SameLanguage("fr-fr", "fr-ca"));
             Assert.False(ThalovantContext.SameLanguage("en", "en-us"));
+        }
+
+        [Fact]
+        public async Task HasPhrasesMeansAtLeastOneSentence()
+        {
+            // A listing whose describes all came back empty does not "have phrases".
+            var hub = new FakeHubBus
+            {
+                Registrations = new[] { ("en-us", Shadow, "custos.incidents", Array.Empty<string>()) },
+            };
+            var inventory = await Client(hub).IntentsAsync(new[] { "en-us" });
+            Assert.NotEmpty(inventory.Intents);
+            Assert.Single(EmittedOf(hub, ThalovantEvents.IntentDescribe));
+            Assert.False(inventory.HasPhrases);
+        }
+
+        [Fact]
+        public async Task LanguagesAreFoldedAndDeduplicatedBeforeAsking()
+        {
+            var hub = new FakeHubBus();
+            var inventory = await Client(hub).IntentsAsync(new[] { " en-us ", "en-US", "en_us", "fr-fr" });
+            Assert.Equal(new[] { "en-us", "fr-fr" }, inventory.Languages);
+            Assert.Equal(
+                new[] { "en-us", "fr-fr" },
+                EmittedOf(hub, ThalovantEvents.IntentList).Select(entry => entry.Data["lang"]!.GetValue<string>()));
+        }
+
+        /// <summary>
+        /// One intent, two registrations in one language: the keyword row has no
+        /// samples, and the template row's sentences survive whichever order the
+        /// rows arrive in. The first row names the engine.
+        /// </summary>
+        private sealed class DualEngineHub : FakeHubBus
+        {
+            private readonly bool _keywordFirst;
+
+            public DualEngineHub(bool keywordFirst)
+            {
+                _keywordFirst = keywordFirst;
+            }
+
+            public override Task EmitBusAsync(string type, JsonObject data, JsonObject context, CancellationToken cancellationToken = default)
+            {
+                if (type != ThalovantEvents.IntentList)
+                {
+                    return base.EmitBusAsync(type, data, context, cancellationToken);
+                }
+                Record(type, data, context);
+                var lang = (string?)data["lang"] ?? "";
+                var template = new JsonObject
+                {
+                    ["skill_id"] = Weather,
+                    ["intent_name"] = "current.weather",
+                    ["lang"] = lang,
+                    ["method"] = "template",
+                    ["enabled"] = true,
+                    ["session_id"] = "default",
+                    ["definition"] = new JsonObject
+                    {
+                        ["skill_id"] = Weather,
+                        ["intent_name"] = "current.weather",
+                        ["lang"] = lang,
+                        ["samples"] = new JsonArray { "what is the weather" },
+                    },
+                };
+                var keyword = new JsonObject
+                {
+                    ["skill_id"] = Weather,
+                    ["intent_name"] = "current.weather",
+                    ["lang"] = lang,
+                    ["method"] = "keyword",
+                    ["enabled"] = true,
+                    ["session_id"] = "default",
+                    ["definition"] = new JsonObject
+                    {
+                        ["skill_id"] = Weather,
+                        ["intent_name"] = "current.weather",
+                        ["lang"] = lang,
+                        ["required"] = new JsonArray { new JsonArray { "WeatherKeyword" } },
+                    },
+                };
+                var rows = _keywordFirst ? new JsonArray { keyword, template } : new JsonArray { template, keyword };
+                Deliver(ThalovantEvents.IntentListResponse, new JsonObject { ["ok"] = true, ["intents"] = rows }, context);
+                return Task.CompletedTask;
+            }
+        }
+
+        [Theory]
+        [InlineData(false, "padatious")]
+        [InlineData(true, "adapt")]
+        public async Task AKeywordRowDoesNotEraseTheTemplateRowsSentences(bool keywordFirst, string expectedEngine)
+        {
+            var inventory = await Client(new DualEngineHub(keywordFirst)).IntentsAsync(new[] { "en-us" });
+            var intent = Assert.Single(inventory.Intents);
+            Assert.Equal(new[] { "what is the weather" }, intent.PhrasesFor("en-us"));
+            Assert.Equal(new[] { "en-us" }, intent.Languages);
+            // The first row names the engine.
+            Assert.Equal(expectedEngine, intent.Engine);
+            Assert.True(inventory.HasPhrases);
+        }
+
+        /// <summary>A hub whose adapt manifest names the weather intent as well.</summary>
+        private sealed class BothEnginesHub : FakeHubBus
+        {
+            public override Task EmitBusAsync(string type, JsonObject data, JsonObject context, CancellationToken cancellationToken = default)
+            {
+                if (type != ThalovantEvents.AdaptManifestGet)
+                {
+                    return base.EmitBusAsync(type, data, context, cancellationToken);
+                }
+                Record(type, data, context);
+                Deliver(
+                    ThalovantEvents.AdaptManifest,
+                    new JsonObject { ["intents"] = new JsonArray { $"{Weather}:current.weather" } },
+                    context);
+                return Task.CompletedTask;
+            }
+        }
+
+        [Fact]
+        public async Task TheFallbackKeepsTheFirstEngineThatNamesAnIntent()
+        {
+            var hub = new BothEnginesHub { Refuse = { ThalovantEvents.IntentList } };
+            var inventory = await Client(hub).IntentsAsync(new[] { "en-us" });
+            Assert.Equal(HubIntentInventory.SourceEngineManifests, inventory.Source);
+            var weather = inventory.Intents.Single(intent => intent.Name == "current.weather");
+            // adapt is asked before padatious, so a name both list is adapt.
+            Assert.Equal("adapt", weather.Engine);
+            var shadow = inventory.Intents.Single(intent => intent.Name == "custos.incidents");
+            Assert.Equal("padatious", shadow.Engine);
         }
 
         [Fact]

@@ -428,7 +428,11 @@ namespace Thalovant
         /// <summary>Every intent of every skill, flattened in the same order.</summary>
         public IReadOnlyList<HubIntent> Intents { get; }
 
-        /// <summary>Whether any intent carries a sentence; false for the names-only fallback.</summary>
+        /// <summary>
+        /// True only when at least one intent carries at least one sentence. False
+        /// for the names-only fallback, and for a listing whose describes all came
+        /// back empty.
+        /// </summary>
         public bool HasPhrases
         {
             get
@@ -893,12 +897,28 @@ namespace Thalovant
             IntentInventoryOptions options,
             CancellationToken cancellationToken)
         {
+            // Tags are trimmed and folded before asking: en-us, en-US and en_us
+            // are one language, asked once, under the first spelling given.
             var asked = new List<string>();
             foreach (var language in languages)
             {
-                if (!string.IsNullOrWhiteSpace(language) && !asked.Contains(language))
+                var tag = language?.Trim() ?? "";
+                if (tag.Length == 0)
                 {
-                    asked.Add(language);
+                    continue;
+                }
+                var seen = false;
+                foreach (var candidate in asked)
+                {
+                    if (ThalovantContext.SameLanguage(candidate, tag))
+                    {
+                        seen = true;
+                        break;
+                    }
+                }
+                if (!seen)
+                {
+                    asked.Add(tag);
                 }
             }
             if (asked.Count == 0)
@@ -1010,7 +1030,11 @@ namespace Thalovant
                         intents = new Dictionary<string, HubIntent>(StringComparer.Ordinal);
                         bySkill[skillId] = intents;
                     }
-                    intents[intentName] = new HubIntent(skillId, intentName, manifest.Engine);
+                    // First engine to name it wins, as on the manifest path.
+                    if (!intents.ContainsKey(intentName))
+                    {
+                        intents[intentName] = new HubIntent(skillId, intentName, manifest.Engine);
+                    }
                 }
             }
             var grouped = new SortedDictionary<string, List<HubIntent>>(StringComparer.Ordinal);
@@ -1033,7 +1057,10 @@ namespace Thalovant
             return skills;
         }
 
-        /// <summary>Accumulates one intent across the languages it was listed in.</summary>
+        /// <summary>
+        /// Accumulates one intent across the rows it was listed in. The first row
+        /// seen names the engine; any row can enable it.
+        /// </summary>
         private sealed class IntentBuilder
         {
             private readonly List<KeyValuePair<string, IReadOnlyList<string>>> _phrases =
@@ -1051,13 +1078,22 @@ namespace Thalovant
                 Engine = engine;
             }
 
+            /// <summary>
+            /// Records the sentences for one language. An intent registered under
+            /// both engines has two rows for the language; the keyword row carries
+            /// no sentences and must not erase the template row's, whichever
+            /// order the rows arrive in.
+            /// </summary>
             internal void SetPhrases(string lang, IReadOnlyList<string> sentences)
             {
                 for (var index = 0; index < _phrases.Count; index++)
                 {
                     if (string.Equals(_phrases[index].Key, lang, StringComparison.Ordinal))
                     {
-                        _phrases[index] = new KeyValuePair<string, IReadOnlyList<string>>(lang, sentences);
+                        if (sentences.Count > 0)
+                        {
+                            _phrases[index] = new KeyValuePair<string, IReadOnlyList<string>>(lang, sentences);
+                        }
                         return;
                     }
                 }

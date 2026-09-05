@@ -32,6 +32,14 @@
 - A runtime that attaches each row's `definition` to `ovos.intent.list` when
   asked with `include_definitions` is used as such; one that does not is
   described row by row.
+- The four points the ports settled with the reference (Python SDK 0.4.37):
+  `HasPhrases` is true only when at least one intent carries at least one
+  sentence; the languages given to `IntentsAsync` are trimmed and folded before
+  asking, so `en-us`, `en-US` and `en_us` are one language asked once and
+  `Languages` keeps the first spelling; an intent registered under both engines
+  keeps the template row's sentences whichever order the rows arrive in, and
+  the first row seen names its `Engine`; on the names-only fallback the first
+  engine to name an intent decides its `Engine` (`adapt` is asked first).
 - `ThalovantEvents` gains the constants `IntentList`, `IntentListResponse`,
   `IntentDescribe`, `IntentDescribeResponse`, `AdaptManifestGet`,
   `AdaptManifest`, `PadatiousManifestGet`, and `PadatiousManifest`.

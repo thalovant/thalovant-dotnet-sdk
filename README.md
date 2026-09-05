@@ -370,12 +370,18 @@ foreach (var skill in inventory.Skills)
 Console.WriteLine(inventory.ToJsonObject().ToJsonString());
 ```
 
-`languages` defaults to `en-us`. Each `HubIntent` carries `Id`
-(`skill_id:name`), `Engine` (`padatious` for sample sentences, `adapt` for
+`languages` defaults to `en-us`. Tags are trimmed and folded before asking:
+`en-us`, `en-US`, and `en_us` are one language, asked once, and
+`inventory.Languages` keeps the first spelling given. Each `HubIntent` carries
+`Id` (`skill_id:name`), `Engine` (`padatious` for sample sentences, `adapt` for
 keyword sets), `Enabled`, `Languages`, and `Phrases` keyed by language;
 `PhrasesFor("fr-FR")` finds `fr-fr` too, and `Examples(lang, limit: 2)` prefers
-whole sentences over ones with a `{slot}`, shorter first. `inventory.Source` is
-`intent-manifest` when the sentences came from the manifest.
+whole sentences over ones with a `{slot}`, shorter first. An intent registered
+under both engines has two rows per language: the template row carries the
+sentences, the keyword row never erases them, and the first row seen names
+`Engine`. `inventory.Source` is `intent-manifest` when the sentences came from
+the manifest, and `inventory.HasPhrases` is true only when at least one intent
+carries at least one sentence.
 
 The two underlying queries are exposed as well: `ListIntentsAsync(lang)`
 returns the manifest rows (`IntentRegistration`) and
@@ -393,7 +399,10 @@ var namesOnly = await client.IntentsAsync(new[] { "en-us" }, new IntentInventory
 Queries are correlated by `context.request_id` like every other request; a
 reply delivered more than once is taken once, and a describe the hub never
 answers leaves that intent without sentences rather than failing the whole
-inventory.
+inventory. A reply that carries no request id is taken for the request in
+flight (a hub that echoes ids gets strict matching), so do not run two
+single-reply intent queries concurrently on one client against a hub that does
+not echo request ids.
 
 A hub whose connection may not publish `ovos.intent.list` answers
 `hive.policy.denied` at once, which surfaces as `ThalovantPolicyDeniedException`
@@ -401,8 +410,9 @@ A hub whose connection may not publish `ovos.intent.list` answers
 `IntentInventoryOptions.Fallback` on (the default) the SDK then asks the
 engines' own manifests instead and returns names only: `inventory.Source` is
 `engine-manifests`, `inventory.Denied` names the refused query, and
-`inventory.HasPhrases` is false. A hub that refuses those too throws the
-exception. Connections the control plane provisions for SDK clients allow
+`inventory.HasPhrases` is false. The first engine to name an intent decides its
+`Engine` there (`adapt` is asked before `padatious`). A hub that refuses those
+too throws the exception. Connections the control plane provisions for SDK clients allow
 these read-only queries by default; the exception's message names what to add
 to the connection's allow-list otherwise.
 

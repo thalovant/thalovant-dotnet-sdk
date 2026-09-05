@@ -18,6 +18,16 @@ namespace Thalovant
         public const string IntentUnmatched = "ovos.intent.unmatched";
         public const string PolicyDenied = "hive.policy.denied";
         public const string QueryTimeout = "hive.query.timeout";
+        // The hub runtime's intent manifest (OVOS-INTENT-4 section 10) and the
+        // engines' own manifests; see ThalovantClient.IntentsAsync and Intents.cs.
+        public const string IntentList = "ovos.intent.list";
+        public const string IntentListResponse = "ovos.intent.list.response";
+        public const string IntentDescribe = "ovos.intent.describe";
+        public const string IntentDescribeResponse = "ovos.intent.describe.response";
+        public const string AdaptManifestGet = "intent.service.adapt.manifest.get";
+        public const string AdaptManifest = "intent.service.adapt.manifest";
+        public const string PadatiousManifestGet = "intent.service.padatious.manifest.get";
+        public const string PadatiousManifest = "intent.service.padatious.manifest";
 
         internal static readonly HashSet<string> FailureEventSet = new HashSet<string>
         {
@@ -257,6 +267,21 @@ namespace Thalovant
                 }
             }
             return result.ToString();
+        }
+
+        /// <summary>
+        /// Whether two language tags name the same language: compared
+        /// case-insensitively with <c>_</c> and <c>-</c> folded, so <c>fr-fr</c>,
+        /// <c>fr_FR</c> and <c>fr-FR</c> are the same tag.
+        /// </summary>
+        public static bool SameLanguage(string a, string b)
+        {
+            return string.Equals(FoldLanguageTag(a), FoldLanguageTag(b), StringComparison.Ordinal);
+        }
+
+        internal static string FoldLanguageTag(string tag)
+        {
+            return tag.Trim().ToLowerInvariant().Replace('_', '-');
         }
 
         /// <summary>The <c>recognizer_loop:utterance</c> data payload.</summary>

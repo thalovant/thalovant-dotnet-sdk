@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Text.Json.Nodes;
 
 namespace Thalovant
@@ -108,10 +109,81 @@ namespace Thalovant
     }
 
     /// <summary>The hub reported a runtime failure while handling a request.</summary>
-    public sealed class ThalovantRuntimeException : ThalovantException
+    public class ThalovantRuntimeException : ThalovantException
     {
         public ThalovantRuntimeException(string message) : base(message)
         {
+        }
+    }
+
+    /// <summary>
+    /// The hub refused a message type this connection may not publish.
+    /// <para>
+    /// The hub answers <c>hive.policy.denied</c> at once, naming the type and the
+    /// list it does allow; surfacing that as an exception saves the caller a
+    /// timeout and tells the operator exactly what to add to the connection's
+    /// allow-list.
+    /// </para>
+    /// </summary>
+    public sealed class ThalovantPolicyDeniedException : ThalovantRuntimeException
+    {
+        /// <summary>The message type the hub refused, for example <c>ovos.intent.list</c>.</summary>
+        public string DeniedType { get; }
+
+        /// <summary>The hub's machine-readable code, for example <c>acl_disallowed_type</c>; empty when absent.</summary>
+        public string Code { get; }
+
+        /// <summary>The hub's human-readable reason; empty when absent.</summary>
+        public string Reason { get; }
+
+        /// <summary>The message types the connection is allowed to publish, as the hub listed them.</summary>
+        public IReadOnlyList<string> Allowed { get; }
+
+        public ThalovantPolicyDeniedException(
+            string deniedType,
+            string? code = null,
+            string? reason = null,
+            IReadOnlyList<string>? allowed = null)
+            : base(Describe(deniedType, code, reason))
+        {
+            DeniedType = deniedType;
+            Code = code ?? "";
+            Reason = reason ?? "";
+            Allowed = allowed ?? Array.Empty<string>();
+        }
+
+        private static string Describe(string deniedType, string? code, string? reason)
+        {
+            var detail = !string.IsNullOrEmpty(reason) ? reason
+                : !string.IsNullOrEmpty(code) ? code
+                : "refused by the hub's policy";
+            return $"The hub refused '{deniedType}': {detail}. Allow this connection to publish "
+                + $"'{deniedType}' in the dashboard's connection settings.";
+        }
+
+        /// <summary>
+        /// Builds the exception from a <c>hive.policy.denied</c> event:
+        /// <c>{denied_type, code, reason, data: {msg_type, allowed}}</c>.
+        /// </summary>
+        public static ThalovantPolicyDeniedException FromEvent(ThalovantEvent busEvent)
+        {
+            var data = busEvent.Data;
+            var allowed = new List<string>();
+            if (JsonUtil.AsObject(data["data"]) is JsonObject inner && inner["allowed"] is JsonArray listed)
+            {
+                foreach (var item in listed)
+                {
+                    if (JsonUtil.OptionalString(item) is string type)
+                    {
+                        allowed.Add(type);
+                    }
+                }
+            }
+            return new ThalovantPolicyDeniedException(
+                JsonUtil.OptionalString(data["denied_type"]) ?? "",
+                JsonUtil.OptionalString(data["code"]),
+                JsonUtil.OptionalString(data["reason"]),
+                allowed);
         }
     }
 

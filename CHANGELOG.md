@@ -1,5 +1,66 @@
 # Changelog
 
+## 0.1.12
+
+- Add the intent inventory: `ThalovantClient.IntentsAsync(languages)` reads the
+  hub runtime's intent manifest (OVOS-INTENT-4 §10) over the client's own
+  session and returns a `HubIntentInventory` — every intent each skill
+  registered, per language, with the sentences a person says to reach it as the
+  skill's locale files wrote them, `{slot}` placeholders included. No
+  control-plane credential is involved. `ListIntentsAsync(lang)` and
+  `DescribeIntentAsync(skillId, intentName, lang)` expose the two underlying
+  queries (`ovos.intent.list` / `ovos.intent.describe`) as `IntentRegistration`
+  rows and `IntentDefinition`s; `IntentInventoryOptions`, `IntentListOptions`,
+  and `IntentDescribeOptions` carry the timeout and switches. The models
+  (`HubIntentInventory`, `HubSkillIntents`, `HubIntent`) offer `PhrasesFor`,
+  `Examples`, and `ToJsonObject()`.
+- Queries are correlated by `context.request_id` like every other request, and
+  a reply delivered more than once is taken once. Describes are sent together
+  and matched by request id, or by the definition's own
+  `skill_id`/`intent_name`/`lang` for a hub that does not echo the id; a
+  describe that never comes leaves that intent without sentences rather than
+  failing the inventory. Language tags compare case-insensitively with `_`/`-`
+  folded (`ThalovantContext.SameLanguage`).
+- Add `ThalovantPolicyDeniedException` (a `ThalovantRuntimeException`, which is
+  no longer `sealed`), thrown at once from the hub's `hive.policy.denied` with
+  `DeniedType`, `Code`, `Reason` and the `Allowed` list, instead of waiting for
+  a timeout. `IntentInventoryOptions.Fallback` (on by default) falls back to the
+  engines' own manifests (`intent.service.adapt.manifest.get` /
+  `intent.service.padatious.manifest.get`) when `ovos.intent.list` is refused;
+  the result then carries names only, `Source` `engine-manifests`, and `Denied`
+  naming the refused query.
+- A runtime that attaches each row's `definition` to `ovos.intent.list` when
+  asked with `include_definitions` is used as such; one that does not is
+  described row by row.
+- A describe window that receives no reply contributes nothing instead of
+  discarding the other windows' definitions; the call fails only when no window
+  produced one, so a hub silent from the start still fails at the first window.
+  Windows are contiguous slices, so without this an unresponsive skill with more
+  than one window's worth of intents turned the whole inventory into a timeout
+  while the same skill with fewer intents only lost its sentences. Reported by
+  the Rust port's review.
+- Send describes in batches of at most 32, each batch its own subscription
+  window, instead of putting every request in flight at once. A hub with 69
+  intents in two languages is 138 requests and, with every reply delivered
+  twice, 276 inbound events; an SDK whose reply queue is bounded drops replies
+  past its capacity and returns an inventory missing sentences. Reported by the
+  Rust port's review. The per-batch deadline also means a hub that answers
+  nothing fails after one batch rather than holding every request open.
+- The four points the ports settled with the reference (Python SDK 0.4.37):
+  `HasPhrases` is true only when at least one intent carries at least one
+  sentence; the languages given to `IntentsAsync` are trimmed and folded before
+  asking, so `en-us`, `en-US` and `en_us` are one language asked once and
+  `Languages` keeps the first spelling; an intent registered under both engines
+  keeps the template row's sentences whichever order the rows arrive in, and
+  the first row seen names its `Engine`; on the names-only fallback the first
+  engine to name an intent decides its `Engine` (`adapt` is asked first).
+- `ThalovantEvents` gains the constants `IntentList`, `IntentListResponse`,
+  `IntentDescribe`, `IntentDescribeResponse`, `AdaptManifestGet`,
+  `AdaptManifest`, `PadatiousManifestGet`, and `PadatiousManifest`.
+- Internal: the data-plane client now talks to its transport through an
+  `IHiveMindBus` seam so the test suite can drive `IntentsAsync` (and
+  `AskAsync`) against a fake hub, network-free. No public constructor changed.
+
 ## 0.1.11
 
 - Automated patch release of the unreleased changes on `main` since v0.1.10.

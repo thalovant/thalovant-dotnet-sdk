@@ -43,10 +43,15 @@ namespace Thalovant
     /// </summary>
     public sealed class ThalovantClient : IDisposable
     {
+        /// <summary>The language queries default to when none is given, as in the sibling SDKs.</summary>
+        internal const string DefaultLang = "en-us";
+
         public ThalovantIdentity Identity { get; }
 
-        internal HiveMindWssTransport Transport { get; }
+        /// <summary>The WSS transport this client owns, or null when a test supplied its own bus.</summary>
+        internal HiveMindWssTransport? Transport { get; }
 
+        private readonly IHiveMindBus _bus;
         private readonly TimeSpan _replySettle;
         private readonly TimeSpan _emptyReplyWait;
         private readonly object _lock = new object();
@@ -79,6 +84,24 @@ namespace Thalovant
             }
             Identity = identity;
             Transport = new HiveMindWssTransport(identity, userAgent);
+            _bus = Transport;
+            _replySettle = replySettle ?? TimeSpan.FromMilliseconds(250);
+            _emptyReplyWait = emptyReplyWait ?? TimeSpan.FromSeconds(5);
+        }
+
+        /// <summary>
+        /// A client over a caller-supplied bus: the test seam, equivalent to the
+        /// sibling SDKs' <c>transport</c> parameter. No endpoint is required.
+        /// </summary>
+        internal ThalovantClient(
+            ThalovantIdentity identity,
+            IHiveMindBus bus,
+            TimeSpan? replySettle = null,
+            TimeSpan? emptyReplyWait = null)
+        {
+            Identity = identity;
+            Transport = bus as HiveMindWssTransport;
+            _bus = bus;
             _replySettle = replySettle ?? TimeSpan.FromMilliseconds(250);
             _emptyReplyWait = emptyReplyWait ?? TimeSpan.FromSeconds(5);
         }
@@ -97,7 +120,7 @@ namespace Thalovant
                     return;
                 }
             }
-            await Transport.ConnectAsync(timeout, cancellationToken).ConfigureAwait(false);
+            await _bus.ConnectAsync(timeout, cancellationToken).ConfigureAwait(false);
             lock (_lock)
             {
                 _connected = true;
@@ -106,7 +129,7 @@ namespace Thalovant
 
         public async Task CloseAsync()
         {
-            await Transport.DisconnectAsync().ConfigureAwait(false);
+            await _bus.DisconnectAsync().ConfigureAwait(false);
             lock (_lock)
             {
                 _connected = false;
@@ -131,7 +154,7 @@ namespace Thalovant
             string? sessionId = null,
             string? requestId = null)
         {
-            var id = Transport.AddBusHandler(payload =>
+            var id = _bus.AddBusHandler(payload =>
             {
                 var busEvent = ThalovantEvent.FromBusPayload(payload);
                 if (busEvent is null || busEvent.Name != eventName)
@@ -156,8 +179,8 @@ namespace Thalovant
                 }
                 handler(busEvent);
             });
-            var transport = Transport;
-            return new ThalovantSubscription(() => transport.RemoveBusHandler(id));
+            var bus = _bus;
+            return new ThalovantSubscription(() => bus.RemoveBusHandler(id));
         }
 
         /// <summary>Emits a bus event to the hub.</summary>
@@ -168,7 +191,7 @@ namespace Thalovant
             CancellationToken cancellationToken = default)
         {
             await ConnectAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-            await Transport.EmitBusAsync(
+            await _bus.EmitBusAsync(
                 eventType,
                 data ?? new JsonObject(),
                 ContextWithIdentityMetadata(context ?? new JsonObject()),
@@ -236,7 +259,7 @@ namespace Thalovant
             await ConnectAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 
             var state = new AskState();
-            var handlerId = Transport.AddBusHandler(payload =>
+            var handlerId = _bus.AddBusHandler(payload =>
             {
                 var busEvent = ThalovantEvent.FromBusPayload(payload);
                 if (busEvent is not null)
@@ -246,7 +269,7 @@ namespace Thalovant
             });
             try
             {
-                await Transport.EmitBusAsync(
+                await _bus.EmitBusAsync(
                     ThalovantEvents.RecognizerLoopUtterance,
                     ThalovantContext.UtterancePayload(prompt, lang),
                     correlatedContext,
@@ -303,8 +326,65 @@ namespace Thalovant
             }
             finally
             {
-                Transport.RemoveBusHandler(handlerId);
+                _bus.RemoveBusHandler(handlerId);
             }
+        }
+
+        // -- Intents ---------------------------------------------------------
+
+        /// <summary>
+        /// Everything the hub can be asked, per language, grouped by skill.
+        /// <para>
+        /// Read from the runtime's intent manifest over this session, so no
+        /// control-plane credential is involved. Each intent carries the sentences
+        /// a person says to reach it, as the skill's locale files wrote them,
+        /// <c>{slot}</c> placeholders included. <paramref name="languages"/>
+        /// defaults to <c>en-us</c>.
+        /// </para>
+        /// <para>
+        /// Throws <see cref="ThalovantPolicyDeniedException"/> when the hub refuses
+        /// the query and <see cref="IntentInventoryOptions.Fallback"/> is off; with
+        /// it on (the default), a hub allowed for only the engines' manifests yields
+        /// intent names with <see cref="HubIntentInventory.Source"/> set to
+        /// <see cref="HubIntentInventory.SourceEngineManifests"/>.
+        /// </para>
+        /// </summary>
+        public Task<HubIntentInventory> IntentsAsync(
+            IEnumerable<string>? languages = null,
+            IntentInventoryOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            var chosen = new List<string>();
+            if (languages is not null)
+            {
+                chosen.AddRange(languages);
+            }
+            if (chosen.Count == 0)
+            {
+                chosen.Add(DefaultLang);
+            }
+            return HubIntentQueries.InventoryAsync(this, chosen, options ?? new IntentInventoryOptions(), cancellationToken);
+        }
+
+        /// <summary>The hub's intent manifest for one language, one row per registration.</summary>
+        public Task<IReadOnlyList<IntentRegistration>> ListIntentsAsync(
+            string? lang = null,
+            IntentListOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            return HubIntentQueries.ListIntentsAsync(this, lang ?? DefaultLang, options ?? new IntentListOptions(), cancellationToken);
+        }
+
+        /// <summary>The registrations behind one intent in one language, sentences included.</summary>
+        public Task<IReadOnlyList<IntentDefinition>> DescribeIntentAsync(
+            string skillId,
+            string intentName,
+            string? lang = null,
+            IntentDescribeOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            return HubIntentQueries.DescribeIntentAsync(
+                this, skillId, intentName, lang ?? DefaultLang, options ?? new IntentDescribeOptions(), cancellationToken);
         }
 
         private JsonObject ContextWithIdentityMetadata(JsonObject context)

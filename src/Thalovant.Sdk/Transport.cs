@@ -50,6 +50,26 @@ namespace Thalovant
     }
 
     /// <summary>
+    /// The bus operations <see cref="ThalovantClient"/> needs from a transport:
+    /// connect, emit a bus event, and observe bus payloads. The WSS transport is
+    /// the one production implementation; tests supply a fake hub through the
+    /// client's internal constructor, the way the sibling SDKs take a
+    /// <c>transport</c> parameter.
+    /// </summary>
+    internal interface IHiveMindBus
+    {
+        Task ConnectAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default);
+
+        Task DisconnectAsync();
+
+        Task EmitBusAsync(string type, JsonObject data, JsonObject context, CancellationToken cancellationToken = default);
+
+        Guid AddBusHandler(Action<JsonObject> handler);
+
+        void RemoveBusHandler(Guid id);
+    }
+
+    /// <summary>
     /// WSS data-plane transport for the HiveMind runtime, backed by
     /// <see cref="ClientWebSocket"/>.
     ///
@@ -66,7 +86,7 @@ namespace Thalovant
     /// identity <c>crypto_key</c> when one is present.</item>
     /// </list>
     /// </summary>
-    public sealed class HiveMindWssTransport : IDisposable
+    public sealed class HiveMindWssTransport : IDisposable, IHiveMindBus
     {
         public ThalovantIdentity Identity { get; }
         public string UserAgent { get; }

@@ -347,6 +347,78 @@ var subscription = client.On("speak", e => Console.WriteLine(e.DisplayText));
 subscription.Close();
 ```
 
+## What the Hub Can Be Asked
+
+A connected client can ask its hub for the intent inventory: every intent each
+skill registered, per language, with the sentences a person says to reach it
+as the skill's locale files wrote them, `{slot}` placeholders included. It is
+read from the hub runtime's intent manifest over the client's own session, so
+no control-plane credential is involved — a satellite, an installer, or an
+agent can show a person what they can say.
+
+```csharp
+var inventory = await client.IntentsAsync(new[] { "en-us", "fr-fr" });
+foreach (var skill in inventory.Skills)
+{
+    Console.WriteLine($"{skill.SkillId} ({string.Join(", ", skill.Languages)})");
+    foreach (var intent in skill.Intents)
+    {
+        // "what is the weather", "how is it outside", ...
+        Console.WriteLine($"  {intent.Name} [{intent.Engine}]: {string.Join(" | ", intent.Examples("en-us"))}");
+    }
+}
+Console.WriteLine(inventory.ToJsonObject().ToJsonString());
+```
+
+`languages` defaults to `en-us`. Tags are trimmed and folded before asking:
+`en-us`, `en-US`, and `en_us` are one language, asked once, and
+`inventory.Languages` keeps the first spelling given. Each `HubIntent` carries
+`Id` (`skill_id:name`), `Engine` (`padatious` for sample sentences, `adapt` for
+keyword sets), `Enabled`, `Languages`, and `Phrases` keyed by language;
+`PhrasesFor("fr-FR")` finds `fr-fr` too, and `Examples(lang, limit: 2)` prefers
+whole sentences over ones with a `{slot}`, shorter first. An intent registered
+under both engines has two rows per language: the template row carries the
+sentences, the keyword row never erases them, and the first row seen names
+`Engine`. `inventory.Source` is `intent-manifest` when the sentences came from
+the manifest, and `inventory.HasPhrases` is true only when at least one intent
+carries at least one sentence.
+
+The two underlying queries are exposed as well: `ListIntentsAsync(lang)`
+returns the manifest rows (`IntentRegistration`) and
+`DescribeIntentAsync(skillId, intentName, lang)` the registrations behind one
+intent (`IntentDefinition`, with `Samples`). `IntentInventoryOptions`,
+`IntentListOptions`, and `IntentDescribeOptions` carry the timeout (5 seconds
+by default) and the switches:
+
+```csharp
+var rows = await client.ListIntentsAsync("fr-fr", new IntentListOptions { IncludeDefinitions = true });
+var definitions = await client.DescribeIntentAsync("thalovant-skill-weather.thalovant", "current.weather", "fr-fr");
+var namesOnly = await client.IntentsAsync(new[] { "en-us" }, new IntentInventoryOptions { Describe = false });
+```
+
+Queries are correlated by `context.request_id` like every other request; a
+reply delivered more than once is taken once, and a describe the hub never
+answers leaves that intent without sentences rather than failing the whole
+inventory. Describes go out in batches of at most 32, each batch its own
+subscription window, so a hub with many intents is never sent every request at
+once; a window the hub does not answer costs only its own sentences, and the
+call fails only when no window answered at all. A reply that carries no request id is taken for the request in flight (a
+hub that echoes ids gets strict matching), so do not run two single-reply
+intent queries concurrently on one client against a hub that does not echo
+request ids.
+
+A hub whose connection may not publish `ovos.intent.list` answers
+`hive.policy.denied` at once, which surfaces as `ThalovantPolicyDeniedException`
+(`DeniedType`, `Code`, `Reason`, `Allowed`) rather than a timeout. With
+`IntentInventoryOptions.Fallback` on (the default) the SDK then asks the
+engines' own manifests instead and returns names only: `inventory.Source` is
+`engine-manifests`, `inventory.Denied` names the refused query, and
+`inventory.HasPhrases` is false. The first engine to name an intent decides its
+`Engine` there (`adapt` is asked before `padatious`). A hub that refuses those
+too throws the exception. Connections the control plane provisions for SDK clients allow
+these read-only queries by default; the exception's message names what to add
+to the connection's allow-list otherwise.
+
 ## Protocol Selection
 
 Hubs advertise enabled protocols (`spec.protocols.{wss,http,mqtt}.enabled`,
@@ -370,6 +442,9 @@ var selected = HubEndpoints.SelectDataPlaneEndpoint(
 - `ThalovantConnectionException` / `ThalovantTimeoutException` /
   `ThalovantRuntimeException` — data-plane connection, deadline, and hub
   failures.
+- `ThalovantPolicyDeniedException` (a `ThalovantRuntimeException`) — the hub
+  refused a message type this connection may not publish (`hive.policy.denied`),
+  with `DeniedType`, `Code`, `Reason`, and the `Allowed` list.
 - `ThalovantDeviceAccessDeniedException` / `ThalovantDeviceCodeExpiredException`
   — the browser device sign-in was denied or its code expired.
 - `ThalovantIdentityException` — malformed or insecure identity documents.
@@ -399,10 +474,12 @@ dotnet test
 ```
 
 The test suite is fully offline: HTTP requests are intercepted with a stub
-`HttpMessageHandler` and the WSS wire protocol is tested through its pure
-encode/decode functions. The in-tree AES-128-GCM implementation is validated
-against NIST vectors plus known-answer vectors generated with Node.js `crypto`
-(the exact configuration the Node SDK uses on the HiveMind wire).
+`HttpMessageHandler`, the WSS wire protocol is tested through its pure
+encode/decode functions, and the data-plane client is driven against a fake
+hub bus that reproduces the observed reply shapes. The in-tree AES-128-GCM
+implementation is validated against NIST vectors plus known-answer vectors
+generated with Node.js `crypto` (the exact configuration the Node SDK uses on
+the HiveMind wire).
 
 ## License
 

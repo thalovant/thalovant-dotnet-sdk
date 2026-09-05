@@ -136,7 +136,11 @@ namespace Thalovant
         /// <summary>The hub's human-readable reason; empty when absent.</summary>
         public string Reason { get; }
 
-        /// <summary>The message types the connection is allowed to publish, as the hub listed them.</summary>
+        /// <summary>
+        /// The message types the connection is allowed to publish, as the hub
+        /// listed them: non-empty string entries, trimmed. Anything else the
+        /// hub put in the list is not a message type and is dropped.
+        /// </summary>
         public IReadOnlyList<string> Allowed { get; }
 
         public ThalovantPolicyDeniedException(
@@ -173,7 +177,12 @@ namespace Thalovant
             {
                 foreach (var item in listed)
                 {
-                    if (JsonUtil.OptionalString(item) is string type)
+                    // Non-empty string entries, trimmed -- the platform
+                    // contract's wording. A number or a null in the list is not
+                    // a message type, and stringifying one would put "3" or
+                    // "null" in front of an operator reading which types to
+                    // allow; a blank one names nothing at all.
+                    if (JsonUtil.GetString(item)?.Trim() is string type && type.Length > 0)
                     {
                         allowed.Add(type);
                     }

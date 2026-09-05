@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.13
+
+- `ListIntentsAsync` throws `ThalovantRuntimeException` when the hub answers
+  `ovos.intent.list` with `ok: false`, instead of reading the missing `intents`
+  key as an empty list. A refused listing is not an empty hub, and reporting it
+  as no intents showed a person a device that can do nothing; the exception
+  carries the hub's `error` text. `DescribeIntentAsync` keeps returning an empty
+  list for `ok: false`, which there is a real answer: the hub does not know that
+  registration, so the intent simply has no sentences. Reported by the Kotlin
+  port's review, fixed in the Python reference as 0.4.40.
+- `ThalovantPolicyDeniedException.Allowed` keeps the hub's `allowed` list as the
+  platform contract words it: non-empty string entries, trimmed. A number or a
+  null there is not a message type, and stringifying one put `"3"` or `"true"`
+  in front of an operator reading which types to allow; a blank entry names
+  nothing at all. Reported by the Kotlin port's review; the reference settled on
+  the same rule in 0.4.41.
+
 ## 0.1.12
 
 - Add the intent inventory: `ThalovantClient.IntentsAsync(languages)` reads the

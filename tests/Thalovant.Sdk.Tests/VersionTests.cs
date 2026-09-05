@@ -97,7 +97,9 @@ namespace Thalovant.Sdk.Tests
             }
             using (var client = new ThalovantClient(identity))
             {
-                Assert.Equal(expected, client.Transport.UserAgent);
+                // The public constructor always owns a WSS transport; only the
+                // internal bus-injecting constructor leaves Transport null.
+                Assert.Equal(expected, client.Transport!.UserAgent);
             }
         }
 

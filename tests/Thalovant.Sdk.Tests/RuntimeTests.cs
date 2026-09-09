@@ -59,6 +59,16 @@ namespace Thalovant.Sdk.Tests
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
             while (!predicate()) await Task.Delay(1, deadline.Token);
         }
+        [Theory][InlineData(false)][InlineData(true)]
+        public async Task AskReportsTheNegativeReplyWindowParameter(bool empty)
+        {
+            var fake = new Fake(); using var sdk = Client(fake);
+            var error = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => sdk.AskAsync("test",
+                emptyReplyWait: empty ? TimeSpan.FromMilliseconds(-1) : TimeSpan.Zero,
+                replySettle: empty ? TimeSpan.Zero : TimeSpan.FromMilliseconds(-1)));
+            Assert.Equal(empty ? "emptyReplyWait" : "replySettle", error.ParamName);
+            Assert.Empty(fake.Emitted); Assert.Equal(0, fake.BusCount);
+        }
         [Theory]
         [InlineData("connect")][InlineData("send")][InlineData("empty")][InlineData("settle")][InlineData("no_speech")]
         public async Task AskBudgetIncludesAllPhases(string phase)

@@ -511,6 +511,8 @@ adaptations. HTTPS/MQTT runtime transports remain explicitly unsupported.
 ## Ask deadlines and correlation
 
 Ask uses one total timeout across connection, authentication, send, and replies.
+After a WSS write is admitted, caller cancellation stops waiting while the complete encrypted frame sequence retains transport ownership under an independent 20-second physical send budget. A physical timeout or write error retires the captured connection; queued cancellation never interrupts another owner.
+
 A terminal query reply can complete while its admitted write is still retiring. The transport retains write ownership and never replays the request. Ask surfaces a write failure during any active reply phase; a hard terminal reply or an already elapsed reply window takes precedence over later write errors.
 
 The first nonempty speech starts a fixed settling window (250ms by default).

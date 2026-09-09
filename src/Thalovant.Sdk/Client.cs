@@ -251,7 +251,9 @@ namespace Thalovant
             var effectiveTimeout = RuntimeTimeout(timeout);
             var effectiveEmptyReplyWait = emptyReplyWait ?? _emptyReplyWait;
             var effectiveReplySettle = replySettle ?? _replySettle;
-            if (effectiveEmptyReplyWait < TimeSpan.Zero || effectiveReplySettle < TimeSpan.Zero)
+            if (effectiveEmptyReplyWait < TimeSpan.Zero)
+                throw new ArgumentOutOfRangeException(nameof(emptyReplyWait), "Reply waits must be non-negative.");
+            if (effectiveReplySettle < TimeSpan.Zero)
                 throw new ArgumentOutOfRangeException(nameof(replySettle), "Reply waits must be non-negative.");
             cancellationToken.ThrowIfCancellationRequested();
             var clock = System.Diagnostics.Stopwatch.StartNew();

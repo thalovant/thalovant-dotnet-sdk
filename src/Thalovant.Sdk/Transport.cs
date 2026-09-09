@@ -32,11 +32,13 @@ namespace Thalovant
 
         internal bool IsOpen => _completion.Task.Status == TaskStatus.RanToCompletion;
 
-        internal async Task WaitAsync(TimeSpan timeout, Exception? timeoutError)
+        internal async Task WaitAsync(TimeSpan timeout, Exception? timeoutError, CancellationToken cancellationToken = default)
         {
-            using var timeoutSource = new CancellationTokenSource();
+            cancellationToken.ThrowIfCancellationRequested();
+            using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             var delay = Task.Delay(timeout, timeoutSource.Token);
             var completed = await Task.WhenAny(_completion.Task, delay).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
             if (completed == _completion.Task)
             {
                 timeoutSource.Cancel();
@@ -86,6 +88,7 @@ namespace Thalovant
         private readonly object _lock = new object();
         private readonly SemaphoreSlim _sendLock = new SemaphoreSlim(1, 1);
         private readonly SemaphoreSlim _connectLock = new SemaphoreSlim(1, 1);
+        private readonly TimeSpan _physicalSendTimeout = TimeSpan.FromSeconds(20);
         private WebSocket? _socket;
         private readonly Func<WebSocket> _socketFactory = () => new ClientWebSocket();
         private readonly IHiveMindNoiseStore _noiseStore;
@@ -113,8 +116,8 @@ namespace Thalovant
         }
 
         // In-memory WebSocket peer seam keeps protocol tests independent of networks.
-        internal HiveMindWssTransport(ThalovantIdentity identity, IHiveMindNoiseStore store, Func<WebSocket> socketFactory)
-            : this(identity, noiseStore: store) { _socketFactory = socketFactory; }
+        internal HiveMindWssTransport(ThalovantIdentity identity, IHiveMindNoiseStore store, Func<WebSocket> socketFactory, TimeSpan? physicalSendTimeout = null)
+            : this(identity, noiseStore: store) { _socketFactory = socketFactory; _physicalSendTimeout = physicalSendTimeout ?? TimeSpan.FromSeconds(20); }
 
         public bool Connected
         {
@@ -308,7 +311,8 @@ namespace Thalovant
         public void Dispose()
         {
             DisconnectAsync().GetAwaiter().GetResult();
-            _sendLock.Dispose();
+            // Retained writes may still release this managed semaphore after
+            // disconnect. Do not dispose it while those owners are unwinding.
         }
 
         // -- Sending ---------------------------------------------------------
@@ -330,21 +334,66 @@ namespace Thalovant
         {
             await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try {
-                byte[][] frames;
                 lock (_lock) {
+                    // Cancellation before admission does not consume a Noise nonce
+                    // or own the current socket's failure path.
+                    cancellationToken.ThrowIfCancellationRequested();
                     RequireSocket(socket);
                     if (!ReferenceEquals(session, _noiseSession)) throw new OperationCanceledException("Noise session was replaced.");
-                    var plain = Encoding.UTF8.GetBytes(HiveWire.Encode(message, cryptoKey: null, encrypt: false));
-                    frames = session.Encrypt(plain).ToArray();
                 }
-                foreach (var frame in frames) {
-                    lock (_lock) { RequireSocket(socket); }
-                    await socket.SendAsync(new ArraySegment<byte>(frame), WebSocketMessageType.Binary, true, cancellationToken).ConfigureAwait(false);
-                    lock (_lock) { RequireSocket(socket); }
+            } catch { _sendLock.Release(); throw; }
+
+            var outcome = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var cancelled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            // Once admitted, only the independent physical deadline can interrupt
+            // the frame sequence. The caller may leave without aborting peers.
+            _ = RunOwnedSendAsync(socket, session, message, outcome);
+            using var registration = cancellationToken.Register(() => cancelled.TrySetResult(true));
+            await Task.WhenAny(outcome.Task, cancelled.Task).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            var error = await outcome.Task.ConfigureAwait(false);
+            if (error != null) throw error;
+        }
+
+        private async Task RunOwnedSendAsync(WebSocket socket, NoiseSession session, HiveMessage message, TaskCompletionSource<Exception?> outcome)
+        {
+            var completed = false;
+            void Complete(Exception? error)
+            {
+                lock (_lock) {
+                    if (completed) return;
+                    completed = true;
+                    if (error != null) HandleSocketFailure(socket, error);
+                    outcome.TrySetResult(error);
                 }
             }
-            catch (Exception error) { HandleSocketFailure(socket, error); throw; }
-            finally { _sendLock.Release(); }
+            using var physicalDeadline = new CancellationTokenSource();
+            using var registration = physicalDeadline.Token.Register(() =>
+                Complete(new ThalovantTimeoutException("HiveMind WSS physical send timed out.")));
+            physicalDeadline.CancelAfter(_physicalSendTimeout);
+            try {
+                await Task.Run(async () => {
+                    byte[][] frames;
+                    lock (_lock) {
+                        physicalDeadline.Token.ThrowIfCancellationRequested();
+                        RequireSocket(socket);
+                        if (!ReferenceEquals(session, _noiseSession)) throw new OperationCanceledException("Noise session was replaced.");
+                        var plain = Encoding.UTF8.GetBytes(HiveWire.Encode(message, cryptoKey: null, encrypt: false));
+                        frames = session.Encrypt(plain).ToArray();
+                    }
+                    foreach (var frame in frames) {
+                        lock (_lock) { RequireSocket(socket); physicalDeadline.Token.ThrowIfCancellationRequested(); }
+                        await socket.SendAsync(new ArraySegment<byte>(frame), WebSocketMessageType.Binary, true, physicalDeadline.Token).ConfigureAwait(false);
+                        lock (_lock) { RequireSocket(socket); }
+                    }
+                }).ConfigureAwait(false);
+                Complete(null);
+            } catch (Exception error) { Complete(error); }
+            finally {
+                // Even a physical timeout cannot release the semaphore until a
+                // cancellation-resistant socket's actual write has settled.
+                _sendLock.Release();
+            }
         }
 
         public Task EmitBusAsync(string type, JsonObject data, JsonObject context, CancellationToken cancellationToken = default)
@@ -456,7 +505,8 @@ namespace Thalovant
             lock (_lock) {
                 if (!ReferenceEquals(socket, _socket)) return;
                 ResetSession();
-                socket.Abort();
+                try { socket.Abort(); }
+                catch (Exception) { /* Teardown must not hide the failure or escape a deadline callback. */ }
                 _lastError = error.Message;
                 var failure = error as ThalovantConnectionException
                     ?? new ThalovantConnectionException($"HiveMind WSS connection failed: {error.Message}", error);

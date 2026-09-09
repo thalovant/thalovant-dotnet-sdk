@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.2
+
+- Keep admitted encrypted frame sequences owned through caller cancellation, under an independent 20-second physical send budget. Physical timeout or a real write error retires only the captured socket generation.
+- Report the actual invalid reply-window parameter and run the full target-framework test suites sequentially to avoid competing cold Noise handshakes.
+
+- Collect terminal query replies while admitted writes retain transport ownership; surface write failures throughout Ask reply phases while preserving terminal/deadline precedence.
+- Apply one Ask timeout across connection admission, authentication, sending and
+  reply collection. Clip fixed empty-reply and settling windows to that deadline.
+- Freeze Ask collection on policy denial or query timeout, retaining only speech
+  received before the hard failure, and interrupt optional waits immediately.
+- Return the first correlated runtime session ID from Ask and Query while preserving strict request
+  correlation and the original request ID.
+- Add regressions for blocked connection/send, clipped reply phases, cancellation
+  cleanup and explicit event-stream buffer overflow.
+- Retire a cancelled or expired event-stream subscription even while its consumer
+  pauses between reads; preserve caller cancellation in all Ask gate waits.
+
 ## 0.3.1
 
 - Validate both device authorization URLs before displaying a prompt, invoking

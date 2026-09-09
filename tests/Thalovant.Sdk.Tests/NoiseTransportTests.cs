@@ -13,6 +13,7 @@ using Xunit;
 
 namespace Thalovant.Sdk.Tests
 {
+    [Collection("Runtime deadlines")]
     public sealed class NoiseTransportTests
     {
         private static ThalovantIdentity Identity() => ThalovantIdentity.FromJson("""
@@ -118,6 +119,68 @@ namespace Thalovant.Sdk.Tests
             Assert.Equal(new[] { "hello", "bus" }, peers[1].AuthenticatedTypes.ToArray());
         }
 
+        [Theory][InlineData(false)][InlineData(true)]
+        public async Task CallerCancellationPreservesOwnedChunkSequenceAndSharedSession(bool queuedCancellation)
+        {
+            PeerSocket? peer = null; var connections = 0;
+            using var transport = new HiveMindWssTransport(Identity(), new MemoryStore(), () => { connections++; return peer = new PeerSocket(null, _ => { }); });
+            await transport.ConnectAsync(TimeSpan.FromSeconds(10));
+            var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            peer!.BeforeNextSendWithToken = async token => { entered.SetResult(); await release.Task.WaitAsync(token); };
+            using var cancellation = new CancellationTokenSource();
+            var owner = transport.EmitBusAsync("test.owner", new JsonObject { ["large"] = new string('x', NoiseSession.Chunk * 3) }, new JsonObject(), queuedCancellation ? default : cancellation.Token);
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            var queued = transport.EmitBusAsync("test.queued", new JsonObject(), new JsonObject(), queuedCancellation ? cancellation.Token : default);
+            try {
+                cancellation.Cancel();
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => (queuedCancellation ? queued : owner).WaitAsync(TimeSpan.FromSeconds(2)));
+                Assert.True(transport.Connected && transport.HandshakeComplete); Assert.Equal(WebSocketState.Open, peer.State);
+                Assert.False((queuedCancellation ? owner : queued).IsCompleted);
+                Assert.Equal(new[] { "hello" }, peer.AuthenticatedTypes.ToArray());
+            } finally { release.TrySetResult(); }
+            await (queuedCancellation ? owner : queued).WaitAsync(TimeSpan.FromSeconds(10));
+            await transport.EmitBusAsync("test.reused", new JsonObject(), new JsonObject());
+            Assert.Equal(queuedCancellation ? 3 : 4, peer.AuthenticatedTypes.Count);
+            Assert.Equal(1, connections); Assert.True(transport.Connected && transport.HandshakeComplete);
+        }
+
+        [Theory][InlineData(false)][InlineData(true)]
+        public async Task PhysicalDeadlineRetainsWriteOwnershipAndCannotPoisonReplacement(bool abortThrows)
+        {
+            var peers = new List<PeerSocket>();
+            using var transport = new HiveMindWssTransport(Identity(), new MemoryStore(), () => {
+                var peer = new PeerSocket(null, _ => { }); peers.Add(peer); return peer;
+            }, physicalSendTimeout: TimeSpan.FromSeconds(2));
+            await transport.ConnectAsync(TimeSpan.FromSeconds(10));
+            var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            peers[0].ThrowOnAbort = abortThrows;
+            peers[0].BeforeNextSendWithToken = async _ => { entered.SetResult(); await release.Task; };
+            var owner = transport.EmitBusAsync("test.owner", new JsonObject(), new JsonObject());
+            try {
+                await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                var queued = transport.EmitBusAsync("test.stale", new JsonObject(), new JsonObject());
+                await Assert.ThrowsAsync<ThalovantTimeoutException>(() => owner.WaitAsync(TimeSpan.FromSeconds(5)));
+                Assert.False(transport.Connected); Assert.Equal(WebSocketState.Aborted, peers[0].State);
+                Assert.False(queued.IsCompleted); // The actual old write still owns the lock.
+                peers[0].ThrowOnAbort = false; // Later explicit Dispose uses the ordinary fixture teardown.
+                var reconnect = transport.ConnectAsync(TimeSpan.FromSeconds(10));
+                Assert.Equal(2, peers.Count); Assert.False(reconnect.IsCompleted);
+                release.TrySetResult();
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued.WaitAsync(TimeSpan.FromSeconds(5)));
+                await reconnect;
+                await transport.EmitBusAsync("test.current", new JsonObject(), new JsonObject());
+                Assert.True(transport.Connected && transport.HandshakeComplete); Assert.Null(transport.LastError);
+                Assert.Equal(new[] { "hello", "bus" }, peers[1].AuthenticatedTypes.ToArray());
+            } finally {
+                // Never let intentionally failing Abort teardown mask an earlier
+                // assertion or leave the synthetic physical write suspended.
+                peers[0].ThrowOnAbort = false;
+                release.TrySetResult();
+            }
+        }
+
         [Fact] public async Task BusCallbackCanSynchronouslySendAnImmediateResponse()
         {
             PeerSocket? peer = null;
@@ -163,6 +226,8 @@ namespace Thalovant.Sdk.Tests
             public string? Pattern { get; private set; }
             public Func<Task>? BeforeNextReceive { get; set; }
             public Func<Task>? BeforeNextSend { get; set; }
+            public Func<CancellationToken, Task>? BeforeNextSendWithToken { get; set; }
+            public bool ThrowOnAbort { get; set; }
             public TaskCompletionSource<bool> HeldReceiveCompleted { get; } = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             public void QueueBus(string type) {
                 foreach (var frame in _session!.Encrypt(Encoding.UTF8.GetBytes(HiveWire.Encode(HiveWire.BusMessage(type, new JsonObject(), new JsonObject())))))
@@ -186,6 +251,9 @@ namespace Thalovant.Sdk.Tests
             {
                 var held = BeforeNextSend; BeforeNextSend = null;
                 if (held != null) await held();
+                var heldWithToken = BeforeNextSendWithToken; BeforeNextSendWithToken = null;
+                if (heldWithToken != null) await heldWithToken(token);
+                token.ThrowIfCancellationRequested();
                 var bytes = buffer.ToArray();
                 if (type == WebSocketMessageType.Text) {
                     var envelope = HiveWire.Decode(Encoding.UTF8.GetString(bytes)).Payload["noise"]!.AsObject();
@@ -198,7 +266,9 @@ namespace Thalovant.Sdk.Tests
                     if (!_exchange.Finished) QueueText(HiveWire.Encode(new HiveMessage("shake", new JsonObject { ["noise"] = new JsonObject { ["msg"] = Noise.Hex(_exchange.Write()) } })));
                     if (_exchange.Finished) { _session = _exchange.Session(); _pinClient(_exchange.RemoteStatic!); }
                 } else {
-                    var plain = _session!.Decrypt(bytes); Assert.True(plain!.Value.Json);
+                    var plain = _session!.Decrypt(bytes);
+                    if (!plain.HasValue) return; // A chunked message is delivered only after its final frame.
+                    Assert.True(plain.Value.Json);
                     var message = HiveWire.Decode(Encoding.UTF8.GetString(plain.Value.Data)); AuthenticatedTypes.Enqueue(message.MsgType);
                     if (message.MsgType == "bus") {
                         var context = message.Payload["context"]!.AsObject();
@@ -216,7 +286,7 @@ namespace Thalovant.Sdk.Tests
                 var end = _offset == value.Data.Length; if (end) _reading = null;
                 return new WebSocketReceiveResult(length, value.Type, end);
             }
-            public override void Abort() { _state = WebSocketState.Aborted; _incoming.Writer.TryComplete(); }
+            public override void Abort() { _state = WebSocketState.Aborted; _incoming.Writer.TryComplete(); if (ThrowOnAbort) throw new InvalidOperationException("fixture teardown failed"); }
             public override void Dispose() => Abort();
             public override WebSocketCloseStatus? CloseStatus => null;
             public override string? CloseStatusDescription => null;

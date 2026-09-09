@@ -248,7 +248,23 @@ namespace Thalovant
             {
                 throw new ThalovantRuntimeException("AskAsync() requires a non-empty text prompt.");
             }
-            var effectiveTimeout = timeout ?? TimeSpan.FromSeconds(12);
+            var effectiveTimeout = RuntimeTimeout(timeout);
+            var effectiveEmptyReplyWait = emptyReplyWait ?? _emptyReplyWait;
+            var effectiveReplySettle = replySettle ?? _replySettle;
+            if (effectiveEmptyReplyWait < TimeSpan.Zero)
+                throw new ArgumentOutOfRangeException(nameof(emptyReplyWait), "Reply waits must be non-negative.");
+            if (effectiveReplySettle < TimeSpan.Zero)
+                throw new ArgumentOutOfRangeException(nameof(replySettle), "Reply waits must be non-negative.");
+            cancellationToken.ThrowIfCancellationRequested();
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            TimeSpan Remaining() { var left = effectiveTimeout - clock.Elapsed; return left > TimeSpan.Zero ? left : TimeSpan.Zero; }
+            TimeSpan Bounded(TimeSpan wait, long? since) {
+                var elapsed = since.HasValue ? TimeSpan.FromSeconds((System.Diagnostics.Stopwatch.GetTimestamp() - since.Value) / (double)System.Diagnostics.Stopwatch.Frequency) : TimeSpan.Zero;
+                var phase = wait > elapsed ? wait - elapsed : TimeSpan.Zero;
+                var left = Remaining(); return phase < left ? phase : left;
+            }
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            deadline.CancelAfter(effectiveTimeout);
             var effectiveRequestId = requestId ?? ThalovantContext.NewRequestId();
             var effectiveSessionId = sessionId ?? ThalovantContext.NewSessionId();
             var correlatedContext = ThalovantContext.WithCorrelation(
@@ -257,9 +273,7 @@ namespace Thalovant
                 Identity.SiteId,
                 lang,
                 effectiveRequestId);
-            await ConnectAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-
-            var state = new AskState();
+            var state = new AskState(Remaining, effectiveEmptyReplyWait, effectiveReplySettle);
             var handlerId = _bus.AddBusHandler(payload =>
             {
                 var busEvent = ThalovantEvent.FromBusPayload(payload);
@@ -268,38 +282,46 @@ namespace Thalovant
                     state.Process(busEvent, effectiveRequestId);
                 }
             });
+            var operationToken = deadline.Token;
+            // This task retains the physical send lock until transport cleanup completes.
+            // The caller can finish at its deadline without replaying or freeing that write.
+            _ = Task.Run(async () => {
+                try {
+                    operationToken.ThrowIfCancellationRequested();
+                    var connectBudget = Remaining();
+                    if (connectBudget <= TimeSpan.Zero) throw new ThalovantTimeoutException("Request budget expired before connecting.");
+                    await ConnectAsync(connectBudget, operationToken).ConfigureAwait(false);
+                    operationToken.ThrowIfCancellationRequested();
+                    await _bus.EmitBusAsync(ThalovantEvents.RecognizerLoopUtterance,
+                        ThalovantContext.UtterancePayload(prompt, lang), correlatedContext, operationToken).ConfigureAwait(false);
+                } catch (OperationCanceledException) when (operationToken.IsCancellationRequested) {
+                    // The collector owns deadline/caller-cancellation precedence.
+                } catch (Exception error) { state.Fail(error); }
+            });
             try
             {
-                await _bus.EmitBusAsync(
-                    ThalovantEvents.RecognizerLoopUtterance,
-                    ThalovantContext.UtterancePayload(prompt, lang),
-                    correlatedContext,
-                    cancellationToken).ConfigureAwait(false);
-
-                // Phase 1: wait until the hub reports the utterance handled or the
-                // first speak fragment arrives.
-                await state.ProgressGate.WaitAsync(
-                    effectiveTimeout,
-                    new ThalovantTimeoutException(
-                        $"Hub did not finish handling the utterance within {(int)effectiveTimeout.TotalMilliseconds}ms.")).ConfigureAwait(false);
-
-                // Phase 2: the hub finished handling but has not spoken yet; give the
-                // reply a grace period.
-                var effectiveEmptyReplyWait = emptyReplyWait ?? _emptyReplyWait;
+                try {
+                    await state.ProgressGate.WaitAsync(Remaining(),
+                        new ThalovantTimeoutException("Hub did not finish handling the utterance within the request budget."), cancellationToken).ConfigureAwait(false);
+                } catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) {
+                    var captured = state.Snapshot();
+                    if (captured.Fragments.Count == 0 && captured.FailureEvent == null && captured.SoftFailureEvent == null)
+                        throw new ThalovantTimeoutException("Hub did not finish handling the utterance within the request budget.");
+                } catch (ThalovantTimeoutException) {
+                    var captured = state.Snapshot();
+                    if (captured.Fragments.Count == 0 && captured.FailureEvent == null && captured.SoftFailureEvent == null) throw;
+                }
                 var afterProgress = state.Snapshot();
-                if (afterProgress.Fragments.Count == 0 && afterProgress.FailureEvent is null && effectiveEmptyReplyWait > TimeSpan.Zero)
-                {
-                    await state.ReplyGate.WaitAsync(effectiveEmptyReplyWait, timeoutError: null).ConfigureAwait(false);
-                }
+                if (afterProgress.Fragments.Count == 0 && afterProgress.FailureEvent is null)
+                    await state.ReplyGate.WaitAsync(Bounded(effectiveEmptyReplyWait, afterProgress.EmptyStartedAt), null, cancellationToken).ConfigureAwait(false);
+                // Optional settling shares the original budget and hard failure interrupts it.
+                var afterEmpty = state.Snapshot();
+                if (afterEmpty.FailureEvent is null && afterEmpty.Fragments.Count > 0)
+                    await state.TerminalGate.WaitAsync(Bounded(effectiveReplySettle, afterEmpty.FirstSpeechAt), null, cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
 
-                // Phase 3: let trailing fragments settle briefly.
-                var effectiveReplySettle = replySettle ?? _replySettle;
-                if (effectiveReplySettle > TimeSpan.Zero)
-                {
-                    await Task.Delay(effectiveReplySettle, cancellationToken).ConfigureAwait(false);
-                }
-
-                var final = state.Snapshot();
+                var final = state.Finish();
+                if (final.Error != null) throw final.Error;
                 // A soft intent-miss becomes the surfaced failure only if no reply
                 // (not even a fallback) arrived; a reply means a fallback recovered.
                 var effectiveFailure = final.FailureEvent ?? (final.Fragments.Count == 0 ? final.SoftFailureEvent : null);
@@ -320,13 +342,14 @@ namespace Thalovant
                     final.Fragments,
                     handled: effectiveFailure is null,
                     ok: effectiveFailure is null,
-                    sessionId: effectiveSessionId,
+                    sessionId: final.ResponseSessionId ?? effectiveSessionId,
                     requestId: effectiveRequestId,
                     events: final.Events,
                     failureEvent: effectiveFailure);
             }
             finally
             {
+                deadline.Cancel();
                 _bus.RemoveBusHandler(handlerId);
             }
         }
@@ -433,14 +456,18 @@ namespace Thalovant
             internal ThalovantEvent? FailureEvent { get; }
             internal ThalovantEvent? SoftFailureEvent { get; }
             internal bool Handled { get; }
+            internal string? ResponseSessionId { get; }
+            internal long? FirstSpeechAt { get; }
+            internal long? EmptyStartedAt { get; }
+            internal Exception? Error { get; }
 
-            internal StateSnapshot(IReadOnlyList<string> fragments, IReadOnlyList<ThalovantEvent> events, ThalovantEvent? failureEvent, ThalovantEvent? softFailureEvent, bool handled)
+            internal StateSnapshot(IReadOnlyList<string> fragments, IReadOnlyList<ThalovantEvent> events, ThalovantEvent? failureEvent, ThalovantEvent? softFailureEvent, bool handled, long? firstSpeechAt, long? emptyStartedAt, string? responseSessionId, Exception? error)
             {
                 Fragments = fragments;
                 Events = events;
                 FailureEvent = failureEvent;
                 SoftFailureEvent = softFailureEvent;
-                Handled = handled;
+                Handled = handled; FirstSpeechAt = firstSpeechAt; EmptyStartedAt = emptyStartedAt; ResponseSessionId = responseSessionId; Error = error;
             }
         }
 
@@ -452,18 +479,55 @@ namespace Thalovant
         // null so the empty-reply wait still runs and a fallback reply can win.
         private ThalovantEvent? _softFailureEvent;
         private bool _handled;
+        private long? _firstSpeechAt, _emptyStartedAt;
+        private string? _responseSessionId;
+        private Exception? _error;
+        private bool _stopped;
+        private readonly Func<TimeSpan>? _remaining;
+        private readonly TimeSpan _emptyReplyWait, _replySettle;
+
+        internal AskState(Func<TimeSpan>? remaining = null, TimeSpan emptyReplyWait = default, TimeSpan replySettle = default)
+        { _remaining = remaining; _emptyReplyWait = emptyReplyWait; _replySettle = replySettle; }
+
+        private bool Expired()
+        {
+            if (_remaining == null) return false;
+            if (_remaining() <= TimeSpan.Zero) return true;
+            var started = _firstSpeechAt ?? _emptyStartedAt;
+            if (!started.HasValue) return false;
+            var elapsed = TimeSpan.FromSeconds((System.Diagnostics.Stopwatch.GetTimestamp() - started.Value) / (double)System.Diagnostics.Stopwatch.Frequency);
+            return elapsed >= (_firstSpeechAt.HasValue ? _replySettle : _emptyReplyWait);
+        }
+
+        internal void Fail(Exception error)
+        {
+            lock (_lock) {
+                if (_stopped || _failureEvent != null || Expired()) return;
+                _error = error; _stopped = true;
+                // All phases wake, even when an earlier progress gate is open.
+                // Store the exception once instead of faulting unobserved gates.
+                ProgressGate.Open(); ReplyGate.Open(); TerminalGate.Open();
+            }
+        }
+
+        internal StateSnapshot Finish()
+        {
+            lock (_lock) { _stopped = true; return Snapshot(); }
+        }
+
 
         /// <summary>Opens when the utterance is handled or the first fragment arrives.</summary>
         internal AsyncGate ProgressGate { get; } = new AsyncGate();
 
         /// <summary>Opens when the first speak fragment arrives.</summary>
         internal AsyncGate ReplyGate { get; } = new AsyncGate();
+        internal AsyncGate TerminalGate { get; } = new AsyncGate();
 
         internal StateSnapshot Snapshot()
         {
             lock (_lock)
             {
-                return new StateSnapshot(_fragments.ToArray(), _events.ToArray(), _failureEvent, _softFailureEvent, _handled);
+                return new StateSnapshot(_fragments.ToArray(), _events.ToArray(), _failureEvent, _softFailureEvent, _handled, _firstSpeechAt, _emptyStartedAt, _responseSessionId, _error);
             }
         }
 
@@ -477,65 +541,35 @@ namespace Thalovant
             {
                 return;
             }
-            switch (busEvent.Name)
+            lock (_lock)
             {
-                case ThalovantEvents.Speak:
-                case ThalovantEvents.OvosUtteranceSpeak:
+                if (_stopped || _failureEvent != null || Expired()) return;
+                switch (busEvent.Name)
                 {
-                    var normalized = NormalizeFragment(busEvent.Text);
-                    bool appended;
-                    lock (_lock)
-                    {
+                    case ThalovantEvents.Speak:
+                    case ThalovantEvents.OvosUtteranceSpeak:
                         _events.Add(busEvent);
-                        appended = normalized.Length > 0
-                            && (_fragments.Count == 0 || _fragments[_fragments.Count - 1] != normalized);
-                        if (appended)
+                        var normalized = NormalizeFragment(busEvent.Text);
+                        if (normalized.Length > 0 && (_fragments.Count == 0 || _fragments[_fragments.Count - 1] != normalized))
                         {
-                            _fragments.Add(normalized);
+                            _firstSpeechAt ??= System.Diagnostics.Stopwatch.GetTimestamp();
+                            _fragments.Add(normalized); ReplyGate.Open(); ProgressGate.Open();
                         }
-                    }
-                    if (appended)
-                    {
-                        ReplyGate.Open();
-                        ProgressGate.Open();
-                    }
-                    break;
+                        break;
+                    case ThalovantEvents.UtteranceHandled:
+                        _emptyStartedAt ??= System.Diagnostics.Stopwatch.GetTimestamp();
+                        _events.Add(busEvent); _handled = true; ProgressGate.Open(); break;
+                    case ThalovantEvents.IntentFailure:
+                    case ThalovantEvents.IntentUnmatched:
+                        _emptyStartedAt ??= System.Diagnostics.Stopwatch.GetTimestamp();
+                        _events.Add(busEvent); _softFailureEvent = busEvent; _handled = true; ProgressGate.Open(); break;
+                    case ThalovantEvents.PolicyDenied:
+                    case ThalovantEvents.QueryTimeout:
+                        _events.Add(busEvent); _failureEvent = busEvent; _handled = true;
+                        ProgressGate.Open(); ReplyGate.Open(); TerminalGate.Open(); break;
+                    default: return;
                 }
-                case ThalovantEvents.UtteranceHandled:
-                    lock (_lock)
-                    {
-                        _events.Add(busEvent);
-                        _handled = true;
-                    }
-                    ProgressGate.Open();
-                    break;
-                // An intent miss is a SOFT failure: end phase 1 promptly, but leave
-                // _failureEvent null so the empty-reply wait still runs and a
-                // fallback reply can take over. IntentFailure is the legacy Mycroft
-                // name; IntentUnmatched is the current OVOS name (see issue #22).
-                case ThalovantEvents.IntentFailure:
-                case ThalovantEvents.IntentUnmatched:
-                    lock (_lock)
-                    {
-                        _events.Add(busEvent);
-                        _softFailureEvent = busEvent;
-                        _handled = true;
-                    }
-                    ProgressGate.Open();
-                    break;
-                // Hard failures are terminal, with no fallback wait.
-                case ThalovantEvents.PolicyDenied:
-                case ThalovantEvents.QueryTimeout:
-                    lock (_lock)
-                    {
-                        _events.Add(busEvent);
-                        _failureEvent = busEvent;
-                        _handled = true;
-                    }
-                    ProgressGate.Open();
-                    break;
-                default:
-                    break;
+                if (_responseSessionId == null && !string.IsNullOrWhiteSpace(busEvent.SessionId)) _responseSessionId = busEvent.SessionId;
             }
         }
 

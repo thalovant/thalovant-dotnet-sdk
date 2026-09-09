@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/>
 ## Install
 
 ```bash
-dotnet add package Thalovant.Sdk --version 0.3.1
+dotnet add package Thalovant.Sdk --version 0.3.2
 ```
 
 The library multi-targets `net8.0` and `netstandard2.1` (Unity 2021+
@@ -507,6 +507,26 @@ Argon2id and BLAKE2b use a pinned, licensed Bouncy Castle source subset;
 AES-256 uses the platform provider with the existing in-tree GCM arithmetic.
 See [third-party notices](THIRD-PARTY-NOTICES.md) for source revision and
 adaptations. HTTPS/MQTT runtime transports remain explicitly unsupported.
+
+## Ask deadlines and correlation
+
+Ask uses one total timeout across connection, authentication, send, and replies.
+After a WSS write is admitted, caller cancellation stops waiting while the complete encrypted frame sequence retains transport ownership under an independent 20-second physical send budget. A physical timeout or write error retires the captured connection; queued cancellation never interrupts another owner.
+
+A terminal query reply can complete while its admitted write is still retiring. The transport retains write ownership and never replays the request. Ask surfaces a write failure during any active reply phase; a hard terminal reply or an already elapsed reply window takes precedence over later write errors.
+
+The first nonempty speech starts a fixed settling window (250ms by default).
+The first handled or soft-miss event without speech starts a fixed empty-reply
+window (5s by default); subsequent speech switches to settling. Both windows
+are clipped to the original deadline, and an empty window does not add settling.
+Hard policy denial or query timeout freezes collection immediately: prior speech
+is returned as a failed partial reply; otherwise the call raises a runtime error.
+Caller cancellation removes owned subscriptions and preserves a different caller's
+connection attempt. Ask requires a matching request ID and returns the first
+nonblank correlated runtime session ID, falling back to the requested session.
+Query replies use the same session selection from accepted query events.
+Event-stream cancellation or expiry also retires the subscription while a consumer
+is paused between reads.
 
 ## Control-Plane HTTP Security
 

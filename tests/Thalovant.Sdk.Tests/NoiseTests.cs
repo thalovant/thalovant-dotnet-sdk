@@ -19,7 +19,10 @@ namespace Thalovant.Tests
         {
             Assert.Equal(_fixture["public_i"]!.GetValue<string>(), Noise.Hex(Noise.PublicKey(Key("static_i"))));
             Assert.Equal(_fixture["public_r"]!.GetValue<string>(), Noise.Hex(Noise.PublicKey(Key("static_r"))));
-            foreach (var exchange in _fixture["exchanges"]!.AsArray().Select(v => v!.AsObject()).Where(e => e["suite"]!.GetValue<string>() == Noise.Suite)) {
+            // Keep the complete cross-SDK fixture; only AESGCM is supported here.
+            var exchanges = _fixture["exchanges"]!.AsArray().Select(v => v!.AsObject()).Where(e => e["suite"]!.GetValue<string>() == Noise.Suite).ToArray();
+            Assert.Equal(new[] { "KKpsk0", "XXpsk2" }, exchanges.Select(e => e["pattern"]!.GetValue<string>()).OrderBy(value => value));
+            foreach (var exchange in exchanges) {
                 var pattern = exchange["pattern"]!.GetValue<string>();
                 var prologue = Noise.Prologue(_fixture["hello"]!.AsObject(), _fixture["offer"]!.AsObject(), exchange["protocol"]!.GetValue<string>());
                 Assert.Equal(exchange["prologue"]!.GetValue<string>(), Noise.Hex(prologue));

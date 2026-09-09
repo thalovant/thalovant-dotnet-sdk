@@ -30,8 +30,14 @@ namespace Thalovant
         private static readonly object StateLock = new object();
         public string DirectoryPath { get; }
         private readonly bool _explicitDirectory;
-        public HiveMindFileNoiseStore(string? directory = null)
+        private readonly Action<FileStream, byte[]> _writeAndFlush;
+        public HiveMindFileNoiseStore(string? directory = null) : this(directory, WriteAndFlush) { }
+
+        // Instance-local I/O seam for interrupted-write tests; production always
+        // writes and flushes the complete value before publishing its path.
+        internal HiveMindFileNoiseStore(string? directory, Action<FileStream, byte[]> writeAndFlush)
         {
+            _writeAndFlush = writeAndFlush;
             _explicitDirectory = directory != null;
             DirectoryPath = Path.GetFullPath(directory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Thalovant", "noise"));
         }
@@ -62,8 +68,8 @@ namespace Thalovant
                     throw new ThalovantConnectionException("Noise lock must not be a symbolic link.");
                 try {
                     // FileShare.None is an OS-backed exclusive lock shared by all SDK
-                    // processes. Readers hold it too, so no one observes CREATE_NEW
-                    // state before its complete contents have been flushed.
+                    // processes. Readers hold it too; staging and publication also
+                    // keep interrupted writes from becoming trusted key files.
                     var stream = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
                     try {
 #if NET8_0_OR_GREATER
@@ -86,19 +92,40 @@ namespace Thalovant
             if (new FileInfo(file).Length != 64) throw new ThalovantConnectionException("Invalid stored Noise key length.");
             return Noise.Unhex(File.ReadAllText(file));
         }
-        private static void WriteNew(string file, byte[] key)
+        private static void WriteAndFlush(FileStream stream, byte[] bytes)
         {
-            using var stream = new FileStream(file, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            stream.Write(bytes, 0, bytes.Length);
+            stream.Flush(true);
+        }
+        private void WriteNew(string file, byte[] key)
+        {
+            var temporary = Path.Combine(DirectoryPath, ".noise-" + Guid.NewGuid().ToString("N") + ".tmp");
+            try {
+                using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None)) {
 #if NET8_0_OR_GREATER
-            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(file, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                    if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
 #endif
-            var bytes = Encoding.ASCII.GetBytes(Noise.Hex(key)); stream.Write(bytes, 0, bytes.Length); stream.Flush(true);
+                    _writeAndFlush(stream, Encoding.ASCII.GetBytes(Noise.Hex(key)));
+                }
+                // Same-directory publication keeps the complete file on one volume.
+                // The no-overwrite overload preserves a winner, including its pin.
+                // Only a publication collision can be handled as an existing key;
+                // staging write/flush errors must propagate to the caller.
+                try { File.Move(temporary, file); }
+                catch (IOException) when (File.Exists(file)) { }
+            } finally {
+                // A killed process may leave an untrusted .tmp file. It is never
+                // read as key material, and subsequent attempts use a fresh name.
+                try { File.Delete(temporary); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
         }
         public byte[] LoadOrCreateStaticKey()
         {
             lock (StateLock) {
                 using var fileLock = AcquireFileLock(); var path = Path.Combine(DirectoryPath, "noise-static.key");
-                if (!File.Exists(path)) { try { WriteNew(path, Noise.RandomKey()); } catch (IOException) when (File.Exists(path)) { } }
+                if (!File.Exists(path)) WriteNew(path, Noise.RandomKey());
                 return ReadKey(path);
             }
         }
@@ -111,7 +138,7 @@ namespace Thalovant
             if (publicKey.Length != 32) throw new ArgumentException("Noise public key must be 32 bytes.", nameof(publicKey));
             lock (StateLock) {
                 using var fileLock = AcquireFileLock(); var path = PinFile(nodeId);
-                try { WriteNew(path, publicKey); } catch (IOException) when (File.Exists(path)) { }
+                if (!File.Exists(path)) WriteNew(path, publicKey);
                 if (!Noise.Equal(publicKey, ReadKey(path))) throw new CryptographicException("Noise server key changed; verify its rotation before replacing the saved pin.");
             }
         }

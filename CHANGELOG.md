@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- Publish Noise static keys and hub pins only after a private same-directory temporary file is completely written and flushed. Interrupted writes cannot leave a truncated trusted key; existing keys and pins are never replaced automatically.
+- Preserve cross-process locking and validate write/flush failures, process termination during publication, and competing pin creation.
+- Correct the packaged README to describe the current 0.2.x WSS-only transport scope.
+
 ## 0.2.0
 
 - Bind callbacks, queued sends, handshake completion, and failure cleanup to their owning socket under the same lifecycle lock. Delayed activity cannot reset a replacement connection.

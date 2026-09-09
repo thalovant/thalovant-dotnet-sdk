@@ -12,6 +12,20 @@ namespace Thalovant.Sdk.Tests
 {
     public sealed class ControlPlaneSecurityTests
     {
+        [Fact]
+        public void DeviceBrowserLauncherAcceptsOnlyWebUrlsWithoutUserinfo()
+        {
+            var launches = 0;
+            foreach (var input in new[] { "file:///tmp/program", "javascript:alert(1)", "calc.exe", "--help", "https://user:PRIVATE-CREDENTIAL@example.test", "https://@example.test", "https://example.test/\n--help" })
+                ThalovantControlPlane.TryOpenBrowser(input, _ => launches++);
+            Assert.Equal(0, launches);
+            ThalovantControlPlane.TryOpenBrowser("https://example.test/verify?code=a&next=b", info => {
+                launches++;
+                if (info.UseShellExecute) Assert.StartsWith("https://", info.FileName);
+                else { Assert.Single(info.ArgumentList); Assert.StartsWith("https://", info.ArgumentList[0]); }
+            });
+            Assert.Equal(1, launches);
+        }
         private sealed class PassThrough : DelegatingHandler { public PassThrough(HttpMessageHandler inner) : base(inner) { } }
         [Theory]
         [InlineData(307)]

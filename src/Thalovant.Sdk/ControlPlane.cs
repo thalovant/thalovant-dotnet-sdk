@@ -443,23 +443,23 @@ namespace Thalovant
         /// <c>xdg-open</c> elsewhere. Never throws — the prompt has already shown
         /// the verification URI and user code.
         /// </summary>
-        internal static void TryOpenBrowser(string url)
+        internal static void TryOpenBrowser(string url, Action<ProcessStartInfo>? launch = null)
         {
+            if (url.Any(char.IsControl) || url != url.Trim() || !Uri.TryCreate(url, UriKind.Absolute, out var target) ||
+                (target.Scheme != Uri.UriSchemeHttp && target.Scheme != Uri.UriSchemeHttps) ||
+                string.IsNullOrEmpty(target.Host) || !string.IsNullOrEmpty(target.UserInfo) ||
+                System.Text.RegularExpressions.Regex.IsMatch(url, @"^[a-zA-Z][a-zA-Z0-9+.-]*://[^/?#]*@")) return;
             try
             {
+                ProcessStartInfo info;
                 if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-                {
-                    using (Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }))
-                    {
-                    }
+                    info = new ProcessStartInfo(target.AbsoluteUri) { UseShellExecute = true };
+                else {
+                    info = new ProcessStartInfo(RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "open" : "xdg-open") { UseShellExecute = false };
+                    info.ArgumentList.Add(target.AbsoluteUri);
                 }
-                else
-                {
-                    var opener = RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "open" : "xdg-open";
-                    using (Process.Start(opener, url))
-                    {
-                    }
-                }
+                if (launch != null) launch(info);
+                else { using var process = Process.Start(info); }
             }
             catch (Exception)
             {

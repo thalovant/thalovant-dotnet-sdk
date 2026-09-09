@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -143,12 +144,26 @@ namespace Thalovant
         public string UserAgent { get; }
 
         private readonly HttpClient _http;
+        private readonly bool _uncontrolledHttpClient;
+        private readonly HttpMessageHandler? _handler;
 
         public ThalovantControlPlane(
             string apiUrl = ThalovantDefaults.ControlApiUrl,
             string? accessToken = null,
             string? userAgent = null,
             HttpClient? httpClient = null)
+            : this(apiUrl, accessToken, userAgent, httpClient, null) { }
+
+        /// <summary>Owns a client using the supplied handler with SDK-controlled redirect policy.</summary>
+        public ThalovantControlPlane(
+            HttpMessageHandler httpMessageHandler,
+            string apiUrl = ThalovantDefaults.ControlApiUrl,
+            string? accessToken = null,
+            string? userAgent = null)
+            : this(apiUrl, accessToken, userAgent, null, httpMessageHandler ?? throw new ArgumentNullException(nameof(httpMessageHandler))) { }
+
+        private ThalovantControlPlane(string apiUrl, string? accessToken, string? userAgent,
+            HttpClient? httpClient, HttpMessageHandler? httpMessageHandler)
         {
             ApiUrl = NormalizeControlApiUrl(apiUrl);
             AccessToken = accessToken;
@@ -156,7 +171,45 @@ namespace Thalovant
             // version is never inlined into a caller's assembly at their
             // compile time.
             UserAgent = userAgent ?? ThalovantDefaults.UserAgent;
-            _http = httpClient ?? new HttpClient();
+            if (httpClient != null && httpMessageHandler != null) throw new ArgumentException("Supply either httpClient or httpMessageHandler, not both.");
+            _uncontrolledHttpClient = httpClient != null;
+            if (httpClient != null) _http = httpClient;
+            else {
+                var handler = httpMessageHandler ?? new HttpClientHandler();
+                DisableAutomaticRedirects(handler);
+                _handler = handler;
+                _http = new HttpClient(handler);
+            }
+        }
+
+        private static void DisableAutomaticRedirects(HttpMessageHandler handler)
+        {
+            if (handler is HttpClientHandler http) http.AllowAutoRedirect = false;
+#if NET8_0_OR_GREATER
+            else if (handler is SocketsHttpHandler sockets) sockets.AllowAutoRedirect = false;
+#else
+            else if (handler.GetType().FullName == "System.Net.Http.SocketsHttpHandler") {
+                var property = handler.GetType().GetProperty("AllowAutoRedirect");
+                if (property == null || !property.CanWrite) throw new ArgumentException("This handler cannot disable automatic redirects.");
+                property.SetValue(handler, false);
+            }
+#endif
+            else if (handler is DelegatingHandler delegating && delegating.InnerHandler != null) DisableAutomaticRedirects(delegating.InnerHandler);
+        }
+
+        private static bool HasAmbientCredentials(HttpMessageHandler? handler, Uri url)
+        {
+            if (handler is DelegatingHandler delegating) return HasAmbientCredentials(delegating.InnerHandler, url);
+            if (handler is HttpClientHandler http) return http.UseDefaultCredentials || http.Credentials != null ||
+                (http.UseCookies && http.CookieContainer.GetCookieHeader(url).Length != 0);
+            if (handler?.GetType().FullName == "System.Net.Http.SocketsHttpHandler") {
+                var type = handler.GetType();
+                if (type.GetProperty("Credentials")?.GetValue(handler) != null) return true;
+                if (type.GetProperty("UseCookies")?.GetValue(handler) is bool enabled && enabled &&
+                    type.GetProperty("CookieContainer")?.GetValue(handler) is System.Net.CookieContainer cookies)
+                    return cookies.GetCookieHeader(url).Length != 0;
+            }
+            return false;
         }
 
         /// <summary>
@@ -271,6 +324,10 @@ namespace Thalovant
             {
                 throw new ThalovantApiException("Thalovant API device authorization response was incomplete.");
             }
+            var completeUri = JsonUtil.GetString(grant["verification_uri_complete"]);
+            if (DeviceVerificationUri(verificationUri!) == null ||
+                (grant["verification_uri_complete"] != null && (completeUri == null || DeviceVerificationUri(completeUri) == null)))
+                throw new ThalovantApiException("Thalovant API device authorization returned an invalid verification URI.");
             var rawInterval = JsonUtil.GetInt(grant["interval"]);
             var interval = rawInterval is int seconds && seconds >= 0
                 ? TimeSpan.FromSeconds(seconds)
@@ -401,23 +458,30 @@ namespace Thalovant
         /// <c>xdg-open</c> elsewhere. Never throws — the prompt has already shown
         /// the verification URI and user code.
         /// </summary>
-        internal static void TryOpenBrowser(string url)
+        internal static Uri? DeviceVerificationUri(string url)
         {
+            if (url.Any(ch => char.IsControl(ch) || char.IsWhiteSpace(ch)) || !Uri.TryCreate(url, UriKind.Absolute, out var target) ||
+                (target.Scheme != Uri.UriSchemeHttp && target.Scheme != Uri.UriSchemeHttps) ||
+                string.IsNullOrEmpty(target.Host) || !string.IsNullOrEmpty(target.UserInfo) ||
+                System.Text.RegularExpressions.Regex.IsMatch(url, @"^[a-zA-Z][a-zA-Z0-9+.-]*://[^/?#]*@")) return null;
+            return target;
+        }
+
+        internal static void TryOpenBrowser(string url, Action<ProcessStartInfo>? launch = null)
+        {
+            var target = DeviceVerificationUri(url);
+            if (target == null) return;
             try
             {
+                ProcessStartInfo info;
                 if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-                {
-                    using (Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }))
-                    {
-                    }
+                    info = new ProcessStartInfo(target.AbsoluteUri) { UseShellExecute = true };
+                else {
+                    info = new ProcessStartInfo(RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "open" : "xdg-open") { UseShellExecute = false };
+                    info.ArgumentList.Add(target.AbsoluteUri);
                 }
-                else
-                {
-                    var opener = RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "open" : "xdg-open";
-                    using (Process.Start(opener, url))
-                    {
-                    }
-                }
+                if (launch != null) launch(info);
+                else { using var process = Process.Start(info); }
             }
             catch (Exception)
             {
@@ -1101,8 +1165,19 @@ namespace Thalovant
             var trimmedPath = path.TrimStart('/');
             if (!Uri.TryCreate(ApiUrl + trimmedPath, UriKind.Absolute, out var url))
             {
-                throw new ThalovantApiException($"Invalid Thalovant API URL: {ApiUrl + trimmedPath}");
+                throw new ThalovantApiException("Invalid Thalovant API URL.");
             }
+            if (url.Scheme != Uri.UriSchemeHttps && url.Scheme != Uri.UriSchemeHttp) throw new ThalovantApiException("Thalovant API URLs require HTTP or HTTPS.");
+            if (!string.IsNullOrEmpty(url.UserInfo) || System.Text.RegularExpressions.Regex.IsMatch(ApiUrl, @"^[a-zA-Z][a-zA-Z0-9+.-]*://[^/?#]*@")) throw new ThalovantApiException("Thalovant API URLs must not contain userinfo credentials.");
+            var secretHeaders = new[] { "Authorization", "Proxy-Authorization", "Cookie" };
+            var carriesCredentials = auth || body != null || HasAmbientCredentials(_handler, url) ||
+                secretHeaders.Any(name => _http.DefaultRequestHeaders.Contains(name)) ||
+                (headers != null && headers.Keys.Any(key => secretHeaders.Any(name => key.Equals(name, StringComparison.OrdinalIgnoreCase))));
+            var explicitLoopback = System.Text.RegularExpressions.Regex.IsMatch(ApiUrl, @"^http://(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?(?:/|$)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (carriesCredentials && url.Scheme != Uri.UriSchemeHttps && !explicitLoopback)
+                throw new ThalovantApiException("Credential-bearing Thalovant API requests require HTTPS except explicit loopback development endpoints.");
+            if (carriesCredentials && _uncontrolledHttpClient)
+                throw new ThalovantApiException("Credential-bearing requests cannot use an injected HttpClient because redirects cannot be controlled. Supply httpMessageHandler instead.");
             var request = new HttpRequestMessage(new HttpMethod(method), url);
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
             request.Headers.TryAddWithoutValidation("User-Agent", UserAgent);

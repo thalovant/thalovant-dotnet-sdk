@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/>
 ## Install
 
 ```bash
-dotnet add package Thalovant.Sdk --version 0.3.0
+dotnet add package Thalovant.Sdk --version 0.3.1
 ```
 
 The library multi-targets `net8.0` and `netstandard2.1` (Unity 2021+
@@ -507,6 +507,26 @@ Argon2id and BLAKE2b use a pinned, licensed Bouncy Castle source subset;
 AES-256 uses the platform provider with the existing in-tree GCM arithmetic.
 See [third-party notices](THIRD-PARTY-NOTICES.md) for source revision and
 adaptations. HTTPS/MQTT runtime transports remain explicitly unsupported.
+
+## Control-Plane HTTP Security
+
+Device login validates both verification URLs before displaying a prompt,
+invoking a browser callback, or polling. Each URL must use HTTP(S), include a
+host, and contain no userinfo, raw whitespace, or control characters. Invalid
+grants fail with a generic API error; their URLs are not displayed or launched.
+
+Control-plane requests never follow redirects automatically. Credentials and
+request bodies require HTTPS, except explicit `localhost`, `127.0.0.1`, and
+`[::1]` HTTP development endpoints. Anonymous body-free reads may use HTTP.
+URLs containing userinfo are rejected before I/O. Configure the intended API
+endpoint directly instead of relying on a redirect.
+
+Authenticated custom transports must use `httpMessageHandler:` instead of
+`httpClient:`. A supplied `HttpClient` cannot expose or enforce its redirect
+policy, so credential-bearing calls fail before I/O with migration guidance.
+The SDK disables redirects on `HttpClientHandler`, `SocketsHttpHandler`, and
+recognized inner handlers. Custom handler implementations remain trusted
+application code and must not follow redirects or forward credentials elsewhere.
 
 ## Protocol Selection
 

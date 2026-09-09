@@ -249,7 +249,7 @@ namespace Thalovant.Sdk.Tests
             var api = new ThalovantControlPlane(
                 apiUrl: "https://api.example.com/v1",
                 accessToken: "token",
-                httpClient: new HttpClient(handler));
+                httpMessageHandler: handler);
 
             // A validation error that reflects a sent secret PAST the summary bound
             // and across newlines: the human-facing message must not dump the body
@@ -274,7 +274,7 @@ namespace Thalovant.Sdk.Tests
             var handler = new StubHttpMessageHandler();
             var api = new ThalovantControlPlane(
                 apiUrl: "https://api.example.com/v1",
-                httpClient: new HttpClient(handler));
+                httpMessageHandler: handler);
 
             var rawBody = "{\n  \"error\": \"invalid_grant\",\n  \"padding\": \""
                 + new string('b', 300) + "SECRET-PAST-BOUND\"\n}";
@@ -301,7 +301,7 @@ namespace Thalovant.Sdk.Tests
             var api = new ThalovantControlPlane(
                 apiUrl: "https://api.example.com/v1",
                 accessToken: "token",
-                httpClient: new HttpClient(handler));
+                httpMessageHandler: handler);
 
             // FastAPI 422: `detail` is an ARRAY whose `input` echoes the SUBMITTED
             // request, including the apiKey/password/cryptoKey the SDK generated.
@@ -342,7 +342,7 @@ namespace Thalovant.Sdk.Tests
             var api = new ThalovantControlPlane(
                 apiUrl: "https://api.example.com/v1",
                 accessToken: "token",
-                httpClient: new HttpClient(handler));
+                httpMessageHandler: handler);
 
             // The echoed secrets are the FIRST fields of the body, under
             // non-whitelisted keys; only the safe `detail` string is surfaced.

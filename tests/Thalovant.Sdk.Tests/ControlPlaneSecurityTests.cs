@@ -26,6 +26,11 @@ namespace Thalovant.Sdk.Tests
             });
             Assert.Equal(1, launches);
         }
+        [Fact]
+        public void OriginalFourParameterConstructorRemainsBinaryCompatible()
+        {
+            Assert.NotNull(typeof(ThalovantControlPlane).GetConstructor(new[] { typeof(string), typeof(string), typeof(string), typeof(HttpClient) }));
+        }
         private sealed class PassThrough : DelegatingHandler { public PassThrough(HttpMessageHandler inner) : base(inner) { } }
         [Theory]
         [InlineData(307)]
@@ -47,7 +52,8 @@ namespace Thalovant.Sdk.Tests
                     await stream.WriteAsync(response);
                 });
                 using var handler = new HttpClientHandler { AllowAutoRedirect = true };
-                var api = new ThalovantControlPlane($"http://127.0.0.1:{sourcePort}", httpMessageHandler: injected ? new PassThrough(handler) : null);
+                var api = injected ? new ThalovantControlPlane(new PassThrough(handler), apiUrl: $"http://127.0.0.1:{sourcePort}") :
+                    new ThalovantControlPlane($"http://127.0.0.1:{sourcePort}");
                 var error = await Assert.ThrowsAsync<ThalovantApiException>(() => api.LoginAsync("fixture@example.test", "PRIVATE-CREDENTIAL").WaitAsync(TimeSpan.FromSeconds(10)));
                 Assert.Equal(status, error.StatusCode); Assert.DoesNotContain("PRIVATE-CREDENTIAL", error.Message);
                 await reply.WaitAsync(TimeSpan.FromSeconds(10));
@@ -81,7 +87,7 @@ namespace Thalovant.Sdk.Tests
                 using var handler = new HttpClientHandler();
                 if (useCookies) handler.CookieContainer.Add(new Uri("http://api.example.test"), new Cookie("session", "PRIVATE-CREDENTIAL"));
                 else handler.Credentials = new NetworkCredential("fixture", "PRIVATE-CREDENTIAL");
-                var api = new ThalovantControlPlane("http://api.example.test", httpMessageHandler: handler);
+                var api = new ThalovantControlPlane(apiUrl: "http://api.example.test", httpMessageHandler: handler);
                 var error = await Assert.ThrowsAsync<ThalovantApiException>(() => api.ListPublicHubsAsync());
                 Assert.DoesNotContain("PRIVATE-CREDENTIAL", error.Message);
             }
@@ -94,7 +100,7 @@ namespace Thalovant.Sdk.Tests
         public async Task CredentialHttpAndUserinfoFailBeforeIo(string endpoint)
         {
             using var handler = new StubHttpMessageHandler();
-            var api = new ThalovantControlPlane(endpoint, accessToken: "PRIVATE-CREDENTIAL", httpMessageHandler: handler);
+            var api = new ThalovantControlPlane(apiUrl: endpoint, accessToken: "PRIVATE-CREDENTIAL", httpMessageHandler: handler);
             var login = await Assert.ThrowsAsync<ThalovantApiException>(() => api.LoginAsync("fixture@example.test", "PRIVATE-CREDENTIAL"));
             Assert.DoesNotContain("PRIVATE-CREDENTIAL", login.Message);
             var token = await Assert.ThrowsAsync<ThalovantApiException>(() => api.ListHubsAsync());
@@ -107,7 +113,7 @@ namespace Thalovant.Sdk.Tests
         public async Task ExplicitLoopbackAllowsCredentialDevelopment(string host)
         {
             using var handler = new StubHttpMessageHandler(); handler.Enqueue(body: "{\"access_token\":\"fixture\"}");
-            await new ThalovantControlPlane($"http://{host}:1234", httpMessageHandler: handler).LoginAsync("fixture@example.test", "fixture");
+            await new ThalovantControlPlane(apiUrl: $"http://{host}:1234", httpMessageHandler: handler).LoginAsync("fixture@example.test", "fixture");
             Assert.Single(handler.Requests);
         }
     }

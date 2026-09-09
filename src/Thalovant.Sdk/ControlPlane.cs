@@ -151,8 +151,19 @@ namespace Thalovant
             string apiUrl = ThalovantDefaults.ControlApiUrl,
             string? accessToken = null,
             string? userAgent = null,
-            HttpClient? httpClient = null,
-            HttpMessageHandler? httpMessageHandler = null)
+            HttpClient? httpClient = null)
+            : this(apiUrl, accessToken, userAgent, httpClient, null) { }
+
+        /// <summary>Owns a client using the supplied handler with SDK-controlled redirect policy.</summary>
+        public ThalovantControlPlane(
+            HttpMessageHandler httpMessageHandler,
+            string apiUrl = ThalovantDefaults.ControlApiUrl,
+            string? accessToken = null,
+            string? userAgent = null)
+            : this(apiUrl, accessToken, userAgent, null, httpMessageHandler ?? throw new ArgumentNullException(nameof(httpMessageHandler))) { }
+
+        private ThalovantControlPlane(string apiUrl, string? accessToken, string? userAgent,
+            HttpClient? httpClient, HttpMessageHandler? httpMessageHandler)
         {
             ApiUrl = NormalizeControlApiUrl(apiUrl);
             AccessToken = accessToken;

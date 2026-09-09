@@ -402,13 +402,22 @@ namespace Thalovant
         }
     }
 
+    /// <summary>A registered fallback handler, sorted by priority then skill id.</summary>
+    public sealed class HubFallback
+    {
+        public string SkillId { get; }
+        public long Priority { get; }
+        public HubFallback(string skillId, long priority = 0) { SkillId = skillId; Priority = priority; }
+        public JsonObject ToJsonObject() => new JsonObject { ["skill_id"] = SkillId, ["priority"] = Priority };
+    }
+
     /// <summary>
     /// Everything a hub can be asked, grouped by skill.
     /// <para>
     /// <see cref="Source"/> says how it was read: <see cref="SourceIntentManifest"/>
     /// carries sentences per language; <see cref="SourceEngineManifests"/> is the
-    /// names-only fallback, and <see cref="Denied"/> then names the query the hub
-    /// refused.
+    /// names-only fallback, and <see cref="Denied"/> names the query that triggered
+    /// fallback. A silent listing uses the same marker; it is not proof of policy denial.
     /// </para>
     /// </summary>
     public sealed class HubIntentInventory
@@ -428,8 +437,16 @@ namespace Thalovant
         /// <summary><see cref="SourceIntentManifest"/> or <see cref="SourceEngineManifests"/>.</summary>
         public string Source { get; }
 
-        /// <summary>The queries the hub refused on the way to this result; empty unless the fallback was taken.</summary>
+        /// <summary>Queries that triggered fallback; a marker alone is not proof of policy denial.</summary>
         public IReadOnlyList<string> Denied { get; }
+        public IReadOnlyList<HubFallback> Fallbacks { get; }
+        public bool FallbacksKnown { get; }
+        /// <summary>Unknown fallback discovery cannot rule out an answer in another language.</summary>
+        public bool MayAnswer(string lang)
+        {
+            foreach (var intent in Intents) if (intent.Enabled && intent.PhrasesFor(lang).Count > 0) return true;
+            return Fallbacks.Count > 0 || !FallbacksKnown;
+        }
 
         /// <summary>Every intent of every skill, flattened in the same order.</summary>
         public IReadOnlyList<HubIntent> Intents { get; }
@@ -461,12 +478,16 @@ namespace Thalovant
             IReadOnlyList<string> languages,
             IReadOnlyList<HubSkillIntents> skills,
             string source = SourceIntentManifest,
-            IReadOnlyList<string>? denied = null)
+            IReadOnlyList<string>? denied = null,
+            IReadOnlyList<HubFallback>? fallbacks = null,
+            bool fallbacksKnown = false)
         {
             Languages = languages;
             Skills = skills;
             Source = source;
             Denied = denied ?? Array.Empty<string>();
+            Fallbacks = fallbacks ?? Array.Empty<HubFallback>();
+            FallbacksKnown = fallbacksKnown;
             var intents = new List<HubIntent>();
             foreach (var skill in skills)
             {
@@ -492,8 +513,12 @@ namespace Thalovant
             {
                 skills.Add(skill.ToJsonObject());
             }
+            var fallbacks = new JsonArray();
+            foreach (var fallback in Fallbacks) fallbacks.Add(fallback.ToJsonObject());
             return new JsonObject
             {
+                ["fallbacks"] = fallbacks,
+                ["fallbacks_known"] = FallbacksKnown,
                 ["languages"] = languages,
                 ["source"] = Source,
                 ["denied"] = denied,
@@ -542,6 +567,44 @@ namespace Thalovant
     /// </summary>
     internal static class HubIntentQueries
     {
+        internal static async Task<IReadOnlyList<HubFallback>?> ListFallbacksAsync(ThalovantClient client, TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            if (timeout <= TimeSpan.Zero || timeout.TotalMilliseconds > int.MaxValue) throw new ArgumentOutOfRangeException(nameof(timeout));
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            deadline.CancelAfter(timeout);
+            ThalovantEvent reply;
+            try { reply = await RequestReplyAsync(client, ThalovantEvents.FallbackList, ThalovantEvents.FallbackListResponse, new JsonObject(), null, timeout, deadline.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return null; }
+            catch (ThalovantPolicyDeniedException) { return null; }
+            catch (ThalovantTimeoutException) { return null; }
+            if (IsRefused(reply.Data) || !(reply.Data["fallbacks"] is JsonArray rows)) return null;
+            var handlers = new List<HubFallback>();
+            foreach (var item in rows)
+            {
+                if (!(item is JsonObject row) || !(row["skill_id"] is JsonValue skillValue) || !skillValue.TryGetValue<string>(out var skill) || string.IsNullOrWhiteSpace(skill)) continue;
+                long priority = 0;
+                if (row["priority"] is JsonValue value)
+                {
+                    if (value.TryGetValue<long>(out var integer)) priority = integer;
+                    else if (value.TryGetValue<bool>(out var boolean)) priority = boolean ? 1 : 0;
+                    else if (value.TryGetValue<double>(out var number))
+                    {
+                        if (double.IsNaN(number) || double.IsInfinity(number) || number < long.MinValue || number >= (double)long.MaxValue) continue;
+                        priority = (long)number;
+                    }
+                }
+                handlers.Add(new HubFallback(skill, priority));
+            }
+            handlers.Sort((left, right) => left.Priority != right.Priority ? left.Priority.CompareTo(right.Priority) : StringComparer.Ordinal.Compare(left.SkillId, right.SkillId));
+            return handlers;
+        }
+
+        private static async Task<HubIntentInventory> WithFallbacksAsync(ThalovantClient client, HubIntentInventory inventory, TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            var handlers = await ListFallbacksAsync(client, timeout < TimeSpan.FromMilliseconds(1500) ? timeout : TimeSpan.FromMilliseconds(1500), cancellationToken).ConfigureAwait(false);
+            return new HubIntentInventory(inventory.Languages, inventory.Skills, inventory.Source, inventory.Denied, handlers, handlers != null);
+        }
+
         /// <summary>
         /// How many describes may be in flight at once. A hub with 69 intents in
         /// two languages is 138 requests and, with every reply delivered twice,
@@ -619,7 +682,7 @@ namespace Thalovant
             }
             var answer = new TaskCompletionSource<ThalovantEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
             await client.ConnectAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-            using (client.On(ThalovantEvents.PolicyDenied, denied => FailIfDenied(answer, denied, queryType)))
+            using (client.On(ThalovantEvents.PolicyDenied, denied => FailIfDenied(answer, denied, queryType), requestId: requestId))
             using (client.On(replyType, reply => answer.TrySetResult(reply), requestId: requestId))
             {
                 await client.EmitAsync(queryType, data, context, cancellationToken).ConfigureAwait(false);
@@ -833,7 +896,7 @@ namespace Thalovant
                         key = matched;
                     }
                 }
-                if (key is null && definitions.Count > 0)
+                if (reply.RequestId is null && definitions.Count > 0)
                 {
                     // No request id came back: the definition names what it describes.
                     var first = definitions[0];
@@ -867,7 +930,10 @@ namespace Thalovant
             }
 
             await client.ConnectAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-            using (client.On(ThalovantEvents.PolicyDenied, denied => FailIfDenied(complete, denied, ThalovantEvents.IntentDescribe)))
+            using (client.On(ThalovantEvents.PolicyDenied, denied => {
+                lock (sync) { if (denied.RequestId is string id && !byRequest.ContainsKey(id)) return; }
+                FailIfDenied(complete, denied, ThalovantEvents.IntentDescribe);
+            }))
             using (client.On(ThalovantEvents.IntentDescribeResponse, Keep))
             {
                 foreach (var key in wanted)
@@ -1002,7 +1068,12 @@ namespace Thalovant
                 when (options.Fallback && string.Equals(denied.DeniedType, ThalovantEvents.IntentList, StringComparison.Ordinal))
             {
                 var names = await IntentNamesAsync(client, asked[0], options.Timeout, cancellationToken).ConfigureAwait(false);
-                return FromNames(names, asked, denied.DeniedType);
+                return await WithFallbacksAsync(client, FromNames(names, asked, denied.DeniedType), options.Timeout, cancellationToken).ConfigureAwait(false);
+            }
+            catch (ThalovantTimeoutException) when (options.Fallback)
+            {
+                var names = await IntentNamesAsync(client, asked[0], options.Timeout, cancellationToken).ConfigureAwait(false);
+                return await WithFallbacksAsync(client, FromNames(names, asked, ThalovantEvents.IntentList), options.Timeout, cancellationToken).ConfigureAwait(false);
             }
 
             var wanted = new List<IntentKey>();
@@ -1065,7 +1136,7 @@ namespace Thalovant
                 }
                 intents.Add(intent);
             }
-            return new HubIntentInventory(asked, Skills(bySkill), HubIntentInventory.SourceIntentManifest);
+            return await WithFallbacksAsync(client, new HubIntentInventory(asked, Skills(bySkill), HubIntentInventory.SourceIntentManifest), options.Timeout, cancellationToken).ConfigureAwait(false);
         }
 
         /// <summary>The names-only inventory the engines' manifests allow, naming the refused query.</summary>

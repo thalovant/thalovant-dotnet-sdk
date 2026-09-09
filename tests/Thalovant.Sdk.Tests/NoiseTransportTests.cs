@@ -35,6 +35,24 @@ namespace Thalovant.Sdk.Tests
             }
             Assert.NotNull(pinnedClient);
         }
+        [Fact] public async Task QueuedDeadlineAndCancellationCannotCancelActiveConnect()
+        {
+            PeerSocket? peer = null; var connections = 0;
+            using var transport = new HiveMindWssTransport(Identity(), new MemoryStore(), () => {
+                connections++; return peer = new PeerSocket(null, _ => { }, "held");
+            });
+            var owner = transport.ConnectAsync(TimeSpan.FromSeconds(10));
+            Assert.NotNull(peer);
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            await Assert.ThrowsAsync<ThalovantConnectionException>(() => transport.ConnectAsync(TimeSpan.FromMilliseconds(30)));
+            Assert.True(clock.Elapsed < TimeSpan.FromSeconds(1));
+            using var cancellation = new CancellationTokenSource();
+            var queued = transport.ConnectAsync(TimeSpan.FromSeconds(10), cancellation.Token); cancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued);
+            Assert.False(owner.IsCompleted); peer!.ReleaseHandshake();
+            await owner;
+            Assert.Equal(1, connections); Assert.True(transport.Connected && transport.HandshakeComplete);
+        }
         [Theory]
         [InlineData("legacy")]
         [InlineData("plaintext")]
@@ -153,10 +171,15 @@ namespace Thalovant.Sdk.Tests
             public PeerSocket(byte[]? pin, Action<byte[]> pinClient, string mode = "") {
                 _pinnedClient = pin; _pinClient = pinClient; _mode = mode;
                 if (pin == null) _offer["noise"]!["patterns"] = new JsonArray("XXpsk2");
+                if (mode == "held") return;
                 QueueText(HiveWire.Encode(new HiveMessage("hello", _hello)));
                 if (mode == "legacy") QueueText("{\"msg_type\":\"shake\",\"payload\":{\"preshared_key\":true}}");
                 else if (mode == "plaintext") QueueText("{\"msg_type\":\"bus\",\"payload\":{\"type\":\"speak\"}}");
                 else QueueText(HiveWire.Encode(new HiveMessage("shake", _offer)));
+            }
+            public void ReleaseHandshake() {
+                QueueText(HiveWire.Encode(new HiveMessage("hello", _hello)));
+                QueueText(HiveWire.Encode(new HiveMessage("shake", _offer)));
             }
             public void QueueText(string text) => _incoming.Writer.TryWrite((Encoding.UTF8.GetBytes(text), WebSocketMessageType.Text));
             public override async Task SendAsync(ArraySegment<byte> buffer, WebSocketMessageType type, bool endOfMessage, CancellationToken token)

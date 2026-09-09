@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/>
 ## Install
 
 ```bash
-dotnet add package Thalovant.Sdk --version 0.2.0
+dotnet add package Thalovant.Sdk --version 0.3.0
 ```
 
 The library multi-targets `net8.0` and `netstandard2.1` (Unity 2021+
@@ -337,6 +337,33 @@ The identity document uses the same snake_case fields the API returns from
 `default_master`, `default_port`, plus optional `data_plane_endpoints`,
 `protocols`, and `mqtt` broker credentials.
 
+## Runtime helpers
+
+```csharp
+var conversation = client.Conversation(lang: "fr-fr");
+var reply = await conversation.QueryAsync("bonjour");
+await conversation.SendActionAsync("show-details", title: "Details");
+await conversation.SendCodeAsync("001-09", label: "Ticket");
+var health = await client.HealthcheckAsync();
+Console.WriteLine(health.Ok);
+```
+
+Conversations keep a stable session and merge nested context without changing
+caller input. Each request receives a fresh request id. `QueryAsync` exchanges
+HiveMind query/cascade frames, accepts only matching query ids, and waits for
+query completion. Requests are not automatically replayed after disconnects.
+
+`WaitForEventAsync` accepts correlation filters and a predicate; `ListenAsync`
+returns a bounded `IAsyncEnumerable<ThalovantEvent>` with optional deadline and
+maximum count. Cancellation, completion and timeout remove subscriptions;
+transport loss fails promptly. The 64-event stream buffer reports overflow
+explicitly. Pass a `CancellationToken` to stop an outstanding operation.
+
+`ConnectWithInfoAsync`, `ConnectionInfo`, `HealthcheckAsync` and `DoctorAsync`
+report local authenticated transport state, not health of every skill or hub
+dependency. Each queued connection caller's deadline includes admission wait;
+its cancellation does not cancel another caller's active socket.
+
 ## Events
 
 Handlers can observe hub bus events directly:
@@ -412,7 +439,7 @@ A hub whose connection may not publish `ovos.intent.list` answers
 (`DeniedType`, `Code`, `Reason`, `Allowed`) rather than a timeout. With
 `IntentInventoryOptions.Fallback` on (the default) the SDK then asks the
 engines' own manifests instead and returns names only: `inventory.Source` is
-`engine-manifests`, `inventory.Denied` names the refused query, and
+`engine-manifests`, `inventory.Denied` names the query that triggered fallback, and
 `inventory.HasPhrases` is false. The first engine to name an intent decides its
 `Engine` there (`adapt` is asked before `padatious`). A hub that refuses those
 too throws the exception. The connection must be allowed to publish
@@ -430,6 +457,18 @@ device that can do nothing would be worse than saying the query failed. The
 same `ok: false` from `ovos.intent.describe` is a real answer, meaning the hub
 does not know that registration: `DescribeIntentAsync` returns an empty list and
 the intent is listed without sentences.
+
+A silent detailed listing now takes the same default engine-manifest fallback
+as an explicit policy denial. Disable `Fallback` to keep strict listing timeout
+behavior. `Denied` records which query triggered fallback; the marker alone is
+not proof of a policy denial. Engine-query errors still propagate.
+
+`ListFallbacksAsync` discovers registered fallback handlers. Every inventory
+also makes an optional probe, capped at 1.5 seconds across connection, send and
+reply wait. `FallbacksKnown` distinguishes known empty from unknown (denied,
+silent or explicitly failed discovery). `inventory.MayAnswer(lang)` remains
+true when an enabled intent has phrases, a fallback handler exists, or discovery
+is unknown. Missing phrases alone do not rule out an answer in that language.
 
 ## HiveMind v3 Noise
 

@@ -41,7 +41,7 @@ namespace Thalovant
     /// requesting the HTTPS or MQTT transport throws
     /// <see cref="ThalovantUnsupportedProtocolException"/>.
     /// </summary>
-    public sealed class ThalovantClient : IDisposable
+    public sealed partial class ThalovantClient : IDisposable
     {
         /// <summary>The language queries default to when none is given, as in the sibling SDKs.</summary>
         internal const string DefaultLang = "en-us";
@@ -116,7 +116,7 @@ namespace Thalovant
         {
             lock (_lock)
             {
-                if (_connected && (Transport == null || (Transport.Connected && Transport.HandshakeComplete)))
+                if (_connected && RuntimeConnected && RuntimeHandshakeComplete)
                 {
                     return;
                 }
@@ -332,6 +332,12 @@ namespace Thalovant
         }
 
         // -- Intents ---------------------------------------------------------
+
+        /// <summary>Registered fallback handlers; null means unavailable, empty means none registered.</summary>
+        public Task<IReadOnlyList<HubFallback>?> ListFallbacksAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default) =>
+            HubIntentQueries.ListFallbacksAsync(this, timeout ?? TimeSpan.FromSeconds(5), cancellationToken);
+
+
 
         /// <summary>
         /// Everything the hub can be asked, per language, grouped by skill.

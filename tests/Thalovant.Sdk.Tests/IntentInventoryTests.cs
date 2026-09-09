@@ -53,6 +53,16 @@ namespace Thalovant.Sdk.Tests
             private int _window;
 
             public HashSet<string> Refuse { get; } = new HashSet<string>();
+            public bool ForeignFirst { get; set; }
+            public TimeSpan FallbackDelay { get; set; }
+            public TimeSpan ConnectDelay { get; set; }
+            public int CancelledDelayCount { get; private set; }
+            private async Task PausedDelay(TimeSpan delay, CancellationToken cancellationToken)
+            {
+                try { await Task.Delay(delay, cancellationToken); }
+                catch (OperationCanceledException) { CancelledDelayCount++; throw; }
+            }
+            public JsonObject FallbackPayload { get; set; } = new JsonObject { ["fallbacks"] = new JsonArray() };
             public HashSet<string> Silent { get; } = new HashSet<string>();
             public bool DefinitionsInList { get; set; }
             public bool EchoRequestId { get; set; } = true;
@@ -76,7 +86,7 @@ namespace Thalovant.Sdk.Tests
             public Task ConnectAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default)
             {
                 Connected = true;
-                return Task.CompletedTask;
+                return ConnectDelay > TimeSpan.Zero ? PausedDelay(ConnectDelay, cancellationToken) : Task.CompletedTask;
             }
 
             public Task DisconnectAsync()
@@ -111,6 +121,8 @@ namespace Thalovant.Sdk.Tests
 
             public virtual Task EmitBusAsync(string type, JsonObject data, JsonObject context, CancellationToken cancellationToken = default)
             {
+                if (type == ThalovantEvents.FallbackList && FallbackDelay > TimeSpan.Zero) return PausedDelay(FallbackDelay, cancellationToken);
+                if (ForeignFirst) Deliver(ThalovantEvents.PolicyDenied, new JsonObject { ["denied_type"] = type }, new JsonObject { ["request_id"] = "foreign-request" });
                 Record(type, data, context);
                 if (Refuse.Contains(type))
                 {
@@ -134,6 +146,9 @@ namespace Thalovant.Sdk.Tests
                 var lang = (string?)data["lang"] ?? "";
                 switch (type)
                 {
+                    case ThalovantEvents.FallbackList:
+                        Deliver(ThalovantEvents.FallbackListResponse, FallbackPayload, context);
+                        break;
                     case ThalovantEvents.IntentList:
                     {
                         var rows = new JsonArray();
@@ -230,6 +245,13 @@ namespace Thalovant.Sdk.Tests
 
             protected void Deliver(string eventName, JsonObject data, JsonObject context)
             {
+                if (ForeignFirst && eventName == ThalovantEvents.IntentDescribeResponse && data["definitions"] is JsonArray definitions && definitions.Count > 0 && definitions[0]?["definition"] is JsonObject)
+                {
+                    var bad = (JsonObject)data.DeepClone();
+                    bad["definitions"]![0]!["definition"]!["samples"] = new JsonArray("foreign phrase");
+                    List<Action<JsonObject>> foreignHandlers; lock (_lock) foreignHandlers = new List<Action<JsonObject>>(_handlers.Values);
+                    foreach (var handler in foreignHandlers) handler(new JsonObject { ["type"] = eventName, ["data"] = bad.DeepClone(), ["context"] = new JsonObject { ["request_id"] = "foreign-request" } });
+                }
                 for (var repeat = 0; repeat < Repeats; repeat++)
                 {
                     List<Action<JsonObject>> handlers;
@@ -499,13 +521,84 @@ namespace Thalovant.Sdk.Tests
         }
 
         [Fact]
-        public async Task ASilentHubTimesOutOnTheListing()
+        public async Task SilentListingFallsBackWithoutProvingPolicyDenial()
         {
-            var hub = new FakeHubBus { Silent = { ThalovantEvents.IntentList } };
-            var error = await Assert.ThrowsAsync<ThalovantTimeoutException>(() => Client(hub).IntentsAsync(
-                new[] { "en-us" },
-                new IntentInventoryOptions { Timeout = TimeSpan.FromMilliseconds(200) }));
-            Assert.Contains("ovos.intent.list", error.Message);
+            var inventory = await Client(new FakeHubBus { Silent = { ThalovantEvents.IntentList } }).IntentsAsync(
+                new[] { "en-us" }, new IntentInventoryOptions { Timeout = TimeSpan.FromMilliseconds(30) });
+            Assert.Equal(HubIntentInventory.SourceEngineManifests, inventory.Source);
+            Assert.Equal(new[] { ThalovantEvents.IntentList }, inventory.Denied);
+            Assert.True(inventory.FallbacksKnown);
+            Assert.False(inventory.MayAnswer("de-de"));
+        }
+
+        [Fact]
+        public async Task SilentStrictListingAndSilentEngineStillFail()
+        {
+            var strict = new FakeHubBus { Silent = { ThalovantEvents.IntentList } };
+            await Assert.ThrowsAsync<ThalovantTimeoutException>(() => Client(strict).IntentsAsync(new[] { "en-us" },
+                new IntentInventoryOptions { Timeout = TimeSpan.FromMilliseconds(30), Fallback = false }));
+            var silent = new FakeHubBus { Silent = { ThalovantEvents.IntentList, ThalovantEvents.AdaptManifestGet } };
+            await Assert.ThrowsAsync<ThalovantTimeoutException>(() => Client(silent).IntentsAsync(new[] { "en-us" },
+                new IntentInventoryOptions { Timeout = TimeSpan.FromMilliseconds(30) }));
+        }
+
+        [Fact]
+        public async Task FallbackDiscoveryDistinguishesUnknownFromKnownEmpty()
+        {
+            foreach (var hub in new[] {
+                new FakeHubBus { Silent = { ThalovantEvents.FallbackList } },
+                new FakeHubBus { Refuse = { ThalovantEvents.FallbackList } },
+                new FakeHubBus { FallbackPayload = new JsonObject { ["fallbacks"] = "invalid" } },
+                new FakeHubBus { FallbackPayload = new JsonObject { ["ok"] = false, ["fallbacks"] = new JsonArray() } },
+            }) {
+                var inventory = await Client(hub).IntentsAsync(new[] { "fr-fr" }, new IntentInventoryOptions { Timeout = TimeSpan.FromMilliseconds(30) });
+                Assert.False(inventory.FallbacksKnown); Assert.True(inventory.MayAnswer("de-de"));
+            }
+            var known = await Client(new FakeHubBus()).IntentsAsync(new[] { "fr-fr" });
+            Assert.True(known.FallbacksKnown); Assert.True(known.MayAnswer("fr-FR")); Assert.False(known.MayAnswer("de-de"));
+        }
+
+        [Fact]
+        public async Task ForeignDenialsAndDescriptionsCannotCompleteOurRequests()
+        {
+            var inventory = await Client(new FakeHubBus { ForeignFirst = true }).IntentsAsync(new[] { "en-us", "fr-fr" });
+            Assert.True(inventory.HasPhrases); Assert.True(inventory.FallbacksKnown);
+            Assert.DoesNotContain("foreign phrase", inventory.Intents.SelectMany(item => item.Phrases.Values.SelectMany(value => value)));
+        }
+
+        [Fact]
+        public async Task OptionalFallbackProbeIncludesSendBudgetAndPreservesCancellation()
+        {
+            var hub = new FakeHubBus { FallbackDelay = TimeSpan.FromMinutes(1) };
+            using var sdk = Client(hub);
+            Assert.Null(await sdk.ListFallbacksAsync(TimeSpan.FromMilliseconds(30)).WaitAsync(TimeSpan.FromSeconds(15)));
+            Assert.Equal(1, hub.CancelledDelayCount);
+            using var cancelled = new CancellationTokenSource();
+            var pending = sdk.ListFallbacksAsync(cancellationToken: cancelled.Token); cancelled.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+            Assert.Equal(2, hub.CancelledDelayCount);
+            var connectingHub = new FakeHubBus { ConnectDelay = TimeSpan.FromMinutes(1) };
+            using var connecting = Client(connectingHub);
+            Assert.Null(await connecting.ListFallbacksAsync(TimeSpan.FromMilliseconds(30)).WaitAsync(TimeSpan.FromSeconds(15)));
+            Assert.Equal(1, connectingHub.CancelledDelayCount);
+            var inventory = await sdk.IntentsAsync(new[] { "en-us" }).WaitAsync(TimeSpan.FromSeconds(15));
+            Assert.False(inventory.FallbacksKnown); Assert.Equal(3, hub.CancelledDelayCount);
+        }
+
+        [Fact]
+        public async Task FallbackDiscoverySortsHandlersAndRejectsUnsafePriority()
+        {
+            var hub = new FakeHubBus { FallbackPayload = JsonNode.Parse("""
+                {"fallbacks":[{"skill_id":"b","priority":20},{"skill_id":"a","priority":20.5},
+                {"skill_id":"true","priority":true},{"skill_id":"default","priority":"42"},
+                {"skill_id":"huge","priority":1e100},{"skill_id":""},false]}
+                """)!.AsObject() };
+            var handlers = await Client(hub).ListFallbacksAsync();
+            Assert.Equal(new[] { "default", "true", "a", "b" }, handlers!.Select(item => item.SkillId));
+            Assert.Equal(new long[] { 0, 1, 20, 20 }, handlers!.Select(item => item.Priority));
+            var inventory = await Client(hub).IntentsAsync(new[] { "fr-fr" });
+            Assert.True(inventory.FallbacksKnown); Assert.True(inventory.MayAnswer("de-de"));
+            Assert.Equal(4, inventory.ToJsonObject()["fallbacks"]!.AsArray().Count);
         }
 
         [Fact]

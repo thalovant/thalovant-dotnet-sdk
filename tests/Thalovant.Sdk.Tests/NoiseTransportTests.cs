@@ -13,6 +13,7 @@ using Xunit;
 
 namespace Thalovant.Sdk.Tests
 {
+    [Collection("Runtime deadlines")]
     public sealed class NoiseTransportTests
     {
         private static ThalovantIdentity Identity() => ThalovantIdentity.FromJson("""
@@ -150,16 +151,16 @@ namespace Thalovant.Sdk.Tests
             var peers = new List<PeerSocket>();
             using var transport = new HiveMindWssTransport(Identity(), new MemoryStore(), () => {
                 var peer = new PeerSocket(null, _ => { }); peers.Add(peer); return peer;
-            }, physicalSendTimeout: TimeSpan.FromMilliseconds(250));
+            }, physicalSendTimeout: TimeSpan.FromSeconds(2));
             await transport.ConnectAsync(TimeSpan.FromSeconds(10));
             var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             peers[0].ThrowOnAbort = abortThrows;
             peers[0].BeforeNextSendWithToken = async _ => { entered.SetResult(); await release.Task; };
             var owner = transport.EmitBusAsync("test.owner", new JsonObject(), new JsonObject());
-            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
-            var queued = transport.EmitBusAsync("test.stale", new JsonObject(), new JsonObject());
             try {
+                await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                var queued = transport.EmitBusAsync("test.stale", new JsonObject(), new JsonObject());
                 await Assert.ThrowsAsync<ThalovantTimeoutException>(() => owner.WaitAsync(TimeSpan.FromSeconds(5)));
                 Assert.False(transport.Connected); Assert.Equal(WebSocketState.Aborted, peers[0].State);
                 Assert.False(queued.IsCompleted); // The actual old write still owns the lock.
@@ -172,7 +173,12 @@ namespace Thalovant.Sdk.Tests
                 await transport.EmitBusAsync("test.current", new JsonObject(), new JsonObject());
                 Assert.True(transport.Connected && transport.HandshakeComplete); Assert.Null(transport.LastError);
                 Assert.Equal(new[] { "hello", "bus" }, peers[1].AuthenticatedTypes.ToArray());
-            } finally { release.TrySetResult(); }
+            } finally {
+                // Never let intentionally failing Abort teardown mask an earlier
+                // assertion or leave the synthetic physical write suspended.
+                peers[0].ThrowOnAbort = false;
+                release.TrySetResult();
+            }
         }
 
         [Fact] public async Task BusCallbackCanSynchronouslySendAnImmediateResponse()

@@ -586,6 +586,7 @@ namespace Thalovant
                 if (row["priority"] is JsonValue value)
                 {
                     if (value.TryGetValue<long>(out var integer)) priority = integer;
+                    else if (value.TryGetValue<bool>(out var boolean)) priority = boolean ? 1 : 0;
                     else if (value.TryGetValue<double>(out var number))
                     {
                         if (double.IsNaN(number) || double.IsInfinity(number) || number < long.MinValue || number >= (double)long.MaxValue) continue;

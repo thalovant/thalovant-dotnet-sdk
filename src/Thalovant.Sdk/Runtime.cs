@@ -186,7 +186,9 @@ namespace Thalovant
                     else if (item.Name == ThalovantEvents.Speak || item.Name == ThalovantEvents.OvosUtteranceSpeak) {
                         var fragment = Regex.Replace(item.Text.Trim(), @"\s+", " ");
                         if (fragment.Length > 0 && (fragments.Count == 0 || fragments[fragments.Count - 1] != fragment)) fragments.Add(fragment);
-                    } else if (item.IsFailure) { failure = item; gate.TrySetResult(true); }
+                    } else if (item.Name == ThalovantEvents.PolicyDenied || item.Name == ThalovantEvents.QueryTimeout) {
+                        failure = item; gate.TrySetResult(true);
+                    } else if (item.IsFailure) { failure = item; }
                 }
             });
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -203,8 +205,9 @@ namespace Thalovant
                         throw new ThalovantTimeoutException("Hub completed the query without a speak reply.");
                     }
                     var joined = string.Join(" ", fragments);
-                    return new ThalovantReply(joined, ThalovantContext.StripSsml(joined), fragments.ToArray(), failure == null, failure == null,
-                        session, request, events.ToArray(), failure);
+                    var terminalFailure = failure?.Name == ThalovantEvents.PolicyDenied || failure?.Name == ThalovantEvents.QueryTimeout ? failure : null;
+                    return new ThalovantReply(joined, ThalovantContext.StripSsml(joined), fragments.ToArray(), terminalFailure == null, terminalFailure == null,
+                        session, request, events.ToArray(), terminalFailure);
                 }
             } catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) {
                 throw new ThalovantTimeoutException("Hub did not complete the query in time.");

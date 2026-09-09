@@ -70,6 +70,24 @@ namespace Thalovant.Sdk.Tests
             Assert.Equal("r", (string?)fake.Sent.Single().Payload["payload"]!["context"]!["request_id"]);
             Assert.Equal(0, fake.FrameCount);
         }
+        [Fact] public async Task QuerySoftMissesAllowSpeechAndHardFailuresRetainPartialSpeech()
+        {
+            foreach (var miss in new[] { ThalovantEvents.IntentUnmatched, ThalovantEvents.IntentFailure }) {
+                var fake = new Fake(); using var sdk = Client(fake);
+                fake.QueryAnswer = _ => { fake.Reply("q", miss); fake.Reply("q", "speak", "answer"); fake.Reply("q", "hive.query.complete"); };
+                var reply = await sdk.QueryAsync("test", queryId: "q");
+                Assert.Equal("answer", reply.Text); Assert.True(reply.Ok); Assert.Null(reply.FailureEvent);
+                Assert.Equal(new[] { miss, "speak", "hive.query.complete" }, reply.Events.Select(item => item.Name));
+                fake.QueryAnswer = _ => { fake.Reply("q", miss); fake.Reply("q", "hive.query.complete"); };
+                await Assert.ThrowsAsync<ThalovantRuntimeException>(() => sdk.QueryAsync("test", queryId: "q"));
+            }
+            foreach (var hard in new[] { ThalovantEvents.PolicyDenied, ThalovantEvents.QueryTimeout }) {
+                var fake = new Fake(); using var sdk = Client(fake);
+                fake.QueryAnswer = _ => { fake.Reply("q", "speak", "partial"); fake.Reply("q", hard); fake.Reply("q", "speak", "ignored"); };
+                var reply = await sdk.QueryAsync("test", queryId: "q");
+                Assert.Equal("partial", reply.Text); Assert.False(reply.Ok); Assert.Equal(hard, reply.FailureEvent?.Name);
+            }
+        }
         [Fact] public async Task QueryFailureSilenceCancellationAndLossRemoveHandlers()
         {
             var fake = new Fake(); using var sdk = Client(fake);

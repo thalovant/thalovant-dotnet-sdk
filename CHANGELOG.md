@@ -7,6 +7,8 @@
 - Fall back to engine intent names when the detailed listing is silent as well
   as denied. Discover fallback handlers with a bounded optional probe and expose
   known/unknown discovery plus conservative language answerability.
+- Keep query collection open after soft intent misses, recover on later speech,
+  and retain partial speech when a policy denial or query timeout terminates it.
 - Ignore foreign correlated denials and describe replies; retain content-based
   describe matching only when a reply carries no request id.
 - Bound queued connect admission by the caller's deadline without cancelling

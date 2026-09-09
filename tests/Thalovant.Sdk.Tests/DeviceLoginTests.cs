@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
 using System.Threading;
+using System.Text.Json.Nodes;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -28,6 +29,32 @@ namespace Thalovant.Sdk.Tests
         }
 
         private static string Pending => """{"error": "authorization_pending"}""";
+
+        [Fact]
+        public async Task GrantUrlsAreValidatedBeforePromptCustomBrowserAndPolling()
+        {
+            foreach (var field in new[] { "verification_uri", "verification_uri_complete" })
+            foreach (var value in new JsonNode[] {
+                JsonValue.Create("file:///tmp/program")!, JsonValue.Create("javascript:alert(1)")!,
+                JsonValue.Create("calc.exe")!, JsonValue.Create("--help")!,
+                JsonValue.Create("https://user:PRIVATE-CREDENTIAL@example.test")!, JsonValue.Create("https://@example.test")!,
+                JsonValue.Create("https://example.test/\n--help")!, JsonValue.Create(" https://example.test")!,
+                JsonValue.Create("https://example.test/a b")!, JsonValue.Create("https:///missing-host")!, JsonValue.Create(42)! })
+            {
+                using var handler = new StubHttpMessageHandler();
+                var grant = JsonNode.Parse(Fixtures.DeviceGrant)!;
+                grant[field] = value;
+                handler.Enqueue(body: grant.ToJsonString());
+                var api = new ThalovantControlPlane(handler, apiUrl: "https://api.example.test");
+                var prompts = 0; var launches = 0;
+                var error = await Assert.ThrowsAsync<ThalovantApiException>(() => api.LoginWithBrowserAsync(new DeviceLoginOptions {
+                    Prompt = _ => prompts++, BrowserLauncher = _ => launches++
+                }));
+                Assert.DoesNotContain("PRIVATE-CREDENTIAL", error.Message);
+                Assert.Equal(0, prompts); Assert.Equal(0, launches);
+                Assert.EndsWith("/auth/device/authorize", Assert.Single(handler.Requests).Url.AbsolutePath);
+            }
+        }
 
         [Fact]
         public async Task LoginWithBrowserPollsUntilTokenAndStoresIt()

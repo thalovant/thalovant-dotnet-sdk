@@ -324,6 +324,10 @@ namespace Thalovant
             {
                 throw new ThalovantApiException("Thalovant API device authorization response was incomplete.");
             }
+            var completeUri = JsonUtil.GetString(grant["verification_uri_complete"]);
+            if (DeviceVerificationUri(verificationUri!) == null ||
+                (grant["verification_uri_complete"] != null && (completeUri == null || DeviceVerificationUri(completeUri) == null)))
+                throw new ThalovantApiException("Thalovant API device authorization returned an invalid verification URI.");
             var rawInterval = JsonUtil.GetInt(grant["interval"]);
             var interval = rawInterval is int seconds && seconds >= 0
                 ? TimeSpan.FromSeconds(seconds)
@@ -454,12 +458,19 @@ namespace Thalovant
         /// <c>xdg-open</c> elsewhere. Never throws — the prompt has already shown
         /// the verification URI and user code.
         /// </summary>
-        internal static void TryOpenBrowser(string url, Action<ProcessStartInfo>? launch = null)
+        internal static Uri? DeviceVerificationUri(string url)
         {
-            if (url.Any(char.IsControl) || url != url.Trim() || !Uri.TryCreate(url, UriKind.Absolute, out var target) ||
+            if (url.Any(ch => char.IsControl(ch) || char.IsWhiteSpace(ch)) || !Uri.TryCreate(url, UriKind.Absolute, out var target) ||
                 (target.Scheme != Uri.UriSchemeHttp && target.Scheme != Uri.UriSchemeHttps) ||
                 string.IsNullOrEmpty(target.Host) || !string.IsNullOrEmpty(target.UserInfo) ||
-                System.Text.RegularExpressions.Regex.IsMatch(url, @"^[a-zA-Z][a-zA-Z0-9+.-]*://[^/?#]*@")) return;
+                System.Text.RegularExpressions.Regex.IsMatch(url, @"^[a-zA-Z][a-zA-Z0-9+.-]*://[^/?#]*@")) return null;
+            return target;
+        }
+
+        internal static void TryOpenBrowser(string url, Action<ProcessStartInfo>? launch = null)
+        {
+            var target = DeviceVerificationUri(url);
+            if (target == null) return;
             try
             {
                 ProcessStartInfo info;

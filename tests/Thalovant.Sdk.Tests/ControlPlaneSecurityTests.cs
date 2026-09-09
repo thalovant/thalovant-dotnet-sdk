@@ -43,18 +43,42 @@ namespace Thalovant.Sdk.Tests
                 source.Start(); destination.Start();
                 var sourcePort = ((IPEndPoint)source.LocalEndpoint).Port;
                 var destinationPort = ((IPEndPoint)destination.LocalEndpoint).Port;
-                var reply = Task.Run(async () => {
-                    using var socket = await source.AcceptTcpClientAsync();
+                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                var releaseResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                // Start accepting before the client connects. Consume the complete POST
+                // before replying so a Windows socket close cannot discard unread body bytes.
+                async Task ReplyAsync() {
+                    using var socket = await source.AcceptTcpClientAsync(deadline.Token);
                     using var stream = socket.GetStream();
-                    var request = new byte[4096];
-                    _ = await stream.ReadAsync(request).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+                    var request = new byte[8192];
+                    var count = 0;
+                    while (true) {
+                        var read = await stream.ReadAsync(request.AsMemory(count), deadline.Token);
+                        Assert.True(read > 0, "The fixture request closed before its body completed.");
+                        count += read;
+                        var text = Encoding.ASCII.GetString(request, 0, count);
+                        var headerEnd = text.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+                        if (headerEnd < 0) continue;
+                        var length = 0;
+                        foreach (var header in text.Substring(0, headerEnd).Split("\r\n"))
+                            if (header.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                                length = int.Parse(header.Substring("Content-Length:".Length).Trim(), System.Globalization.CultureInfo.InvariantCulture);
+                        if (count >= headerEnd + 4 + length) break;
+                    }
+                    received.SetResult();
+                    await releaseResponse.Task.WaitAsync(deadline.Token);
                     var response = Encoding.ASCII.GetBytes($"HTTP/1.1 {status} Redirect\r\nLocation: http://127.0.0.1:{destinationPort}/capture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-                    await stream.WriteAsync(response);
-                });
+                    await stream.WriteAsync(response, deadline.Token);
+                }
+                var reply = ReplyAsync();
                 using var handler = new HttpClientHandler { AllowAutoRedirect = true };
                 var api = injected ? new ThalovantControlPlane(new PassThrough(handler), apiUrl: $"http://127.0.0.1:{sourcePort}") :
                     new ThalovantControlPlane($"http://127.0.0.1:{sourcePort}");
-                var error = await Assert.ThrowsAsync<ThalovantApiException>(() => api.LoginAsync("fixture@example.test", "PRIVATE-CREDENTIAL").WaitAsync(TimeSpan.FromSeconds(10)));
+                var login = api.LoginAsync("fixture@example.test", "PRIVATE-CREDENTIAL");
+                await received.Task.WaitAsync(deadline.Token);
+                releaseResponse.SetResult();
+                var error = await Assert.ThrowsAsync<ThalovantApiException>(() => login.WaitAsync(deadline.Token));
                 Assert.Equal(status, error.StatusCode); Assert.DoesNotContain("PRIVATE-CREDENTIAL", error.Message);
                 await reply.WaitAsync(TimeSpan.FromSeconds(10));
                 Assert.False(destination.Pending());

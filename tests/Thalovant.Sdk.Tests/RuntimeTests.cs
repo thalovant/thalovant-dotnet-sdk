@@ -8,6 +8,11 @@ using Xunit;
 
 namespace Thalovant.Sdk.Tests
 {
+    // Keep short deadline regressions independent of CPU-heavy Noise/scrypt fixtures.
+    [CollectionDefinition("Runtime deadlines", DisableParallelization = true)]
+    public sealed class RuntimeDeadlineCollection { }
+
+    [Collection("Runtime deadlines")]
     public sealed class RuntimeTests
     {
         private sealed class Fake : IHiveMindBus, IHiveMindQueryBus, IHiveMindRuntimeStatus
@@ -93,8 +98,10 @@ namespace Thalovant.Sdk.Tests
                     fake.Deliver(ThalovantEvents.PolicyDenied, request: id);
                     fake.Deliver("speak", "ignored", id);
                 };
-                using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(1));
-                var request = sdk.AskAsync("test", TimeSpan.FromMilliseconds(500), replySettle: TimeSpan.FromSeconds(60), cancellationToken: watchdog.Token);
+                using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                // A hard terminal reply must interrupt the long request/settle
+                // windows; fixture startup speed is not part of this assertion.
+                var request = sdk.AskAsync("test", TimeSpan.FromSeconds(60), replySettle: TimeSpan.FromSeconds(60), cancellationToken: watchdog.Token);
                 if (partial) { var reply = await request; Assert.Equal("partial", reply.Text); Assert.False(reply.Ok); Assert.Equal(2, reply.Events.Count); }
                 else await Assert.ThrowsAsync<ThalovantRuntimeException>(() => request);
                 Assert.Equal(0, fake.BusCount);
@@ -138,7 +145,7 @@ namespace Thalovant.Sdk.Tests
             var request = sdk.AskAsync("test", hard ? TimeSpan.FromSeconds(60) : TimeSpan.FromMilliseconds(250), replySettle: TimeSpan.FromSeconds(60));
             try {
                 await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
-                var reply = await request.WaitAsync(TimeSpan.FromSeconds(1));
+                var reply = await request.WaitAsync(TimeSpan.FromSeconds(5));
                 Assert.Equal("answer", reply.Text); Assert.Equal(!hard, reply.Ok);
                 Assert.False(retired.Task.IsCompleted); Assert.Equal(0, fake.BusCount);
             } finally { release.TrySetResult(); }

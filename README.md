@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/>
 ## Install
 
 ```bash
-dotnet add package Thalovant.Sdk
+dotnet add package Thalovant.Sdk --version 0.2.0
 ```
 
 The library multi-targets `net8.0` and `netstandard2.1` (Unity 2021+
@@ -430,6 +430,44 @@ device that can do nothing would be worse than saying the query failed. The
 same `ok: false` from `ovos.intent.describe` is a real answer, meaning the hub
 does not know that registration: `DescribeIntentAsync` returns an empty list and
 the intent is listed without sentences.
+
+## HiveMind v3 Noise
+
+WSS requires HiveMind v3 Noise. The first authenticated connection uses
+`XXpsk2`; subsequent connections can use `KKpsk0` when both peers have pinned
+static keys. The SDK negotiates `25519_AESGCM_SHA256` only, derives the PSK
+using Argon2id (64 MiB, 3 iterations, one lane), and binds the complete server
+HELLO and offer into the handshake transcript. A ChaChaPoly-only offer fails
+with an unsupported-suite error. Both patterns use encrypted binary JSON
+frames with ordered cipher counters and bounded chunk reassembly.
+
+`ConnectAsync` completes after key exchange and the encrypted client HELLO.
+Legacy crypto-key handshakes and plaintext application frames are rejected.
+Standalone legacy wire helpers remain available, but WSS no longer uses them.
+Reconnects preserve static identity and pins while clearing ephemeral keys,
+transcript, reassembly and cipher counters.
+
+On .NET 8, the default persistent state is under the current user's local
+application data directory (`Thalovant/noise`). POSIX directories require 0700
+and files 0600; Windows relies on the user's profile ACLs. Never share or
+check in this state. A changed hub key fails authentication; verify intentional
+key rotation before replacing its saved pin.
+
+Unity/netstandard2.1 lacks portable permission APIs, so it must supply an
+**existing app-private directory**, or an `IHiveMindNoiseStore` implementation
+backed by platform secure storage. The default file store refuses to create
+unprotected state on that target:
+
+```csharp
+var store = new HiveMindFileNoiseStore(existingAppPrivateDirectory);
+using var client = new ThalovantClient(identity, noiseStore: store);
+```
+
+The library keeps zero additional runtime package dependencies. X25519,
+Argon2id and BLAKE2b use a pinned, licensed Bouncy Castle source subset;
+AES-256 uses the platform provider with the existing in-tree GCM arithmetic.
+See [third-party notices](THIRD-PARTY-NOTICES.md) for source revision and
+adaptations. HTTPS/MQTT runtime transports remain explicitly unsupported.
 
 ## Protocol Selection
 

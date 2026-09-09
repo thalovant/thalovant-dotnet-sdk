@@ -37,7 +37,7 @@ namespace Thalovant
     }
 
     /// <summary>
-    /// Data-plane client for a Thalovant hub. Version 0.1 speaks WSS only;
+    /// Data-plane client for a Thalovant hub using HiveMind v3 Noise over WSS;
     /// requesting the HTTPS or MQTT transport throws
     /// <see cref="ThalovantUnsupportedProtocolException"/>.
     /// </summary>
@@ -62,7 +62,8 @@ namespace Thalovant
             HubProtocol hubProtocol = HubProtocol.Wss,
             string? userAgent = null,
             TimeSpan? replySettle = null,
-            TimeSpan? emptyReplyWait = null)
+            TimeSpan? emptyReplyWait = null,
+            IHiveMindNoiseStore? noiseStore = null)
         {
             switch (hubProtocol)
             {
@@ -83,7 +84,7 @@ namespace Thalovant
                     "WSS is enabled, but the identity does not include a WSS endpoint.");
             }
             Identity = identity;
-            Transport = new HiveMindWssTransport(identity, userAgent);
+            Transport = new HiveMindWssTransport(identity, userAgent, noiseStore);
             _bus = Transport;
             _replySettle = replySettle ?? TimeSpan.FromMilliseconds(250);
             _emptyReplyWait = emptyReplyWait ?? TimeSpan.FromSeconds(5);
@@ -115,7 +116,7 @@ namespace Thalovant
         {
             lock (_lock)
             {
-                if (_connected)
+                if (_connected && (Transport == null || (Transport.Connected && Transport.HandshakeComplete)))
                 {
                     return;
                 }

@@ -6,7 +6,7 @@ using System.Text.Json.Nodes;
 namespace Thalovant
 {
     /// <summary>
-    /// AES-128-GCM primitives compatible with the HiveMind runtime wire format.
+    /// Legacy AES-128-GCM wire helpers. HiveMind v3 WSS uses Noise instead.
     ///
     /// The runtime key is the first 16 characters of the identity <c>crypto_key</c>,
     /// UTF-8 encoded. Encrypted JSON frames are <c>{"ciphertext": hex, "tag": hex,
@@ -291,7 +291,7 @@ namespace Thalovant
         }
 
         /// <summary>GHASH over GF(2^128) with the reduction polynomial from SP 800-38D.</summary>
-        private static byte[] Ghash(byte[] hashKey, byte[] input)
+        internal static byte[] Ghash(byte[] hashKey, byte[] input)
         {
             ToWords(hashKey, 0, out var hHigh, out var hLow);
             ulong yHigh = 0;
@@ -318,18 +318,13 @@ namespace Thalovant
                 var bit = bitIndex < 64
                     ? (xHigh >> (63 - bitIndex)) & 1
                     : (xLow >> (63 - (bitIndex - 64))) & 1;
-                if (bit == 1)
-                {
-                    zHigh ^= vHigh;
-                    zLow ^= vLow;
-                }
+                var mask = unchecked(0UL - bit);
+                zHigh ^= vHigh & mask;
+                zLow ^= vLow & mask;
                 var lsb = vLow & 1;
                 vLow = (vLow >> 1) | (vHigh << 63);
                 vHigh >>= 1;
-                if (lsb == 1)
-                {
-                    vHigh ^= 0xE100000000000000UL;
-                }
+                vHigh ^= 0xE100000000000000UL & unchecked(0UL - lsb);
             }
             zHighOut = zHigh;
             zLowOut = zLow;

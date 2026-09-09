@@ -283,6 +283,7 @@ namespace Thalovant
                 _socket = null;
                 _receiveCancellation = null;
                 ResetSession();
+                _handshakeGate.Fail(new OperationCanceledException("HiveMind WSS disconnected."));
             }
             receiveCancellation?.Cancel();
             receiveCancellation?.Dispose();
@@ -313,16 +314,20 @@ namespace Thalovant
         {
             if (!encrypt) throw new ThalovantConnectionException("Plaintext application messages are forbidden by HiveMind v3.");
             await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            WebSocket? socket = null;
             try {
-                WebSocket socket; NoiseSession session;
+                NoiseSession session;
                 lock (_lock) {
                     socket = _socket ?? throw new ThalovantConnectionException("HiveMind WSS is not connected.");
                     session = _noiseSession ?? throw new ThalovantConnectionException("Noise handshake is incomplete.");
                 }
                 var plain = Encoding.UTF8.GetBytes(HiveWire.Encode(message, cryptoKey: null, encrypt: false));
-                foreach (var frame in session.Encrypt(plain)) await socket.SendAsync(new ArraySegment<byte>(frame), WebSocketMessageType.Binary, true, cancellationToken).ConfigureAwait(false);
+                foreach (var frame in session.Encrypt(plain)) {
+                    lock (_lock) { if (!ReferenceEquals(socket, _socket) || !ReferenceEquals(session, _noiseSession)) throw new OperationCanceledException("Noise connection was replaced during send."); }
+                    await socket.SendAsync(new ArraySegment<byte>(frame), WebSocketMessageType.Binary, true, cancellationToken).ConfigureAwait(false);
+                }
             }
-            catch (Exception error) { HandleSocketFailure(error); throw; }
+            catch (Exception error) { if (ReferenceEquals(socket, _socket)) HandleSocketFailure(error); throw; }
             finally { _sendLock.Release(); }
         }
 

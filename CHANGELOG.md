@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0
+
+- Bind callbacks, queued sends, handshake completion, and failure cleanup to their owning socket under the same lifecycle lock. Delayed activity cannot reset a replacement connection.
+
+- Implement HiveMind v3 Noise WSS (XXpsk2 and pinned KKpsk0, AESGCM/SHA256), Argon2id PSK derivation, persistent client static keys and server pins, and bounded authenticated binary JSON framing.
+- Reject legacy downgrade, unauthenticated application messages, changed pins, replay and malformed chunk sequences; clear ephemeral state on reconnect and failure.
+- Add `IHiveMindNoiseStore`/`HiveMindFileNoiseStore` for app-private persistence. Unity/netstandard2.1 requires explicit secure storage; .NET 8 provides private filesystem defaults.
+- Preserve net8.0/netstandard2.1 and zero additional runtime packages using the documented Bouncy Castle source subset. HTTP/MQTT runtime implementations remain unsupported.
+- Validate independent Node/noble transcript vectors, upstream Argon2/AEAD values and in-memory WebSocket peers, including encrypted ask/reply, reconnect and negative readiness cases.
+
 ## 0.1.13
 
 - `ListIntentsAsync` throws `ThalovantRuntimeException` when the hub answers

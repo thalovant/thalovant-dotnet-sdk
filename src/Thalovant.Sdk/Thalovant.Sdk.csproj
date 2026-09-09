@@ -16,10 +16,10 @@
     <!-- The single source of truth for the SDK version. ThalovantSdkVersion
          reads it back off the built assembly, so every user agent derives from
          this one line; nothing else in the repository names the version. -->
-    <Version>0.1.13</Version>
+    <Version>0.2.0</Version>
     <Authors>Thalovant</Authors>
     <Company>Thalovant</Company>
-    <Description>.NET SDK for connecting enterprise .NET and Unity apps to Thalovant hubs: control-plane API client plus the HiveMind WSS data plane with AES-128-GCM encrypted frames.</Description>
+    <Description>.NET SDK for connecting enterprise .NET and Unity apps to Thalovant hubs: control-plane API client plus the HiveMind v3 Noise WSS data plane with authenticated binary frames.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageProjectUrl>https://github.com/thalovant/thalovant-dotnet-sdk</PackageProjectUrl>
@@ -32,6 +32,7 @@
 
   <ItemGroup>
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
   <!-- Zero external runtime dependencies on net8.0; netstandard2.1 (Unity)

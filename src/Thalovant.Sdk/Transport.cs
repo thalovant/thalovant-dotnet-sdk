@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.IO;
 using System.Net.WebSockets;
 using System.Text;
@@ -73,18 +74,9 @@ namespace Thalovant
     /// WSS data-plane transport for the HiveMind runtime, backed by
     /// <see cref="ClientWebSocket"/>.
     ///
-    /// Wire protocol (mirrors the Node SDK's WSS transport):
-    /// <list type="number">
-    /// <item>Connect to the identity's WSS endpoint with
-    /// <c>?authorization=base64("&lt;user agent&gt;:&lt;access key&gt;")</c>.</item>
-    /// <item>The hub sends a <c>handshake</c>/<c>shake</c> frame with
-    /// <c>payload.preshared_key</c>.</item>
-    /// <item>The client answers with a plaintext <c>hello</c> frame carrying
-    /// <c>pubkey</c>, <c>session.session_id</c>, and <c>site_id</c>; the handshake is
-    /// then complete.</item>
-    /// <item>Subsequent frames are JSON HiveMessages, AES-128-GCM encrypted with the
-    /// identity <c>crypto_key</c> when one is present.</item>
-    /// </list>
+    /// Requires HiveMind v3 Noise (XXpsk2 or pinned KKpsk0, AESGCM/SHA256).
+    /// Application frames are authenticated binary Noise frames; legacy and
+    /// plaintext application frames are rejected.
     /// </summary>
     public sealed class HiveMindWssTransport : IDisposable, IHiveMindBus
     {
@@ -93,7 +85,15 @@ namespace Thalovant
 
         private readonly object _lock = new object();
         private readonly SemaphoreSlim _sendLock = new SemaphoreSlim(1, 1);
-        private ClientWebSocket? _socket;
+        private readonly SemaphoreSlim _connectLock = new SemaphoreSlim(1, 1);
+        private WebSocket? _socket;
+        private readonly Func<WebSocket> _socketFactory = () => new ClientWebSocket();
+        private readonly IHiveMindNoiseStore _noiseStore;
+        private JsonObject? _serverHello;
+        private NoiseHandshake? _noiseHandshake;
+        private NoiseSession? _noiseSession;
+        private (string NodeId, byte[] Key)? _cachedPsk;
+        private void ResetSession() { _connected = false; _handshakeComplete = false; _serverHello = null; _noiseHandshake = null; _noiseSession = null; }
         private CancellationTokenSource? _receiveCancellation;
         private bool _connected;
         private bool _handshakeComplete;
@@ -102,14 +102,19 @@ namespace Thalovant
         private readonly Dictionary<Guid, Action<JsonObject>> _busHandlers = new Dictionary<Guid, Action<JsonObject>>();
         private readonly Dictionary<Guid, Action<HiveMessage>> _messageHandlers = new Dictionary<Guid, Action<HiveMessage>>();
 
-        public HiveMindWssTransport(ThalovantIdentity identity, string? userAgent = null)
+        public HiveMindWssTransport(ThalovantIdentity identity, string? userAgent = null, IHiveMindNoiseStore? noiseStore = null)
         {
             Identity = identity;
+            _noiseStore = noiseStore ?? new HiveMindFileNoiseStore();
             // Resolved here rather than as a parameter default so that the
             // version is never inlined into a caller's assembly at their
             // compile time.
             UserAgent = userAgent ?? ThalovantDefaults.UserAgent;
         }
+
+        // In-memory WebSocket peer seam keeps protocol tests independent of networks.
+        internal HiveMindWssTransport(ThalovantIdentity identity, IHiveMindNoiseStore store, Func<WebSocket> socketFactory)
+            : this(identity, noiseStore: store) { _socketFactory = socketFactory; }
 
         public bool Connected
         {
@@ -199,36 +204,38 @@ namespace Thalovant
 
         public async Task ConnectAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default)
         {
-            var effectiveTimeout = timeout ?? TimeSpan.FromSeconds(6);
-            ClientWebSocket socket;
-            lock (_lock)
-            {
-                if (_connected && _handshakeComplete)
-                {
-                    return;
-                }
-                _handshakeGate = new AsyncGate();
-                _handshakeComplete = false;
-                _lastError = null;
-            }
+            await _connectLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try { await ConnectCoreAsync(timeout, cancellationToken).ConfigureAwait(false); }
+            finally { _connectLock.Release(); }
+        }
 
+        private async Task ConnectCoreAsync(TimeSpan? timeout, CancellationToken cancellationToken)
+        {
+            if (Connected && HandshakeComplete) return;
+            await DisconnectAsync().ConfigureAwait(false);
+            var effectiveTimeout = timeout ?? TimeSpan.FromSeconds(6);
+            WebSocket socket;
+            AsyncGate gate;
+            CancellationToken receiveToken;
             var url = EndpointUri();
-            socket = new ClientWebSocket();
-            var receiveCancellation = new CancellationTokenSource();
-            lock (_lock)
-            {
+            lock (_lock) {
+                _handshakeGate = gate = new AsyncGate();
+                ResetSession();
+                _lastError = null;
+                socket = _socketFactory();
                 _socket = socket;
-                _receiveCancellation = receiveCancellation;
+                _receiveCancellation = new CancellationTokenSource();
+                receiveToken = _receiveCancellation.Token;
             }
             try
             {
-                using var connectTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                using var connectTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, receiveToken);
                 connectTimeout.CancelAfter(effectiveTimeout);
                 try
                 {
-                    await socket.ConnectAsync(url, connectTimeout.Token).ConfigureAwait(false);
+                    if (socket is ClientWebSocket clientSocket) await clientSocket.ConnectAsync(url, connectTimeout.Token).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && !receiveToken.IsCancellationRequested)
                 {
                     throw new ThalovantConnectionException("HiveMind WSS connect timed out.");
                 }
@@ -238,27 +245,26 @@ namespace Thalovant
                 }
                 lock (_lock)
                 {
+                    RequireSocket(socket);
                     _connected = true;
                 }
-                _ = Task.Run(() => ReceiveLoopAsync(socket, receiveCancellation.Token));
-                await _handshakeGate.WaitAsync(
+                _ = Task.Run(() => ReceiveLoopAsync(socket, receiveToken));
+                using var registration = cancellationToken.Register(() => gate.Fail(new OperationCanceledException(cancellationToken)));
+                await gate.WaitAsync(
                     effectiveTimeout,
                     new ThalovantTimeoutException("HiveMind WSS handshake timed out.")).ConfigureAwait(false);
+                lock (_lock) { RequireSocket(socket); }
             }
             catch (Exception exception)
             {
-                lock (_lock)
-                {
-                    _lastError = exception.Message;
-                }
-                await DisconnectAsync().ConfigureAwait(false);
+                HandleSocketFailure(socket, exception);
                 throw;
             }
         }
 
         public Task DisconnectAsync()
         {
-            ClientWebSocket? socket;
+            WebSocket? socket;
             CancellationTokenSource? receiveCancellation;
             lock (_lock)
             {
@@ -266,8 +272,8 @@ namespace Thalovant
                 receiveCancellation = _receiveCancellation;
                 _socket = null;
                 _receiveCancellation = null;
-                _connected = false;
-                _handshakeComplete = false;
+                ResetSession();
+                _handshakeGate.Fail(new OperationCanceledException("HiveMind WSS disconnected."));
             }
             receiveCancellation?.Cancel();
             receiveCancellation?.Dispose();
@@ -294,21 +300,38 @@ namespace Thalovant
 
         // -- Sending ---------------------------------------------------------
 
-        public async Task SendAsync(HiveMessage message, bool encrypt = true, CancellationToken cancellationToken = default)
+        public Task SendAsync(HiveMessage message, bool encrypt = true, CancellationToken cancellationToken = default)
         {
-            ClientWebSocket? socket;
-            bool ready;
-            lock (_lock)
-            {
-                socket = _socket;
-                ready = _handshakeComplete;
+            if (!encrypt) throw new ThalovantConnectionException("Plaintext application messages are forbidden by HiveMind v3.");
+            lock (_lock) {
+                var socket = _socket ?? throw new ThalovantConnectionException("HiveMind WSS is not connected.");
+                var session = _noiseSession ?? throw new ThalovantConnectionException("Noise handshake is incomplete.");
+                if (!_handshakeComplete) throw new ThalovantConnectionException("Noise handshake is incomplete.");
+                return SendCapturedAsync(socket, session, message, cancellationToken);
             }
-            if (socket is null || socket.State != WebSocketState.Open)
-            {
-                throw new ThalovantConnectionException("HiveMind WSS transport is not connected.");
+        }
+
+        // Capture the socket and cipher before waiting for the send queue. A queued
+        // message from the previous connection can never use a replacement session.
+        private async Task SendCapturedAsync(WebSocket socket, NoiseSession session, HiveMessage message, CancellationToken cancellationToken)
+        {
+            await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try {
+                byte[][] frames;
+                lock (_lock) {
+                    RequireSocket(socket);
+                    if (!ReferenceEquals(session, _noiseSession)) throw new OperationCanceledException("Noise session was replaced.");
+                    var plain = Encoding.UTF8.GetBytes(HiveWire.Encode(message, cryptoKey: null, encrypt: false));
+                    frames = session.Encrypt(plain).ToArray();
+                }
+                foreach (var frame in frames) {
+                    lock (_lock) { RequireSocket(socket); }
+                    await socket.SendAsync(new ArraySegment<byte>(frame), WebSocketMessageType.Binary, true, cancellationToken).ConfigureAwait(false);
+                    lock (_lock) { RequireSocket(socket); }
+                }
             }
-            var payload = HiveWire.Encode(message, Identity.CryptoKey, encrypt && ready);
-            await SendTextAsync(socket, payload, cancellationToken).ConfigureAwait(false);
+            catch (Exception error) { HandleSocketFailure(socket, error); throw; }
+            finally { _sendLock.Release(); }
         }
 
         public Task EmitBusAsync(string type, JsonObject data, JsonObject context, CancellationToken cancellationToken = default)
@@ -316,17 +339,19 @@ namespace Thalovant
             return SendAsync(HiveWire.BusMessage(type, data, context), cancellationToken: cancellationToken);
         }
 
-        private async Task SendTextAsync(ClientWebSocket socket, string text, CancellationToken cancellationToken)
+        private async Task SendTextAsync(WebSocket socket, string text, CancellationToken cancellationToken)
         {
             var buffer = Encoding.UTF8.GetBytes(text);
             await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
+                lock (_lock) { RequireSocket(socket); }
                 await socket.SendAsync(
                     new ArraySegment<byte>(buffer),
                     WebSocketMessageType.Text,
                     endOfMessage: true,
                     cancellationToken).ConfigureAwait(false);
+                lock (_lock) { RequireSocket(socket); }
             }
             catch (WebSocketException exception)
             {
@@ -340,7 +365,7 @@ namespace Thalovant
 
         // -- Receiving -------------------------------------------------------
 
-        private async Task ReceiveLoopAsync(ClientWebSocket socket, CancellationToken cancellationToken)
+        private async Task ReceiveLoopAsync(WebSocket socket, CancellationToken cancellationToken)
         {
             var buffer = new byte[8192];
             var frame = new MemoryStream();
@@ -357,19 +382,33 @@ namespace Thalovant
                         {
                             var reason = result.CloseStatusDescription;
                             var suffix = string.IsNullOrEmpty(reason) ? "" : $": {reason}";
-                            HandleSocketClosed(new ThalovantConnectionException(
+                            HandleSocketClosed(socket, new ThalovantConnectionException(
                                 $"HiveMind WSS closed before handshake completed ({(int?)result.CloseStatus ?? 0}){suffix}."));
                             return;
                         }
+                        if (frame.Length + result.Count > (result.MessageType == WebSocketMessageType.Binary ? 65535 : 262144)) throw new ThalovantConnectionException("HiveMind frame exceeds its size limit.");
                         frame.Write(buffer, 0, result.Count);
                     }
                     while (!result.EndOfMessage);
 
-                    var data = frame.ToArray();
-                    var message = result.MessageType == WebSocketMessageType.Text
-                        ? HiveWire.Decode(Encoding.UTF8.GetString(data), Identity.CryptoKey)
-                        : HiveWire.Decode(data, Identity.CryptoKey);
-                    await HandleFrameAsync(message, cancellationToken).ConfigureAwait(false);
+                    HiveMessage message;
+                    bool authenticated = result.MessageType == WebSocketMessageType.Binary;
+                    lock (_lock) {
+                        RequireSocket(socket);
+                        var data = frame.ToArray();
+                        string text;
+                        if (authenticated) {
+                            var state = _noiseSession ?? throw new ThalovantConnectionException("Binary frame received before Noise authentication.");
+                            var decoded = state.Decrypt(data); if (!decoded.HasValue) continue;
+                            if (!decoded.Value.Json) throw new ThalovantConnectionException("Binary HiveMind payloads were not negotiated.");
+                            text = new UTF8Encoding(false, true).GetString(decoded.Value.Data);
+                        } else {
+                            if (_noiseSession != null) throw new ThalovantConnectionException("Plaintext frame received after Noise authentication.");
+                            text = new UTF8Encoding(false, true).GetString(data);
+                        }
+                        message = HiveWire.Decode(text, cryptoKey: null);
+                    }
+                    await HandleFrameAsync(socket, message, cancellationToken, authenticated).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException)
@@ -378,106 +417,130 @@ namespace Thalovant
             }
             catch (Exception exception)
             {
-                HandleSocketFailure(exception);
+                HandleSocketFailure(socket, exception);
             }
         }
 
-        private void HandleSocketClosed(ThalovantConnectionException error)
+        // Call only while holding _lock. Identity checks and the mutations they
+        // authorize must be atomic with respect to disconnect and replacement.
+        private void RequireSocket(WebSocket socket)
         {
-            bool handshakeWasComplete;
-            lock (_lock)
-            {
-                _connected = false;
-                handshakeWasComplete = _handshakeComplete;
-                if (!handshakeWasComplete)
-                {
-                    _lastError = error.Message;
-                }
-            }
-            if (!handshakeWasComplete)
-            {
-                _handshakeGate.Fail(error);
+            if (!ReferenceEquals(socket, _socket)) throw new OperationCanceledException("Noise connection was replaced.");
+        }
+
+        private void HandleSocketClosed(WebSocket socket, ThalovantConnectionException error)
+        {
+            lock (_lock) {
+                if (!ReferenceEquals(socket, _socket)) return;
+                var complete = _handshakeComplete;
+                ResetSession();
+                if (!complete) { _lastError = error.Message; _handshakeGate.Fail(error); }
             }
         }
 
-        private void HandleSocketFailure(Exception error)
+        private void HandleSocketFailure(WebSocket socket, Exception error)
         {
-            lock (_lock)
-            {
-                _connected = false;
+            lock (_lock) {
+                if (!ReferenceEquals(socket, _socket)) return;
+                ResetSession();
+                socket.Abort();
                 _lastError = error.Message;
+                var failure = error as ThalovantConnectionException
+                    ?? new ThalovantConnectionException($"HiveMind WSS connection failed: {error.Message}", error);
+                _handshakeGate.Fail(failure);
             }
-            var failure = error as ThalovantConnectionException
-                ?? new ThalovantConnectionException($"HiveMind WSS connection failed: {error.Message}", error);
-            _handshakeGate.Fail(failure);
         }
 
-        private async Task HandleFrameAsync(HiveMessage message, CancellationToken cancellationToken)
+        private async Task HandleFrameAsync(WebSocket socket, HiveMessage message, CancellationToken cancellationToken, bool authenticated)
         {
-            switch (message.MsgType)
-            {
-                case "handshake":
-                case "shake":
-                    await HandleHandshakeAsync(message.Payload, cancellationToken).ConfigureAwait(false);
-                    break;
-                case "bus":
-                {
-                    List<Action<JsonObject>> handlers;
-                    lock (_lock)
-                    {
-                        handlers = new List<Action<JsonObject>>(_busHandlers.Values);
-                    }
-                    foreach (var handler in handlers)
-                    {
-                        handler(message.Payload);
-                    }
-                    break;
+            if (message.MsgType == "handshake" || message.MsgType == "shake") {
+                lock (_lock) {
+                    RequireSocket(socket);
+                    if (authenticated) throw new ThalovantConnectionException("Unexpected encrypted handshake.");
                 }
-                default:
-                    break;
+                await HandleHandshakeAsync(socket, message.Payload, cancellationToken).ConfigureAwait(false);
             }
-            List<Action<HiveMessage>> messageHandlers;
-            lock (_lock)
-            {
-                messageHandlers = new List<Action<HiveMessage>>(_messageHandlers.Values);
+            Action<JsonObject>[] busHandlers = Array.Empty<Action<JsonObject>>();
+            Action<HiveMessage>[] messageHandlers;
+            lock (_lock) {
+                RequireSocket(socket);
+                switch (message.MsgType) {
+                    case "hello":
+                        if (!authenticated) {
+                            if (_serverHello != null || _noiseHandshake != null || string.IsNullOrWhiteSpace(JsonUtil.GetString(message.Payload["node_id"])))
+                                throw new ThalovantConnectionException("Invalid or duplicate server HELLO.");
+                            _serverHello = message.Payload;
+                        }
+                        break;
+                    case "handshake": case "shake": break;
+                    case "bus":
+                        if (!authenticated || !_handshakeComplete) throw new ThalovantConnectionException("Application frame received before Noise authentication.");
+                        busHandlers = _busHandlers.Values.ToArray();
+                        break;
+                    default:
+                        if (!authenticated) throw new ThalovantConnectionException("Unexpected plaintext application frame.");
+                        break;
+                }
+                messageHandlers = _messageHandlers.Values.ToArray();
             }
-            foreach (var handler in messageHandlers)
-            {
-                handler(message);
-            }
+            // The frame is admitted atomically above. Invoke application code
+            // outside the lifecycle lock so callbacks can send a response or
+            // disconnect without deadlocking an asynchronous send continuation.
+            foreach (var handler in busHandlers) handler(message.Payload);
+            foreach (var handler in messageHandlers) handler(message);
         }
 
-        private async Task HandleHandshakeAsync(JsonObject payload, CancellationToken cancellationToken)
+        private async Task HandleHandshakeAsync(WebSocket socket, JsonObject payload, CancellationToken cancellationToken)
         {
-            if (!HiveWire.IsPresharedKeyHandshake(payload))
-            {
-                throw new ThalovantConnectionException("Only HiveMind preshared-key handshakes are supported by this SDK.");
+            NoiseHandshake state;
+            string nodeId;
+            JsonObject? parameters = null;
+            bool completing;
+            lock (_lock) {
+                RequireSocket(socket);
+                var noise = payload["noise"] as JsonObject ?? throw new ThalovantConnectionException("HiveMind v3 Noise is required; legacy downgrade refused.");
+                var hello = _serverHello ?? throw new ThalovantConnectionException("Noise offer arrived before server HELLO.");
+                nodeId = JsonUtil.GetString(hello["node_id"])!;
+                var encoded = JsonUtil.GetString(noise["msg"]);
+                completing = encoded != null;
+                if (!completing) {
+                    if (_noiseHandshake != null) throw new ThalovantConnectionException("Duplicate Noise offer.");
+                    if (!int.TryParse(payload["max_protocol_version"]?.ToJsonString(), out var version) || version < 3) throw new ThalovantConnectionException("Server does not advertise HiveMind v3.");
+                    string[] Offered(string field) => (noise[field] as JsonArray)?.Select(v => JsonUtil.GetString(v) ?? "").ToArray() ?? Array.Empty<string>();
+                    var pin = _noiseStore.LoadPin(nodeId);
+                    var patterns = Offered("patterns");
+                    var pattern = pin != null && patterns.Contains("KKpsk0") ? "KKpsk0" : patterns.Contains("XXpsk2") ? "XXpsk2" : throw new ThalovantConnectionException("No supported Noise pattern offered.");
+                    if (!Offered("suites").Contains(Noise.Suite)) throw new ThalovantConnectionException("No supported Noise suite offered (requires 25519_AESGCM_SHA256).");
+                    var psk = _cachedPsk.HasValue && _cachedPsk.Value.NodeId == nodeId ? _cachedPsk.Value.Key : Noise.DerivePsk(Identity.Password, nodeId);
+                    _cachedPsk = (nodeId, psk);
+                    state = new NoiseHandshake(pattern, psk, Noise.Prologue(hello, payload, "Noise_" + pattern + "_" + Noise.Suite), _noiseStore.LoadOrCreateStaticKey(), pin);
+                    _noiseHandshake = state;
+                    var first = state.Write(Encoding.UTF8.GetBytes("{\"binarize\":false,\"encodings\":[]}"));
+                    parameters = new JsonObject { ["pattern"] = pattern, ["suite"] = Noise.Suite, ["msg"] = Noise.Hex(first) };
+                } else {
+                    state = _noiseHandshake ?? throw new ThalovantConnectionException("Noise message arrived before offer.");
+                    state.Read(Noise.Unhex(encoded!));
+                    if (!state.Finished) parameters = new JsonObject { ["msg"] = Noise.Hex(state.Write()) };
+                }
             }
-            if (ThalovantCrypto.RuntimeKey(Identity.CryptoKey) is null)
-            {
-                throw new ThalovantConnectionException("HiveMind requested a preshared key, but identity.crypto_key is missing.");
+            if (parameters != null) {
+                var message = new HiveMessage("shake", new JsonObject { ["noise"] = parameters });
+                await SendTextAsync(socket, HiveWire.Encode(message, cryptoKey: null, encrypt: false), cancellationToken).ConfigureAwait(false);
             }
-            var hello = HiveWire.HelloMessage(
-                Identity.SiteId,
-                Identity.PublicKey,
-                "thalovant-dotnet-" + Guid.NewGuid().ToString("D").ToLowerInvariant());
-            ClientWebSocket? socket;
-            lock (_lock)
-            {
-                socket = _socket;
+            if (!completing) return;
+            NoiseSession session;
+            lock (_lock) {
+                RequireSocket(socket);
+                if (!ReferenceEquals(state, _noiseHandshake)) throw new OperationCanceledException("Noise handshake was replaced.");
+                _noiseStore.VerifyOrPin(nodeId, state.RemoteStatic ?? throw new ThalovantConnectionException("Missing authenticated server key."));
+                _noiseSession = session = state.Session(); _noiseHandshake = null;
             }
-            if (socket is null)
-            {
-                throw new ThalovantConnectionException("HiveMind WSS transport is not connected.");
-            }
-            // The hello reply is always sent unencrypted.
-            var payloadText = HiveWire.Encode(hello, cryptoKey: null, encrypt: false);
-            await SendTextAsync(socket, payloadText, cancellationToken).ConfigureAwait(false);
-            lock (_lock)
-            {
+            await SendCapturedAsync(socket, session, HiveWire.HelloMessage(Identity.SiteId, Identity.PublicKey, "thalovant-dotnet-" + Guid.NewGuid().ToString("D")), cancellationToken).ConfigureAwait(false);
+            lock (_lock) {
+                RequireSocket(socket);
                 _handshakeComplete = true;
+                _handshakeGate.Open();
             }
-            _handshakeGate.Open();
         }
     }
 }

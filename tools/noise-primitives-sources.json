@@ -1,0 +1,54 @@
+{
+  "repository": "https://github.com/bcgit/bc-csharp",
+  "revision": "b4f2f6ad76bcd1f11f365ee50cc7447fbce79077",
+  "sources": [
+    {
+      "path": "crypto/src/crypto/generators/Argon2BytesGenerator.cs",
+      "sha256": "79c3d05848f3009481caac959a7259bcd6c5c0e776b4481e78332d232eecddee"
+    },
+    {
+      "path": "crypto/src/crypto/digests/Blake2bDigest.cs",
+      "sha256": "1cead0be6c2eeb7f34bbf20f7fb5e5b030e998c6aafd7f78d509c9334171c815"
+    },
+    {
+      "path": "crypto/src/crypto/parameters/Argon2Parameters.cs",
+      "sha256": "543ede848adaa8a1e4ad09bb682bd20c6eafe9d8580015532971c3b3b8d57826"
+    },
+    {
+      "path": "crypto/src/crypto/IDigest.cs",
+      "sha256": "15b9715d78a583ca36e1a6ef172adff14214638fb9029853991627405f8982bc"
+    },
+    {
+      "path": "crypto/src/crypto/ICharToByteConverter.cs",
+      "sha256": "25bd253c8516cc02bbc45cbcbc1a2f606800a677b0b250be74c6370a75f3629c"
+    },
+    {
+      "path": "crypto/src/math/ec/rfc7748/X25519.cs",
+      "sha256": "209dea807d764abc63f33384ff19f0fdeed3ca71e2358b9b84dde34fca099e8d"
+    },
+    {
+      "path": "crypto/src/math/ec/rfc7748/X25519Field.cs",
+      "sha256": "9a83dcabab4af750aa60269ef36ab7570c8135af47af224dffee7d76e7c83d24"
+    },
+    {
+      "path": "crypto/src/math/raw/Mod.cs",
+      "sha256": "3be5da382ad6dde9dce85321405165cb22f60786962de667860a473f17cfc1ea"
+    },
+    {
+      "path": "crypto/src/math/raw/Nat.cs",
+      "sha256": "d1899757ec4b62d17bbb768b13e6c60336b43713c8b31712b2af4cd2f8b11825"
+    },
+    {
+      "path": "crypto/src/util/Integers.cs",
+      "sha256": "88c65e1c0bb73d601d137be90a1b202ebea96821171991c14d26df793152f199"
+    },
+    {
+      "path": "crypto/src/util/Longs.cs",
+      "sha256": "bbc89a43bc2ee0f45b5dfcb93f54f65ecabfdc03e26ac5a1d9bdba69533e840a"
+    },
+    {
+      "path": "crypto/src/crypto/util/Pack.cs",
+      "sha256": "1b6e5429479d852937d6f7a694678c0bf2ddeac29ace39c4b33d891046f7a828"
+    }
+  ]
+}

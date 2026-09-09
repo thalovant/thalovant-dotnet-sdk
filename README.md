@@ -511,6 +511,8 @@ adaptations. HTTPS/MQTT runtime transports remain explicitly unsupported.
 ## Ask deadlines and correlation
 
 Ask uses one total timeout across connection, authentication, send, and replies.
+A terminal query reply can complete while its admitted write is still retiring. The transport retains write ownership and never replays the request. Ask surfaces a write failure during any active reply phase; a hard terminal reply or an already elapsed reply window takes precedence over later write errors.
+
 The first nonempty speech starts a fixed settling window (250ms by default).
 The first handled or soft-miss event without speech starts a fixed empty-reply
 window (5s by default); subsequent speech switches to settling. Both windows

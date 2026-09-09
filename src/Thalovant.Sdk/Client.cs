@@ -271,7 +271,7 @@ namespace Thalovant
                 Identity.SiteId,
                 lang,
                 effectiveRequestId);
-            var state = new AskState();
+            var state = new AskState(Remaining, effectiveEmptyReplyWait, effectiveReplySettle);
             var handlerId = _bus.AddBusHandler(payload =>
             {
                 var busEvent = ThalovantEvent.FromBusPayload(payload);
@@ -292,7 +292,9 @@ namespace Thalovant
                     operationToken.ThrowIfCancellationRequested();
                     await _bus.EmitBusAsync(ThalovantEvents.RecognizerLoopUtterance,
                         ThalovantContext.UtterancePayload(prompt, lang), correlatedContext, operationToken).ConfigureAwait(false);
-                } catch (Exception error) { state.ProgressGate.Fail(error); }
+                } catch (OperationCanceledException) when (operationToken.IsCancellationRequested) {
+                    // The collector owns deadline/caller-cancellation precedence.
+                } catch (Exception error) { state.Fail(error); }
             });
             try
             {
@@ -316,7 +318,8 @@ namespace Thalovant
                     await state.TerminalGate.WaitAsync(Bounded(effectiveReplySettle, afterEmpty.FirstSpeechAt), null, cancellationToken).ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
 
-                var final = state.Snapshot();
+                var final = state.Finish();
+                if (final.Error != null) throw final.Error;
                 // A soft intent-miss becomes the surfaced failure only if no reply
                 // (not even a fallback) arrived; a reply means a fallback recovered.
                 var effectiveFailure = final.FailureEvent ?? (final.Fragments.Count == 0 ? final.SoftFailureEvent : null);
@@ -454,14 +457,15 @@ namespace Thalovant
             internal string? ResponseSessionId { get; }
             internal long? FirstSpeechAt { get; }
             internal long? EmptyStartedAt { get; }
+            internal Exception? Error { get; }
 
-            internal StateSnapshot(IReadOnlyList<string> fragments, IReadOnlyList<ThalovantEvent> events, ThalovantEvent? failureEvent, ThalovantEvent? softFailureEvent, bool handled, long? firstSpeechAt, long? emptyStartedAt, string? responseSessionId)
+            internal StateSnapshot(IReadOnlyList<string> fragments, IReadOnlyList<ThalovantEvent> events, ThalovantEvent? failureEvent, ThalovantEvent? softFailureEvent, bool handled, long? firstSpeechAt, long? emptyStartedAt, string? responseSessionId, Exception? error)
             {
                 Fragments = fragments;
                 Events = events;
                 FailureEvent = failureEvent;
                 SoftFailureEvent = softFailureEvent;
-                Handled = handled; FirstSpeechAt = firstSpeechAt; EmptyStartedAt = emptyStartedAt; ResponseSessionId = responseSessionId;
+                Handled = handled; FirstSpeechAt = firstSpeechAt; EmptyStartedAt = emptyStartedAt; ResponseSessionId = responseSessionId; Error = error;
             }
         }
 
@@ -475,6 +479,40 @@ namespace Thalovant
         private bool _handled;
         private long? _firstSpeechAt, _emptyStartedAt;
         private string? _responseSessionId;
+        private Exception? _error;
+        private bool _stopped;
+        private readonly Func<TimeSpan>? _remaining;
+        private readonly TimeSpan _emptyReplyWait, _replySettle;
+
+        internal AskState(Func<TimeSpan>? remaining = null, TimeSpan emptyReplyWait = default, TimeSpan replySettle = default)
+        { _remaining = remaining; _emptyReplyWait = emptyReplyWait; _replySettle = replySettle; }
+
+        private bool Expired()
+        {
+            if (_remaining == null) return false;
+            if (_remaining() <= TimeSpan.Zero) return true;
+            var started = _firstSpeechAt ?? _emptyStartedAt;
+            if (!started.HasValue) return false;
+            var elapsed = TimeSpan.FromSeconds((System.Diagnostics.Stopwatch.GetTimestamp() - started.Value) / (double)System.Diagnostics.Stopwatch.Frequency);
+            return elapsed >= (_firstSpeechAt.HasValue ? _replySettle : _emptyReplyWait);
+        }
+
+        internal void Fail(Exception error)
+        {
+            lock (_lock) {
+                if (_stopped || _failureEvent != null || Expired()) return;
+                _error = error; _stopped = true;
+                // All phases wake, even when an earlier progress gate is open.
+                // Store the exception once instead of faulting unobserved gates.
+                ProgressGate.Open(); ReplyGate.Open(); TerminalGate.Open();
+            }
+        }
+
+        internal StateSnapshot Finish()
+        {
+            lock (_lock) { _stopped = true; return Snapshot(); }
+        }
+
 
         /// <summary>Opens when the utterance is handled or the first fragment arrives.</summary>
         internal AsyncGate ProgressGate { get; } = new AsyncGate();
@@ -487,7 +525,7 @@ namespace Thalovant
         {
             lock (_lock)
             {
-                return new StateSnapshot(_fragments.ToArray(), _events.ToArray(), _failureEvent, _softFailureEvent, _handled, _firstSpeechAt, _emptyStartedAt, _responseSessionId);
+                return new StateSnapshot(_fragments.ToArray(), _events.ToArray(), _failureEvent, _softFailureEvent, _handled, _firstSpeechAt, _emptyStartedAt, _responseSessionId, _error);
             }
         }
 
@@ -503,7 +541,7 @@ namespace Thalovant
             }
             lock (_lock)
             {
-                if (_failureEvent != null) return;
+                if (_stopped || _failureEvent != null || Expired()) return;
                 switch (busEvent.Name)
                 {
                     case ThalovantEvents.Speak:

@@ -184,6 +184,7 @@ namespace Thalovant
             var stateLock = new object();
             var events = new List<ThalovantEvent>(); var fragments = new List<string>();
             ThalovantEvent? failure = null;
+            Exception? sendError = null;
             string? responseSessionId = null;
             var token = queryBus.AddQueryHandler(message => {
                 if (message.MsgType != "query" && message.MsgType != "cascade") return;
@@ -208,9 +209,25 @@ namespace Thalovant
                 await ConnectAsync(budget, deadline.Token).ConfigureAwait(false);
                 var correlated = ThalovantContext.WithCorrelation(context, session, Identity.SiteId, lang, request);
                 var bus = HiveWire.BusMessage(ThalovantEvents.RecognizerLoopUtterance, ThalovantContext.UtterancePayload(prompt, lang), correlated);
-                await queryBus.SendQueryFrameAsync(new HiveMessage("query", bus.ToJsonObject(), new JsonObject { ["query_id"] = query }), deadline.Token).ConfigureAwait(false);
+                var operationToken = deadline.Token;
+                // The task observes the physical write through transport cleanup.
+                // A terminal response can complete collection without freeing or
+                // replaying that write; cancellation still retains its send lock.
+                _ = Task.Run(async () => {
+                    try {
+                        operationToken.ThrowIfCancellationRequested();
+                        await queryBus.SendQueryFrameAsync(new HiveMessage("query", bus.ToJsonObject(), new JsonObject { ["query_id"] = query }), operationToken).ConfigureAwait(false);
+                    } catch (OperationCanceledException) when (operationToken.IsCancellationRequested) {
+                        // The collector translates its own deadline/cancellation.
+                    } catch (Exception error) {
+                        lock (stateLock) {
+                            if (!gate.Task.IsCompleted && !operationToken.IsCancellationRequested) { sendError = error; gate.TrySetResult(false); }
+                        }
+                    }
+                });
                 await AwaitRuntimeAsync(gate.Task, deadline.Token).ConfigureAwait(false);
                 lock (stateLock) {
+                    if (sendError != null) throw sendError;
                     if (fragments.Count == 0) {
                         if (failure != null) throw new ThalovantRuntimeException($"Hub reported {failure.Name}.");
                         throw new ThalovantTimeoutException("Hub completed the query without a speak reply.");
@@ -222,7 +239,7 @@ namespace Thalovant
                 }
             } catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) {
                 throw new ThalovantTimeoutException("Hub did not complete the query in time.");
-            } finally { queryBus.RemoveQueryHandler(token); }
+            } finally { deadline.Cancel(); queryBus.RemoveQueryHandler(token); }
         }
         public ThalovantConversation Conversation(string? sessionId = null, string lang = "en-us", JsonObject? context = null) =>
             new ThalovantConversation(this, sessionId ?? ThalovantContext.NewSessionId(), lang, JsonUtil.CloneObject(context));

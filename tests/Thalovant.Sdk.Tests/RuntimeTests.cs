@@ -22,6 +22,7 @@ namespace Thalovant.Sdk.Tests
             public Action<HiveMessage>? QueryAnswer { get; set; }
             public Func<CancellationToken, Task>? ConnectAction { get; set; }
             public Func<CancellationToken, Task>? EmitAction { get; set; }
+            public Func<CancellationToken, Task>? QueryAction { get; set; }
             public Action<JsonObject>? BusAnswer { get; set; }
             public int BusCount { get { lock (_lock) return _bus.Count; } }
             public int FrameCount { get { lock (_lock) return _frames.Count; } }
@@ -33,8 +34,8 @@ namespace Thalovant.Sdk.Tests
             public void RemoveQueryHandler(Guid id) { lock (_lock) _frames.Remove(id); }
             public async Task EmitBusAsync(string type, JsonObject data, JsonObject context, CancellationToken cancellationToken = default)
             { Emitted.Add(new ThalovantEvent(type, data, context)); if (EmitAction != null) await EmitAction(cancellationToken); BusAnswer?.Invoke(context); }
-            public Task SendQueryFrameAsync(HiveMessage message, CancellationToken cancellationToken)
-            { Sent.Add(message); QueryAnswer?.Invoke(message); return Task.CompletedTask; }
+            public async Task SendQueryFrameAsync(HiveMessage message, CancellationToken cancellationToken)
+            { Sent.Add(message); QueryAnswer?.Invoke(message); if (QueryAction != null) await QueryAction(cancellationToken); }
             public void Deliver(string name, string text = "", string? request = null, string? session = null)
             {
                 var payload = new JsonObject { ["type"] = name, ["data"] = new JsonObject { ["utterance"] = text },
@@ -126,12 +127,83 @@ namespace Thalovant.Sdk.Tests
             };
             var request = sdk.AskAsync("test", hard ? TimeSpan.FromSeconds(60) : TimeSpan.FromMilliseconds(250), replySettle: TimeSpan.FromSeconds(60));
             try {
-                await entered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+                await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
                 var reply = await request.WaitAsync(TimeSpan.FromSeconds(1));
                 Assert.Equal("answer", reply.Text); Assert.Equal(!hard, reply.Ok);
                 Assert.False(retired.Task.IsCompleted); Assert.Equal(0, fake.BusCount);
             } finally { release.TrySetResult(); }
-            await retired.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await retired.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        [Theory][InlineData(false)][InlineData(true)]
+        public async Task QueryTerminalReplyDoesNotWaitForAdmittedWrite(bool hard)
+        {
+            var fake = new Fake(); using var sdk = Client(fake);
+            var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var retired = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            fake.QueryAction = async token => {
+                fake.Reply("q", "speak", "answer");
+                fake.Reply("q", hard ? ThalovantEvents.PolicyDenied : "hive.query.complete");
+                fake.Reply("q", "speak", "ignored");
+                entered.SetResult();
+                try { await Task.Delay(Timeout.Infinite, token); }
+                finally { await release.Task; retired.SetResult(); }
+            };
+            var pending = sdk.QueryAsync("test", TimeSpan.FromSeconds(60), queryId: "q");
+            try {
+                await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                var reply = await pending.WaitAsync(TimeSpan.FromSeconds(2));
+                Assert.Equal("answer", reply.Text); Assert.Equal(!hard, reply.Ok); Assert.Equal(2, reply.Events.Count);
+                Assert.Single(fake.Sent); Assert.Equal(0, fake.FrameCount); Assert.False(retired.Task.IsCompleted);
+            } finally { release.TrySetResult(); }
+            await retired.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        [Theory][InlineData("speak")][InlineData(ThalovantEvents.UtteranceHandled)]
+        public async Task AskSurfacesWriteFailureAfterProgress(string progress)
+        {
+            var fake = new Fake(); using var sdk = Client(fake);
+            fake.EmitAction = _ => {
+                fake.Deliver(progress, "answer", fake.Emitted.Last().RequestId);
+                throw new ThalovantConnectionException("write failed after progress");
+            };
+            var error = await Assert.ThrowsAsync<ThalovantConnectionException>(() => sdk.AskAsync("test",
+                TimeSpan.FromSeconds(60), replySettle: TimeSpan.FromSeconds(60), emptyReplyWait: TimeSpan.FromSeconds(60)).WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Equal("write failed after progress", error.Message);
+            Assert.Single(fake.Emitted); Assert.Equal(0, fake.BusCount);
+        }
+        [Fact]
+        public async Task AskExpiredSpeechWindowTakesPrecedenceOverLateWriteError()
+        {
+            var fake = new Fake(); using var sdk = Client(fake);
+            fake.EmitAction = _ => {
+                var id = fake.Emitted.Last().RequestId;
+                fake.Deliver("speak", "answer", id);
+                // Zero settling has already completed the response, even if
+                // the collector continuation has not resumed yet.
+                fake.Deliver("speak", "late", id);
+                throw new ThalovantConnectionException("late write error");
+            };
+            var reply = await sdk.AskAsync("test", TimeSpan.FromSeconds(60), replySettle: TimeSpan.Zero).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal("answer", reply.Text); Assert.True(reply.Ok); Assert.Single(reply.Events);
+            Assert.Single(fake.Emitted); Assert.Equal(0, fake.BusCount);
+        }
+        [Theory][InlineData(false)][InlineData(true)]
+        public async Task AskTerminalFailureTakesPrecedenceOverLateWriteError(bool partial)
+        {
+            var fake = new Fake(); using var sdk = Client(fake);
+            fake.EmitAction = _ => {
+                var id = fake.Emitted.Last().RequestId;
+                if (partial) fake.Deliver("speak", "answer", id);
+                fake.Deliver(ThalovantEvents.PolicyDenied, request: id);
+                throw new ThalovantConnectionException("late write error");
+            };
+            var request = sdk.AskAsync("test", TimeSpan.FromSeconds(60), replySettle: TimeSpan.FromSeconds(60));
+            if (partial) { var reply = await request.WaitAsync(TimeSpan.FromSeconds(5)); Assert.Equal("answer", reply.Text); Assert.False(reply.Ok); }
+            else {
+                var error = await Assert.ThrowsAsync<ThalovantRuntimeException>(() => request.WaitAsync(TimeSpan.FromSeconds(5)));
+                Assert.Contains(ThalovantEvents.PolicyDenied, error.Message);
+            }
+            Assert.Single(fake.Emitted); Assert.Equal(0, fake.BusCount);
         }
         [Fact] public async Task AskReturnsFirstCorrelatedRuntimeSessionReplacement()
         {
@@ -142,7 +214,7 @@ namespace Thalovant.Sdk.Tests
                 fake.Deliver(ThalovantEvents.UtteranceHandled, request: id, session: "runtime-first");
                 fake.Deliver("speak", "answer", id, "runtime-later");
             };
-            var reply = await sdk.AskAsync("test", sessionId: "requested", requestId: "r");
+            var reply = await sdk.AskAsync("test", sessionId: "requested", requestId: "r", emptyReplyWait: TimeSpan.FromSeconds(1));
             Assert.Equal("runtime-first", reply.SessionId); Assert.Equal("r", reply.RequestId); Assert.Equal("answer", reply.Text);
             Assert.Equal(new[] { "runtime-first", "runtime-later" }, reply.Events.Select(e => e.SessionId));
         }

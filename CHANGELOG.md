@@ -2,6 +2,7 @@
 
 ## 0.3.2
 
+- Collect terminal query replies while admitted writes retain transport ownership; surface write failures throughout Ask reply phases while preserving terminal/deadline precedence.
 - Apply one Ask timeout across connection admission, authentication, sending and
   reply collection. Clip fixed empty-reply and settling windows to that deadline.
 - Freeze Ask collection on policy denial or query timeout, retaining only speech

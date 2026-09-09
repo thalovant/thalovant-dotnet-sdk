@@ -100,6 +100,30 @@ namespace Thalovant.Sdk.Tests
             Assert.Equal(new[] { "hello", "bus" }, peers[1].AuthenticatedTypes.ToArray());
         }
 
+        [Fact] public async Task BusCallbackCanSynchronouslySendAnImmediateResponse()
+        {
+            PeerSocket? peer = null;
+            using var transport = new HiveMindWssTransport(Identity(), new MemoryStore(), () => peer = new PeerSocket(null, _ => { }));
+            await transport.ConnectAsync(TimeSpan.FromSeconds(10));
+            var replied = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            transport.AddBusHandler(message => {
+                if (message["type"]!.GetValue<string>() != "test.trigger") return;
+                try {
+                    var send = transport.EmitBusAsync("test.immediate-response", new JsonObject(), new JsonObject());
+                    // Bound the synchronous wait so a regressed callback lock
+                    // fails the test instead of hanging the test process.
+                    Assert.True(send.Wait(TimeSpan.FromSeconds(2)), "callback blocked its own send continuation");
+                    send.GetAwaiter().GetResult();
+                    replied.SetResult(true);
+                } catch (Exception error) { replied.SetException(error); }
+            });
+            peer!.BeforeNextSend = () => Task.Delay(10); // Force an asynchronous send continuation.
+            peer.QueueBus("test.trigger");
+            await replied.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(transport.Connected && transport.HandshakeComplete);
+            Assert.Equal(new[] { "hello", "bus" }, peer.AuthenticatedTypes.ToArray());
+        }
+
         private sealed class MemoryStore : IHiveMindNoiseStore
         {
             private readonly byte[] _key = Noise.RandomKey(); private readonly Dictionary<string, byte[]> _pins = new Dictionary<string, byte[]>();

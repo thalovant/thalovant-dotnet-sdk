@@ -460,6 +460,8 @@ namespace Thalovant
                 }
                 await HandleHandshakeAsync(socket, message.Payload, cancellationToken).ConfigureAwait(false);
             }
+            Action<JsonObject>[] busHandlers = Array.Empty<Action<JsonObject>>();
+            Action<HiveMessage>[] messageHandlers;
             lock (_lock) {
                 RequireSocket(socket);
                 switch (message.MsgType) {
@@ -473,14 +475,19 @@ namespace Thalovant
                     case "handshake": case "shake": break;
                     case "bus":
                         if (!authenticated || !_handshakeComplete) throw new ThalovantConnectionException("Application frame received before Noise authentication.");
-                        foreach (var handler in _busHandlers.Values.ToArray()) { RequireSocket(socket); handler(message.Payload); }
+                        busHandlers = _busHandlers.Values.ToArray();
                         break;
                     default:
                         if (!authenticated) throw new ThalovantConnectionException("Unexpected plaintext application frame.");
                         break;
                 }
-                foreach (var handler in _messageHandlers.Values.ToArray()) { RequireSocket(socket); handler(message); }
+                messageHandlers = _messageHandlers.Values.ToArray();
             }
+            // The frame is admitted atomically above. Invoke application code
+            // outside the lifecycle lock so callbacks can send a response or
+            // disconnect without deadlocking an asynchronous send continuation.
+            foreach (var handler in busHandlers) handler(message.Payload);
+            foreach (var handler in messageHandlers) handler(message);
         }
 
         private async Task HandleHandshakeAsync(WebSocket socket, JsonObject payload, CancellationToken cancellationToken)

@@ -481,7 +481,7 @@ var selected = HubEndpoints.SelectDataPlaneEndpoint(
     HubProtocolSettings.From(hub));
 ```
 
-`ThalovantClient` itself is WSS-only in 0.1.x; constructing it with
+`ThalovantClient` itself is WSS-only in 0.2.x; constructing it with
 `HubProtocol.Https` or `HubProtocol.Mqtt` throws
 `ThalovantUnsupportedProtocolException`.
 

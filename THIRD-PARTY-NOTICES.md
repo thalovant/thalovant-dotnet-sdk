@@ -29,6 +29,10 @@ transcripts, upstream Argon2/AESGCM values, and low-order-key rejection.
 The checked-in `noise-node.json` fixture contains synthetic test keys only. It
 was generated using the Thalovant Node SDK Noise implementation with noble
 primitives and fixed ephemeral entropy; none of its key material is deployed.
+The complete shared fixture retains both cipher suites so it stays comparable
+with the other SDKs. The .NET transcript test explicitly checks the two AESGCM
+exchanges (XXpsk2 and KKpsk0); the retained ChaChaPoly exchanges do not imply
+.NET support for that suite.
 
 ## Bouncy Castle license
 

@@ -105,6 +105,9 @@ namespace Thalovant
             if (timeout.HasValue) RuntimeTimeout(timeout);
             if (maxEvents < 0) throw new ArgumentOutOfRangeException(nameof(maxEvents));
             if (maxEvents == 0) yield break;
+            cancellationToken.ThrowIfCancellationRequested();
+            using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            if (timeout.HasValue) lifetime.CancelAfter(timeout.Value);
             var queue = new ConcurrentQueue<ThalovantEvent>();
             var queueLock = new object();
             Exception? failure = null;
@@ -121,23 +124,29 @@ namespace Thalovant
                     signal.Release();
                 }
             }, sessionId, requestId);
-            var clock = Stopwatch.StartNew();
+            void Retire()
+            {
+                lock (queueLock) { active = false; while (queue.TryDequeue(out _)) { } }
+                subscription.Close();
+            }
+            using var cancellation = lifetime.Token.Register(Retire);
             try {
-                await ConnectAsync(timeout.HasValue && timeout.Value < TimeSpan.FromSeconds(6) ? timeout : TimeSpan.FromSeconds(6), cancellationToken).ConfigureAwait(false);
+                var expired = false;
+                try {
+                    await ConnectAsync(timeout.HasValue && timeout.Value < TimeSpan.FromSeconds(6) ? timeout : TimeSpan.FromSeconds(6), lifetime.Token).ConfigureAwait(false);
+                } catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { expired = true; }
+                if (expired) yield break;
                 var count = 0;
                 while (!maxEvents.HasValue || count < maxEvents.Value) {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var wait = TimeSpan.FromMilliseconds(100);
-                    if (timeout.HasValue) {
-                        var remaining = timeout.Value - clock.Elapsed;
-                        if (remaining <= TimeSpan.Zero) yield break;
-                        if (remaining < wait) wait = remaining;
-                    }
-                    if (!await signal.WaitAsync(wait, cancellationToken).ConfigureAwait(false)) { RequireRuntimeConnected(); continue; }
+                    var signaled = false;
+                    try { signaled = await signal.WaitAsync(TimeSpan.FromMilliseconds(100), lifetime.Token).ConfigureAwait(false); }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { expired = true; }
+                    if (expired) yield break;
+                    if (!signaled) { RequireRuntimeConnected(); continue; }
                     lock (queueLock) { if (failure != null) throw failure; }
                     if (queue.TryDequeue(out var item)) { count++; yield return item; }
                 }
-            } finally { lock (queueLock) { active = false; } }
+            } finally { Retire(); }
         }
 
         public Task SendActionAsync(string payload, string? title = null, string lang = "en-us", JsonObject? context = null,
@@ -175,6 +184,7 @@ namespace Thalovant
             var stateLock = new object();
             var events = new List<ThalovantEvent>(); var fragments = new List<string>();
             ThalovantEvent? failure = null;
+            string? responseSessionId = null;
             var token = queryBus.AddQueryHandler(message => {
                 if (message.MsgType != "query" && message.MsgType != "cascade") return;
                 if ((JsonUtil.GetString(message.Metadata["query_id"]) ?? JsonUtil.GetString(message.Metadata["queryId"])) != query) return;
@@ -182,6 +192,7 @@ namespace Thalovant
                 lock (stateLock) {
                     if (gate.Task.IsCompleted) return;
                     events.Add(item);
+                    if (responseSessionId == null && !string.IsNullOrWhiteSpace(item.SessionId)) responseSessionId = item.SessionId;
                     if (item.Name == "hive.query.complete") gate.TrySetResult(true);
                     else if (item.Name == ThalovantEvents.Speak || item.Name == ThalovantEvents.OvosUtteranceSpeak) {
                         var fragment = Regex.Replace(item.Text.Trim(), @"\s+", " ");
@@ -207,7 +218,7 @@ namespace Thalovant
                     var joined = string.Join(" ", fragments);
                     var terminalFailure = failure?.Name == ThalovantEvents.PolicyDenied || failure?.Name == ThalovantEvents.QueryTimeout ? failure : null;
                     return new ThalovantReply(joined, ThalovantContext.StripSsml(joined), fragments.ToArray(), terminalFailure == null, terminalFailure == null,
-                        session, request, events.ToArray(), terminalFailure);
+                        responseSessionId ?? session, request, events.ToArray(), terminalFailure);
                 }
             } catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) {
                 throw new ThalovantTimeoutException("Hub did not complete the query in time.");

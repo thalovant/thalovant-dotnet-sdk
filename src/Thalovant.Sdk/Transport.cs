@@ -32,11 +32,13 @@ namespace Thalovant
 
         internal bool IsOpen => _completion.Task.Status == TaskStatus.RanToCompletion;
 
-        internal async Task WaitAsync(TimeSpan timeout, Exception? timeoutError)
+        internal async Task WaitAsync(TimeSpan timeout, Exception? timeoutError, CancellationToken cancellationToken = default)
         {
-            using var timeoutSource = new CancellationTokenSource();
+            cancellationToken.ThrowIfCancellationRequested();
+            using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             var delay = Task.Delay(timeout, timeoutSource.Token);
             var completed = await Task.WhenAny(_completion.Task, delay).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
             if (completed == _completion.Task)
             {
                 timeoutSource.Cancel();

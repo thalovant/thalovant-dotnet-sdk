@@ -24,7 +24,7 @@ namespace Thalovant.Sdk.Tests
             _handler = new StubHttpMessageHandler();
             _api = new ThalovantControlPlane(
                 apiUrl: "https://api.example.com/v1",
-                httpClient: new HttpClient(_handler));
+                httpMessageHandler: _handler);
         }
 
         private static string Pending => """{"error": "authorization_pending"}""";

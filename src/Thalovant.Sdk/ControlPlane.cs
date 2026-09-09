@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -143,12 +144,15 @@ namespace Thalovant
         public string UserAgent { get; }
 
         private readonly HttpClient _http;
+        private readonly bool _uncontrolledHttpClient;
+        private readonly HttpMessageHandler? _handler;
 
         public ThalovantControlPlane(
             string apiUrl = ThalovantDefaults.ControlApiUrl,
             string? accessToken = null,
             string? userAgent = null,
-            HttpClient? httpClient = null)
+            HttpClient? httpClient = null,
+            HttpMessageHandler? httpMessageHandler = null)
         {
             ApiUrl = NormalizeControlApiUrl(apiUrl);
             AccessToken = accessToken;
@@ -156,7 +160,45 @@ namespace Thalovant
             // version is never inlined into a caller's assembly at their
             // compile time.
             UserAgent = userAgent ?? ThalovantDefaults.UserAgent;
-            _http = httpClient ?? new HttpClient();
+            if (httpClient != null && httpMessageHandler != null) throw new ArgumentException("Supply either httpClient or httpMessageHandler, not both.");
+            _uncontrolledHttpClient = httpClient != null;
+            if (httpClient != null) _http = httpClient;
+            else {
+                var handler = httpMessageHandler ?? new HttpClientHandler();
+                DisableAutomaticRedirects(handler);
+                _handler = handler;
+                _http = new HttpClient(handler);
+            }
+        }
+
+        private static void DisableAutomaticRedirects(HttpMessageHandler handler)
+        {
+            if (handler is HttpClientHandler http) http.AllowAutoRedirect = false;
+#if NET8_0_OR_GREATER
+            else if (handler is SocketsHttpHandler sockets) sockets.AllowAutoRedirect = false;
+#else
+            else if (handler.GetType().FullName == "System.Net.Http.SocketsHttpHandler") {
+                var property = handler.GetType().GetProperty("AllowAutoRedirect");
+                if (property == null || !property.CanWrite) throw new ArgumentException("This handler cannot disable automatic redirects.");
+                property.SetValue(handler, false);
+            }
+#endif
+            else if (handler is DelegatingHandler delegating && delegating.InnerHandler != null) DisableAutomaticRedirects(delegating.InnerHandler);
+        }
+
+        private static bool HasAmbientCredentials(HttpMessageHandler? handler, Uri url)
+        {
+            if (handler is DelegatingHandler delegating) return HasAmbientCredentials(delegating.InnerHandler, url);
+            if (handler is HttpClientHandler http) return http.UseDefaultCredentials || http.Credentials != null ||
+                (http.UseCookies && http.CookieContainer.GetCookieHeader(url).Length != 0);
+            if (handler?.GetType().FullName == "System.Net.Http.SocketsHttpHandler") {
+                var type = handler.GetType();
+                if (type.GetProperty("Credentials")?.GetValue(handler) != null) return true;
+                if (type.GetProperty("UseCookies")?.GetValue(handler) is bool enabled && enabled &&
+                    type.GetProperty("CookieContainer")?.GetValue(handler) is System.Net.CookieContainer cookies)
+                    return cookies.GetCookieHeader(url).Length != 0;
+            }
+            return false;
         }
 
         /// <summary>
@@ -1101,8 +1143,19 @@ namespace Thalovant
             var trimmedPath = path.TrimStart('/');
             if (!Uri.TryCreate(ApiUrl + trimmedPath, UriKind.Absolute, out var url))
             {
-                throw new ThalovantApiException($"Invalid Thalovant API URL: {ApiUrl + trimmedPath}");
+                throw new ThalovantApiException("Invalid Thalovant API URL.");
             }
+            if (url.Scheme != Uri.UriSchemeHttps && url.Scheme != Uri.UriSchemeHttp) throw new ThalovantApiException("Thalovant API URLs require HTTP or HTTPS.");
+            if (!string.IsNullOrEmpty(url.UserInfo) || System.Text.RegularExpressions.Regex.IsMatch(ApiUrl, @"^[a-zA-Z][a-zA-Z0-9+.-]*://[^/?#]*@")) throw new ThalovantApiException("Thalovant API URLs must not contain userinfo credentials.");
+            var secretHeaders = new[] { "Authorization", "Proxy-Authorization", "Cookie" };
+            var carriesCredentials = auth || body != null || HasAmbientCredentials(_handler, url) ||
+                secretHeaders.Any(name => _http.DefaultRequestHeaders.Contains(name)) ||
+                (headers != null && headers.Keys.Any(key => secretHeaders.Any(name => key.Equals(name, StringComparison.OrdinalIgnoreCase))));
+            var explicitLoopback = System.Text.RegularExpressions.Regex.IsMatch(ApiUrl, @"^http://(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?(?:/|$)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (carriesCredentials && url.Scheme != Uri.UriSchemeHttps && !explicitLoopback)
+                throw new ThalovantApiException("Credential-bearing Thalovant API requests require HTTPS except explicit loopback development endpoints.");
+            if (carriesCredentials && _uncontrolledHttpClient)
+                throw new ThalovantApiException("Credential-bearing requests cannot use an injected HttpClient because redirects cannot be controlled. Supply httpMessageHandler instead.");
             var request = new HttpRequestMessage(new HttpMethod(method), url);
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
             request.Headers.TryAddWithoutValidation("User-Agent", UserAgent);

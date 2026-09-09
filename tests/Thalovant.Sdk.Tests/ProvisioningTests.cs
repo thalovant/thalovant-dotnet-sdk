@@ -29,7 +29,7 @@ namespace Thalovant.Sdk.Tests
             _api = new ThalovantControlPlane(
                 apiUrl: "https://api.example.com/v1",
                 accessToken: "token",
-                httpClient: new HttpClient(_handler));
+                httpMessageHandler: _handler);
         }
 
         private StubHttpMessageHandler.RecordedRequest LastRequest()
@@ -554,7 +554,7 @@ namespace Thalovant.Sdk.Tests
         {
             var anonymous = new ThalovantControlPlane(
                 apiUrl: "https://api.example.com/v1",
-                httpClient: new HttpClient(_handler));
+                httpMessageHandler: _handler);
             await Assert.ThrowsAsync<ThalovantApiException>(
                 () => anonymous.CreateHubAsync(new CreateHubOptions("hub", new JsonObject())));
             Assert.Empty(_handler.Requests);

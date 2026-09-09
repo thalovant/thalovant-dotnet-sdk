@@ -2,6 +2,8 @@ using System;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
+using System.Diagnostics;
+using System.Threading;
 
 namespace Thalovant
 {
@@ -50,6 +52,28 @@ namespace Thalovant
                 throw new ThalovantConnectionException("Noise state directory must have private permissions (chmod 700).");
 #endif
         }
+        private FileStream AcquireFileLock()
+        {
+            Prepare();
+            var path = Path.Combine(DirectoryPath, ".noise.lock");
+            var elapsed = Stopwatch.StartNew();
+            while (true) {
+                if (File.Exists(path) && (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                    throw new ThalovantConnectionException("Noise lock must not be a symbolic link.");
+                try {
+                    // FileShare.None is an OS-backed exclusive lock shared by all SDK
+                    // processes. Readers hold it too, so no one observes CREATE_NEW
+                    // state before its complete contents have been flushed.
+                    var stream = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+                    try {
+#if NET8_0_OR_GREATER
+                        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+#endif
+                        return stream;
+                    } catch { stream.Dispose(); throw; }
+                } catch (IOException) when (elapsed.Elapsed < TimeSpan.FromSeconds(5)) { Thread.Sleep(10); }
+            }
+        }
         private string PinFile(string nodeId) => Path.Combine(DirectoryPath, "noise-pin-" + Noise.Hex(Noise.Hash(Encoding.UTF8.GetBytes(nodeId))) + ".key");
         private static byte[] ReadKey(string file)
         {
@@ -73,20 +97,20 @@ namespace Thalovant
         public byte[] LoadOrCreateStaticKey()
         {
             lock (StateLock) {
-                Prepare(); var path = Path.Combine(DirectoryPath, "noise-static.key");
+                using var fileLock = AcquireFileLock(); var path = Path.Combine(DirectoryPath, "noise-static.key");
                 if (!File.Exists(path)) { try { WriteNew(path, Noise.RandomKey()); } catch (IOException) when (File.Exists(path)) { } }
                 return ReadKey(path);
             }
         }
         public byte[]? LoadPin(string nodeId)
         {
-            lock (StateLock) { Prepare(); var path = PinFile(nodeId); return File.Exists(path) ? ReadKey(path) : null; }
+            lock (StateLock) { using var fileLock = AcquireFileLock(); var path = PinFile(nodeId); return File.Exists(path) ? ReadKey(path) : null; }
         }
         public void VerifyOrPin(string nodeId, byte[] publicKey)
         {
             if (publicKey.Length != 32) throw new ArgumentException("Noise public key must be 32 bytes.", nameof(publicKey));
             lock (StateLock) {
-                Prepare(); var path = PinFile(nodeId);
+                using var fileLock = AcquireFileLock(); var path = PinFile(nodeId);
                 try { WriteNew(path, publicKey); } catch (IOException) when (File.Exists(path)) { }
                 if (!Noise.Equal(publicKey, ReadKey(path))) throw new CryptographicException("Noise server key changed; verify its rotation before replacing the saved pin.");
             }

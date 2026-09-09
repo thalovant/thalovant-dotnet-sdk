@@ -1,5 +1,8 @@
 using System;
 using System.IO;
+using System.Diagnostics;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
@@ -66,6 +69,39 @@ namespace Thalovant.Tests
             Assert.Throws<ThalovantConnectionException>(() => sender.Encrypt(new byte[NoiseSession.MaximumMessage + 1]));
             var raw = new NoiseCipher(key); var malformed = new NoiseSession(new NoiseCipher(key), new NoiseCipher(key));
             Assert.Throws<ThalovantConnectionException>(() => malformed.Decrypt(raw.Crypt(new byte[] { 4, 1 })));
+        }
+        [Fact] public async Task IndependentProcessesPublishAndReadOneCompleteStaticKey()
+        {
+            var parent = Path.Combine(Path.GetTempPath(), "dotnet-noise-process-" + Guid.NewGuid());
+            var dir = Path.Combine(parent, "private");
+            Directory.CreateDirectory(parent);
+            try {
+                var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? Path.GetFullPath(Path.Combine(
+                    Path.GetDirectoryName(typeof(object).Assembly.Location)!, "..", "..", "..", OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet"));
+                var children = Enumerable.Range(0, 4).Select(_ => {
+                    var start = new ProcessStartInfo(dotnet) { RedirectStandardOutput = true, RedirectStandardError = true };
+                    start.ArgumentList.Add("vstest"); start.ArgumentList.Add(typeof(NoiseTests).Assembly.Location);
+                    start.ArgumentList.Add("/TestCaseFilter:FullyQualifiedName=Thalovant.Tests.NoiseTests.ConcurrentStoreWorker");
+                    start.Environment["THALOVANT_NOISE_TEST_DIRECTORY"] = dir;
+                    return Process.Start(start)!;
+                }).ToArray();
+                using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                foreach (var child in children) {
+                    var output = child.StandardOutput.ReadToEndAsync(); var error = child.StandardError.ReadToEndAsync();
+                    await child.WaitForExitAsync(limit.Token);
+                    Assert.True(child.ExitCode == 0, (await output) + (await error)); child.Dispose();
+                }
+                var keys = Directory.GetFiles(dir, "result-*").Select(File.ReadAllText).ToArray();
+                Assert.Equal(4, keys.Length); Assert.Single(keys.Distinct()); Assert.Equal(64, keys[0].Length);
+            } finally { Directory.Delete(parent, true); }
+        }
+        [Fact] public void ConcurrentStoreWorker()
+        {
+            var dir = Environment.GetEnvironmentVariable("THALOVANT_NOISE_TEST_DIRECTORY");
+            if (dir == null) return;
+            var store = new HiveMindFileNoiseStore(dir); var key = store.LoadOrCreateStaticKey();
+            for (var i = 0; i < 20; i++) Assert.Equal(key, store.LoadOrCreateStaticKey());
+            File.WriteAllText(Path.Combine(dir, "result-" + Guid.NewGuid()), Noise.Hex(key));
         }
         [Fact] public void FileStorePreservesKeysAndNeverOverwritesAConflictingPin()
         {

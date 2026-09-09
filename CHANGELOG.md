@@ -2,6 +2,8 @@
 
 ## 0.2.0
 
+- Bind callbacks, queued sends, handshake completion, and failure cleanup to their owning socket under the same lifecycle lock. Delayed activity cannot reset a replacement connection.
+
 - Implement HiveMind v3 Noise WSS (XXpsk2 and pinned KKpsk0, AESGCM/SHA256), Argon2id PSK derivation, persistent client static keys and server pins, and bounded authenticated binary JSON framing.
 - Reject legacy downgrade, unauthenticated application messages, changed pins, replay and malformed chunk sequences; clear ephemeral state on reconnect and failure.
 - Add `IHiveMindNoiseStore`/`HiveMindFileNoiseStore` for app-private persistence. Unity/netstandard2.1 requires explicit secure storage; .NET 8 provides private filesystem defaults.

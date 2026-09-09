@@ -56,6 +56,50 @@ namespace Thalovant.Sdk.Tests
             Assert.False(transport.Connected); Assert.False(transport.HandshakeComplete);
             await transport.ConnectAsync(TimeSpan.FromSeconds(10)); Assert.True(transport.HandshakeComplete);
         }
+        [Fact] public async Task DelayedOldFrameCannotDecryptOrDispatchThroughAReplacementSession()
+        {
+            var peers = new List<PeerSocket>(); var received = new ConcurrentQueue<string>();
+            using var transport = new HiveMindWssTransport(Identity(), new MemoryStore(), () => { var peer = new PeerSocket(null, _ => { }); peers.Add(peer); return peer; });
+            transport.AddBusHandler(message => received.Enqueue(message["type"]!.GetValue<string>()));
+            await transport.ConnectAsync(TimeSpan.FromSeconds(10));
+            var held = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            peers[0].BeforeNextReceive = async () => { held.SetResult(true); await release.Task; };
+            peers[0].QueueBus("test.stale");
+            await held.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await transport.DisconnectAsync();
+            await transport.ConnectAsync(TimeSpan.FromSeconds(10));
+            release.SetResult(true);
+            await peers[0].HeldReceiveCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            peers[1].QueueBus("test.current");
+            var limit = DateTime.UtcNow.AddSeconds(5);
+            while (received.IsEmpty && DateTime.UtcNow < limit) await Task.Delay(10);
+            Assert.Equal(new[] { "test.current" }, received.ToArray());
+            Assert.True(transport.Connected && transport.HandshakeComplete);
+        }
+
+        [Fact] public async Task DelayedOldSendFailureCannotResetReplacementHandshake()
+        {
+            var peers = new List<PeerSocket>();
+            using var transport = new HiveMindWssTransport(Identity(), new MemoryStore(), () => { var peer = new PeerSocket(null, _ => { }); peers.Add(peer); return peer; });
+            await transport.ConnectAsync(TimeSpan.FromSeconds(10));
+            var held = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            peers[0].BeforeNextSend = async () => { held.SetResult(true); await release.Task; throw new WebSocketException("delayed old write failure"); };
+            var oldSend = transport.EmitBusAsync("test.old", new JsonObject(), new JsonObject());
+            await held.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await transport.DisconnectAsync();
+            var reconnect = transport.ConnectAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(2, peers.Count);
+            release.SetResult(true);
+            await Assert.ThrowsAsync<WebSocketException>(() => oldSend);
+            await reconnect;
+            Assert.True(transport.Connected && transport.HandshakeComplete);
+            Assert.Null(transport.LastError);
+            await transport.EmitBusAsync("test.current", new JsonObject(), new JsonObject());
+            Assert.Equal(new[] { "hello", "bus" }, peers[1].AuthenticatedTypes.ToArray());
+        }
+
         private sealed class MemoryStore : IHiveMindNoiseStore
         {
             private readonly byte[] _key = Noise.RandomKey(); private readonly Dictionary<string, byte[]> _pins = new Dictionary<string, byte[]>();
@@ -75,6 +119,13 @@ namespace Thalovant.Sdk.Tests
             private (byte[] Data, WebSocketMessageType Type)? _reading; private int _offset;
             public ConcurrentQueue<string> AuthenticatedTypes { get; } = new ConcurrentQueue<string>();
             public string? Pattern { get; private set; }
+            public Func<Task>? BeforeNextReceive { get; set; }
+            public Func<Task>? BeforeNextSend { get; set; }
+            public TaskCompletionSource<bool> HeldReceiveCompleted { get; } = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            public void QueueBus(string type) {
+                foreach (var frame in _session!.Encrypt(Encoding.UTF8.GetBytes(HiveWire.Encode(HiveWire.BusMessage(type, new JsonObject(), new JsonObject())))))
+                    _incoming.Writer.TryWrite((frame, WebSocketMessageType.Binary));
+            }
             public PeerSocket(byte[]? pin, Action<byte[]> pinClient, string mode = "") {
                 _pinnedClient = pin; _pinClient = pinClient; _mode = mode;
                 if (pin == null) _offer["noise"]!["patterns"] = new JsonArray("XXpsk2");
@@ -84,8 +135,10 @@ namespace Thalovant.Sdk.Tests
                 else QueueText(HiveWire.Encode(new HiveMessage("shake", _offer)));
             }
             public void QueueText(string text) => _incoming.Writer.TryWrite((Encoding.UTF8.GetBytes(text), WebSocketMessageType.Text));
-            public override Task SendAsync(ArraySegment<byte> buffer, WebSocketMessageType type, bool endOfMessage, CancellationToken token)
+            public override async Task SendAsync(ArraySegment<byte> buffer, WebSocketMessageType type, bool endOfMessage, CancellationToken token)
             {
+                var held = BeforeNextSend; BeforeNextSend = null;
+                if (held != null) await held();
                 var bytes = buffer.ToArray();
                 if (type == WebSocketMessageType.Text) {
                     var envelope = HiveWire.Decode(Encoding.UTF8.GetString(bytes)).Payload["noise"]!.AsObject();
@@ -106,10 +159,11 @@ namespace Thalovant.Sdk.Tests
                             foreach (var frame in _session.Encrypt(Encoding.UTF8.GetBytes(HiveWire.Encode(response)))) _incoming.Writer.TryWrite((frame, WebSocketMessageType.Binary));
                     }
                 }
-                return Task.CompletedTask;
             }
             public override async Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer, CancellationToken token) {
                 if (!_reading.HasValue) { _reading = await _incoming.Reader.ReadAsync(token); _offset = 0; }
+                var held = BeforeNextReceive; BeforeNextReceive = null;
+                if (held != null) { await held(); HeldReceiveCompleted.TrySetResult(true); }
                 var value = _reading.Value; var length = Math.Min(buffer.Count, value.Data.Length - _offset);
                 Array.Copy(value.Data, _offset, buffer.Array!, buffer.Offset, length); _offset += length;
                 var end = _offset == value.Data.Length; if (end) _reading = null;

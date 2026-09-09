@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0
+
+- Add scoped conversations, direct HiveMind query/cascade replies, bounded event
+  streams and waits, action/code input helpers, and local connection/health diagnostics.
+- Fall back to engine intent names when the detailed listing is silent as well
+  as denied. Discover fallback handlers with a bounded optional probe and expose
+  known/unknown discovery plus conservative language answerability.
+- Ignore foreign correlated denials and describe replies; retain content-based
+  describe matching only when a reply carries no request id.
+- Bound queued connect admission by the caller's deadline without cancelling
+  another caller's socket. Recheck transport readiness before reusing the client.
+- Run the full unit suite on .NET 8 and .NET 9 (Ubuntu and Windows), compile the
+  Unity-compatible netstandard2.1 target, and add independent pinned Node
+  XX-to-KK loopback interop with encrypted messages and scoped queries.
+
 ## 0.2.1
 
 - Publish Noise static keys and hub pins only after a private same-directory temporary file is completely written and flushed. Interrupted writes cannot leave a truncated trusted key; existing keys and pins are never replaced automatically.

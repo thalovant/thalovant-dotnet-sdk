@@ -78,7 +78,7 @@ namespace Thalovant
     /// Application frames are authenticated binary Noise frames; legacy and
     /// plaintext application frames are rejected.
     /// </summary>
-    public sealed class HiveMindWssTransport : IDisposable, IHiveMindBus
+    public sealed class HiveMindWssTransport : IDisposable, IHiveMindBus, IHiveMindRuntimeStatus, IHiveMindQueryBus
     {
         public ThalovantIdentity Identity { get; }
         public string UserAgent { get; }
@@ -202,11 +202,24 @@ namespace Thalovant
 
         // -- Lifecycle -------------------------------------------------------
 
+        Guid IHiveMindQueryBus.AddQueryHandler(Action<HiveMessage> handler) => AddMessageHandler(handler);
+        void IHiveMindQueryBus.RemoveQueryHandler(Guid id) => RemoveMessageHandler(id);
+        Task IHiveMindQueryBus.SendQueryFrameAsync(HiveMessage message, CancellationToken cancellationToken) => SendAsync(message, cancellationToken: cancellationToken);
+
         public async Task ConnectAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default)
         {
-            await _connectLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try { await ConnectCoreAsync(timeout, cancellationToken).ConfigureAwait(false); }
-            finally { _connectLock.Release(); }
+            var budget = timeout ?? TimeSpan.FromSeconds(6);
+            if (budget <= TimeSpan.Zero || budget.TotalMilliseconds > int.MaxValue) throw new ArgumentOutOfRangeException(nameof(timeout));
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            deadline.CancelAfter(budget);
+            try {
+                await _connectLock.WaitAsync(deadline.Token).ConfigureAwait(false);
+                try { await ConnectCoreAsync(budget, deadline.Token).ConfigureAwait(false); }
+                finally { _connectLock.Release(); }
+            } catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) {
+                // A queued caller's deadline never owns the active caller's socket.
+                throw new ThalovantConnectionException("HiveMind WSS handshake timed out.");
+            }
         }
 
         private async Task ConnectCoreAsync(TimeSpan? timeout, CancellationToken cancellationToken)

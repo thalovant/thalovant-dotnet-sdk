@@ -20,6 +20,8 @@ namespace Thalovant
         public const string QueryTimeout = "hive.query.timeout";
         // The hub runtime's intent manifest (OVOS-INTENT-4 section 10) and the
         // engines' own manifests; see ThalovantClient.IntentsAsync and Intents.cs.
+        public const string FallbackList = "ovos.skills.fallback.list";
+        public const string FallbackListResponse = "ovos.skills.fallback.list.response";
         public const string IntentList = "ovos.intent.list";
         public const string IntentListResponse = "ovos.intent.list.response";
         public const string IntentDescribe = "ovos.intent.describe";

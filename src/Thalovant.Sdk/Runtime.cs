@@ -180,6 +180,8 @@ namespace Thalovant
             var request = requestId ?? ThalovantContext.NewRequestId();
             var session = sessionId ?? ThalovantContext.NewSessionId();
             var query = queryId ?? request;
+            cancellationToken.ThrowIfCancellationRequested();
+            using var correlation = ReserveRuntimeId(query, query: true);
             var gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var stateLock = new object();
             var events = new List<ThalovantEvent>(); var fragments = new List<string>();

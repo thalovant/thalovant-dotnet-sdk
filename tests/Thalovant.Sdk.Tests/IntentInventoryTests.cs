@@ -458,10 +458,38 @@ namespace Thalovant.Sdk.Tests
             Assert.Single(EmittedOf(hub, ThalovantEvents.AdaptManifestGet));
         }
 
+        [Theory]
+        [InlineData("intent.service.adapt.manifest.get", false)]
+        [InlineData("intent.service.padatious.manifest.get", false)]
+        [InlineData("intent.service.adapt.manifest.get", true)]
+        [InlineData("intent.service.padatious.manifest.get", true)]
+        public async Task EngineFallbackRetainsTheOtherEngineWhenOneIsUnavailable(string unavailable, bool silent)
+        {
+            var hub = new FakeHubBus { Refuse = { ThalovantEvents.IntentList } };
+            (silent ? hub.Silent : hub.Refuse).Add(unavailable);
+            var inventory = await Client(hub).IntentsAsync(new[] { "en-us" },
+                new IntentInventoryOptions { Timeout = TimeSpan.FromMilliseconds(40) });
+            Assert.Equal(HubIntentInventory.SourceEngineManifests, inventory.Source);
+            Assert.Contains(hub.Emitted, entry => entry.Type == "intent.service.adapt.manifest.get");
+            Assert.Contains(hub.Emitted, entry => entry.Type == "intent.service.padatious.manifest.get");
+            if (unavailable.Contains("adapt")) Assert.Contains(inventory.Intents, item => item.Engine == "padatious");
+        }
+
+        [Fact]
+        public async Task EngineFallbackDoesNotTurnCallerCancellationIntoPartialSuccess()
+        {
+            var hub = new FakeHubBus { Refuse = { ThalovantEvents.IntentList }, Silent = { "intent.service.padatious.manifest.get" } };
+            using var cancelled = new CancellationTokenSource();
+            var pending = Client(hub).IntentsAsync(new[] { "en-us" }, cancellationToken: cancelled.Token);
+            while (!hub.Emitted.Any(item => item.Type == "intent.service.padatious.manifest.get")) await Task.Yield();
+            cancelled.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+        }
+
         [Fact]
         public async Task AHubRefusingEverythingThrowsEvenWithTheFallback()
         {
-            var hub = new FakeHubBus { Refuse = { ThalovantEvents.IntentList, ThalovantEvents.AdaptManifestGet } };
+            var hub = new FakeHubBus { Refuse = { ThalovantEvents.IntentList, ThalovantEvents.AdaptManifestGet, ThalovantEvents.PadatiousManifestGet } };
             var error = await Assert.ThrowsAsync<ThalovantPolicyDeniedException>(() => Client(hub).IntentsAsync(new[] { "en-us" }));
             Assert.Equal("intent.service.adapt.manifest.get", error.DeniedType);
         }
@@ -537,7 +565,7 @@ namespace Thalovant.Sdk.Tests
             var strict = new FakeHubBus { Silent = { ThalovantEvents.IntentList } };
             await Assert.ThrowsAsync<ThalovantTimeoutException>(() => Client(strict).IntentsAsync(new[] { "en-us" },
                 new IntentInventoryOptions { Timeout = TimeSpan.FromMilliseconds(30), Fallback = false }));
-            var silent = new FakeHubBus { Silent = { ThalovantEvents.IntentList, ThalovantEvents.AdaptManifestGet } };
+            var silent = new FakeHubBus { Silent = { ThalovantEvents.IntentList, ThalovantEvents.AdaptManifestGet, ThalovantEvents.PadatiousManifestGet } };
             await Assert.ThrowsAsync<ThalovantTimeoutException>(() => Client(silent).IntentsAsync(new[] { "en-us" },
                 new IntentInventoryOptions { Timeout = TimeSpan.FromMilliseconds(30) }));
         }

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3
+
+- Preserve successful engine-manifest fallback replies when another engine is policy-denied or silent; propagate caller cancellation and fail when every engine is unavailable.
+- Reject duplicate active Ask request IDs and Query IDs on the same client before subscribing or dispatching; preserve separate namespaces and remove reservations on collector cleanup.
+- Correct marketplace desired-state examples and fallback permission documentation; restore the missing 0.1.8 and 0.1.9 historical release notes.
+
 ## 0.3.2
 
 - Keep admitted encrypted frame sequences owned through caller cancellation, under an independent 20-second physical send budget. Physical timeout or a real write error retires only the captured socket generation.
@@ -148,6 +154,16 @@
 ## 0.1.10
 
 - Automated patch release of the unreleased changes on `main` since v0.1.9.
+
+## 0.1.9
+
+- Treat intent misses as soft failures and allow a correlated fallback speech
+  reply during the empty-reply wait before surfacing an unrecovered miss.
+
+## 0.1.8
+
+- Recognize `ovos.intent.unmatched` alongside `complete_intent_failure` in Ask
+  replies. Version 0.1.9 subsequently added the fallback grace period.
 
 ## 0.1.7
 

@@ -851,7 +851,7 @@ namespace Thalovant
         /// carries the catalog fields an install needs (<c>skill_id</c>,
         /// <c>source_type</c>, <c>source_ref</c>, <c>config_schema</c>,
         /// <c>secret_schema</c>) alongside presentation and access fields
-        /// (<c>category</c>, <c>tags</c>, <c>verified</c>, <c>access_tier</c>).
+        /// (<c>title</c>, <c>category</c>, <c>tags</c>, <c>verified</c>, <c>access_tier</c>).
         /// <para>
         /// Requires a token with the <c>hubs:read</c> scope. Unlike the provisioning
         /// routes this catalog is <b>not</b> paid-gated, so free-tier callers can

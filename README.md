@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/>
 ## Install
 
 ```bash
-dotnet add package Thalovant.Sdk --version 0.3.2
+dotnet add package Thalovant.Sdk --version 0.3.3
 ```
 
 The library multi-targets `net8.0` and `netstandard2.1` (Unity 2021+
@@ -220,7 +220,7 @@ the provisioning routes above, is **not paid-gated** — a free-plan token can
 browse the whole catalog before upgrading, and only the install needs a paid
 plan. Each entry carries what an install needs (`skill_id`, `source_type`,
 `source_ref`, `config_schema`, `secret_schema`) next to presentation fields
-(`title`, `tags`, `verified`, `access_tier`).
+(`title`, `category`, `tags`, `verified`, `access_tier`).
 
 ```csharp
 var catalog = await api.ListMarketplaceSkillsAsync(new MarketplaceSkillListOptions
@@ -243,7 +243,7 @@ whether the tenant plan allows installing it:
 var view = await api.ListRuntimeGroupMarketplaceAsync(groupId);
 foreach (var entry in view["data"]!.AsArray())
 {
-    if ((bool?)entry!["installable"] == true && (bool?)entry["active"] != true)
+    if ((bool?)entry!["installable"] == true && (bool?)entry["desired"] != true)
     {
         Console.WriteLine($"available: {entry["skill_id"]}");
     }
@@ -441,11 +441,14 @@ A hub whose connection may not publish `ovos.intent.list` answers
 engines' own manifests instead and returns names only: `inventory.Source` is
 `engine-manifests`, `inventory.Denied` names the query that triggered fallback, and
 `inventory.HasPhrases` is false. The first engine to name an intent decides its
-`Engine` there (`adapt` is asked before `padatious`). A hub that refuses those
-too throws the exception. The connection must be allowed to publish
-`ovos.intent.list`, and `ovos.intent.describe` only when the sentences are
-asked for — `IntentInventoryOptions.Describe` is on by default, and with it off
-the listing alone is enough. Connections the control plane provisions for SDK
+`Engine` there (`adapt` is asked before `padatious`). Each successful engine
+reply is kept even if the other engine is denied or silent; if both engines
+are unavailable, the first failure is thrown. Caller cancellation still
+propagates. Manifest-backed discovery requires `ovos.intent.list`, plus
+`ovos.intent.describe` when sentences need a separate description query.
+`IntentInventoryOptions.Describe` is on by default; disabling it requires only
+the listing. Names-only engine fallback needs permission for at least one
+engine manifest instead of these detailed queries. Connections the control plane provisions for SDK
 clients allow these read-only queries by default; the exception's message names
 what to add to the connection's allow-list otherwise.
 
@@ -509,6 +512,16 @@ See [third-party notices](THIRD-PARTY-NOTICES.md) for source revision and
 adaptations. HTTPS/MQTT runtime transports remain explicitly unsupported.
 
 ## Ask deadlines and correlation
+
+Each logical Ask or Query operation needs a fresh correlation ID. Defaults
+already generate one. If you supply an ID, simultaneous Ask calls on one client
+must use distinct request IDs, and simultaneous Query calls must use distinct
+query IDs. A duplicate active ID raises a runtime error before dispatch. Ask
+and Query have separate namespaces, and separate clients are independent.
+The reservation ends when its collector unsubscribes, including on cancellation;
+it does not cancel or release an admitted physical write. Never reuse an ID for
+a later logical operation while a delayed reply from an earlier operation may
+still arrive.
 
 Ask uses one total timeout across connection, authentication, send, and replies.
 After a WSS write is admitted, caller cancellation stops waiting while the complete encrypted frame sequence retains transport ownership under an independent 20-second physical send budget. A physical timeout or write error retires the captured connection; queued cancellation never interrupts another owner.

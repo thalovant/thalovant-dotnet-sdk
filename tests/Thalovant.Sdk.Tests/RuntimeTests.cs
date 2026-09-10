@@ -65,6 +65,61 @@ namespace Thalovant.Sdk.Tests
             while (!predicate()) await Task.Delay(1, deadline.Token);
         }
         [Theory][InlineData(false)][InlineData(true)]
+        public async Task CorrelationReservationEndsWithCollectorCancellation(bool query)
+        {
+            var fake = new Fake(); using var sdk = Client(fake);
+            using var cancelled = new CancellationTokenSource();
+            var first = query ? sdk.QueryAsync("cancel", queryId: "shared", cancellationToken: cancelled.Token)
+                : sdk.AskAsync("cancel", requestId: "shared", cancellationToken: cancelled.Token);
+            await Until(() => query ? fake.Sent.Count == 1 : fake.Emitted.Count == 1);
+            cancelled.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+            Assert.Equal(0, query ? fake.FrameCount : fake.BusCount);
+            // The fake peer is quiescent; this verifies reservation release,
+            // not permission to reuse an ID while old remote replies may arrive.
+            var next = query ? sdk.QueryAsync("next", queryId: "shared") : sdk.AskAsync("next", requestId: "shared");
+            await Until(() => query ? fake.Sent.Count == 2 : fake.Emitted.Count == 2);
+            if (query) { fake.Reply("shared", "speak", "next-only"); fake.Reply("shared", "hive.query.complete"); }
+            else fake.Deliver("speak", "next-only", "shared");
+            Assert.Equal("next-only", (await next).Text);
+        }
+
+        [Fact]
+        public async Task AskAndQueryHaveIndependentCorrelationNamespacesAndClients()
+        {
+            var fake = new Fake(); var other = new Fake();
+            using var sdk = Client(fake); using var second = Client(other);
+            var ask = sdk.AskAsync("ask", requestId: "shared");
+            var query = sdk.QueryAsync("query", queryId: "shared");
+            var remote = second.AskAsync("other", requestId: "shared");
+            await Until(() => fake.Emitted.Count == 1 && fake.Sent.Count == 1 && other.Emitted.Count == 1);
+            fake.Deliver("speak", "ask-only", "shared");
+            fake.Reply("shared", "speak", "query-only"); fake.Reply("shared", "hive.query.complete");
+            other.Deliver("speak", "other-only", "shared");
+            Assert.Equal("ask-only", (await ask).Text); Assert.Equal("query-only", (await query).Text);
+            Assert.Equal("other-only", (await remote).Text);
+        }
+
+        [Theory][InlineData(false)][InlineData(true)]
+        public async Task DuplicateLiveCorrelationIdIsRejectedBeforeSecondDispatch(bool query)
+        {
+            var fake = new Fake(); using var sdk = Client(fake);
+            Task<ThalovantReply> Start(string prompt) => query
+                ? sdk.QueryAsync(prompt, requestId: prompt, queryId: "shared")
+                : sdk.AskAsync(prompt, requestId: "shared");
+            var owner = Start("owner");
+            await Until(() => query ? fake.Sent.Count == 1 : fake.Emitted.Count == 1);
+            var duplicate = Start("duplicate");
+            await Until(() => duplicate.IsCompleted || (query ? fake.FrameCount == 2 : fake.BusCount == 2));
+            if (query) { fake.Reply("shared", "speak", "only-owner"); fake.Reply("shared", "hive.query.complete"); }
+            else fake.Deliver("speak", "only-owner", "shared");
+            Assert.Equal("only-owner", (await owner).Text);
+            await Assert.ThrowsAsync<ThalovantRuntimeException>(() => duplicate);
+            Assert.Equal(1, query ? fake.Sent.Count : fake.Emitted.Count);
+            Assert.Equal(0, query ? fake.FrameCount : fake.BusCount);
+        }
+
+        [Theory][InlineData(false)][InlineData(true)]
         public async Task AskReportsTheNegativeReplyWindowParameter(bool empty)
         {
             var fake = new Fake(); using var sdk = Client(fake);

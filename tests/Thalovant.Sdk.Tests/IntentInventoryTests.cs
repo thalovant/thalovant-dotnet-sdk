@@ -983,6 +983,48 @@ namespace Thalovant.Sdk.Tests
             Assert.Single(unbounded.DescribeWindows.Distinct());
         }
 
+        private sealed class EmptyDescriptionHub : FakeHubBus
+        {
+            private readonly bool _refused;
+            private readonly bool _allAnswered;
+            public EmptyDescriptionHub(bool refused, bool allAnswered = false) { _refused = refused; _allAnswered = allAnswered; }
+            public override Task EmitBusAsync(string type, JsonObject data, JsonObject context, CancellationToken cancellationToken = default)
+            {
+                if (type != ThalovantEvents.IntentDescribe) return base.EmitBusAsync(type, data, context, cancellationToken);
+                Record(type, data, context);
+                if (_allAnswered || (string?)data["intent_name"] == "first")
+                    Deliver(ThalovantEvents.IntentDescribeResponse,
+                        new JsonObject { ["ok"] = !_refused, ["definitions"] = new JsonArray() }, context);
+                return Task.CompletedTask;
+            }
+        }
+
+        [Theory]
+        [InlineData(false, 0)]
+        [InlineData(true, 0)]
+        [InlineData(false, 1)]
+        [InlineData(true, 1)]
+        public async Task EmptyDescriptionCannotTurnLaterSilenceIntoPartialSuccess(bool refused, int batch)
+        {
+            var hub = new EmptyDescriptionHub(refused);
+            var wanted = new[] { new IntentKey(Weather, "first", "en-us"), new IntentKey(Weather, "second", "en-us") };
+            await Assert.ThrowsAsync<ThalovantTimeoutException>(() => HubIntentQueries.DescribeManyAsync(
+                Client(hub), wanted, TimeSpan.FromMilliseconds(40), batch, CancellationToken.None));
+            Assert.Equal(2, EmittedOf(hub, ThalovantEvents.IntentDescribe).Count());
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task FullyAnsweredEmptyDescriptionsRemainSuccessful(bool refused)
+        {
+            var wanted = new[] { new IntentKey(Weather, "first", "en-us"), new IntentKey(Weather, "second", "en-us") };
+            var found = await HubIntentQueries.DescribeManyAsync(Client(new EmptyDescriptionHub(refused, true)),
+                wanted, TimeSpan.FromMilliseconds(40), 1, CancellationToken.None);
+            Assert.Equal(2, found.Count);
+            Assert.All(found.Values, Assert.Empty);
+        }
+
         /// <summary>A hub that stops answering describes from one intent index on.</summary>
         private sealed class GoesQuietHub : FakeHubBus
         {

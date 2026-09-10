@@ -2,6 +2,8 @@
 
 ## 0.3.3
 
+- Preserve a description timeout when earlier replies contain only empty or refused definitions; fully answered empty inventories still succeed.
+
 - Redact recognized credential fields recursively in default bootstrap and identity metadata displays, including case, underscore, and hyphen variants; preserve explicit secret serialization and reference fields.
 
 - Preserve successful engine-manifest fallback replies when another engine is policy-denied or silent; propagate caller cancellation and fail when every engine is unavailable.

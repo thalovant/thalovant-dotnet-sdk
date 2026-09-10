@@ -874,8 +874,8 @@ namespace Thalovant
                         // otherwise turn the whole inventory into a timeout while
                         // the same skill with fewer intents only loses its
                         // sentences. A hub silent from the start still fails at
-                        // the first window, since nothing is found.
-                        if (found.Count == 0)
+                        // the first window, unless usable definitions were found.
+                        if (!found.Values.Any(definitions => definitions.Count > 0))
                         {
                             throw;
                         }
@@ -959,7 +959,7 @@ namespace Thalovant
                 {
                     lock (sync)
                     {
-                        if (found.Count == 0)
+                        if (!found.Values.Any(definitions => definitions.Count > 0))
                         {
                             throw;
                         }

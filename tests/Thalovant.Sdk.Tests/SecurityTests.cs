@@ -77,6 +77,54 @@ namespace Thalovant.Sdk.Tests
             return new BootstrapIdentityResult(identity, hub, client, endpoint: null);
         }
 
+        private static JsonObject DisplayMetadata() => new JsonObject
+        {
+            ["label"] = "keep-me",
+            ["apiKeyRef"] = "key-reference",
+            ["passwordSecretRef"] = "password-reference",
+            ["nested"] = new JsonArray(new JsonObject
+            {
+                ["Authorization"] = "DISPLAY-CREDENTIAL-authorization",
+                ["token"] = "DISPLAY-CREDENTIAL-token",
+                ["access_token"] = "DISPLAY-CREDENTIAL-access-token",
+                ["refresh-token"] = "DISPLAY-CREDENTIAL-refresh-token",
+                ["authToken"] = "DISPLAY-CREDENTIAL-auth-token",
+                ["InitialIdentify"] = "{\"password\":\"DISPLAY-CREDENTIAL-serialized\"}",
+                ["client_secret"] = "DISPLAY-CREDENTIAL-client",
+                ["private-key"] = "DISPLAY-CREDENTIAL-private",
+                ["apiSecret"] = "DISPLAY-CREDENTIAL-api",
+                ["SECRET_KEY"] = "DISPLAY-CREDENTIAL-key",
+                ["credentials"] = new JsonObject { ["opaque"] = "DISPLAY-CREDENTIAL-object" },
+            }),
+        };
+
+        [Fact]
+        public void DefaultIdentityDisplayNormalizesKnownCredentialKeysWithoutMutatingPersistence()
+        {
+            var raw = (JsonObject)JsonNode.Parse(Fixtures.ClientIdentify)!;
+            raw["metadata"] = DisplayMetadata();
+            var identity = new ThalovantIdentity(raw);
+            var redacted = identity.ToJsonObject();
+            Assert.DoesNotContain("DISPLAY-CREDENTIAL", redacted.ToJsonString(), StringComparison.Ordinal);
+            Assert.Equal("key-reference", (string?)redacted["metadata"]!["apiKeyRef"]);
+            Assert.Equal("password-reference", (string?)redacted["metadata"]!["passwordSecretRef"]);
+            Assert.True(JsonNode.DeepEquals(DisplayMetadata(), identity.ToJsonObject(true)["metadata"]));
+            Assert.True(JsonNode.DeepEquals(DisplayMetadata(), identity.Metadata));
+        }
+
+        [Fact]
+        public void DefaultBootstrapDisplayNormalizesKnownCredentialKeysWithoutMutatingResources()
+        {
+            var identity = new ThalovantIdentity((JsonObject)JsonNode.Parse(Fixtures.ClientIdentify)!);
+            var result = new BootstrapIdentityResult(identity, DisplayMetadata(), DisplayMetadata(), endpoint: null);
+            var redacted = result.ToJsonObject();
+            Assert.DoesNotContain("DISPLAY-CREDENTIAL", redacted.ToJsonString(), StringComparison.Ordinal);
+            Assert.Equal("key-reference", (string?)redacted["hub"]!["apiKeyRef"]);
+            Assert.Equal("password-reference", (string?)redacted["client"]!["passwordSecretRef"]);
+            Assert.True(JsonNode.DeepEquals(DisplayMetadata(), result.ToJsonObject(true)["hub"]));
+            Assert.True(JsonNode.DeepEquals(DisplayMetadata(), result.Client));
+        }
+
         // -- F1 --------------------------------------------------------------
 
         [Fact]
@@ -92,21 +140,8 @@ namespace Thalovant.Sdk.Tests
             }
 
             var client = (JsonObject)redacted["client"]!;
-            var identify = (JsonObject)client["initial_identify"]!;
-            Assert.False(identify.ContainsKey("access_key"));
-            Assert.False(identify.ContainsKey("password"));
-            Assert.False(identify.ContainsKey("crypto_key"));
-
-            var mqtt = (JsonObject)identify["mqtt"]!;
-            Assert.False(mqtt.ContainsKey("password"));
-            // MQTT username (and its broker_username alias) can equal the access
-            // key, so both are redacted; the URL userinfo is stripped in place.
-            Assert.False(mqtt.ContainsKey("username"));
-            Assert.False(mqtt.ContainsKey("broker_username"));
-            var endpoint = (string?)mqtt["endpoint"];
-            Assert.NotNull(endpoint);
-            Assert.Contains("mqtt.hub-1.hubs.thalovant.com:8883", endpoint!, StringComparison.Ordinal);
-            Assert.DoesNotContain("brokeruser", endpoint!, StringComparison.Ordinal);
+            // Bootstrap payloads may be opaque serialized JSON: omit the entire field.
+            Assert.False(client.ContainsKey("initial_identify"));
 
             Assert.False(client.ContainsKey("initial_identify_token"));
 

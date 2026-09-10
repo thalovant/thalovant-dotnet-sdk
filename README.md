@@ -63,6 +63,14 @@ secret subkeys of the raw hub/client resources — so that default form is safe
 to log or persist for display. Only `result.ToJsonObject(includeSecrets: true)`
 returns the credentials in the clear; never log or print that form.
 
+Default bootstrap and identity JSON displays also remove recognized credential
+fields recursively from metadata (`authorization`, `client_secret`,
+`private_key`, `api_secret`, `secret_key`, `credentials`, token fields, and
+`initial_identify`), ignoring case,
+underscores, and hyphens. Reference fields such as `apiKeyRef` remain intact.
+This does not sanitize arbitrary text or alter the explicit `includeSecrets`
+serialization used for persistence.
+
 ## Sign In Through the Browser (Device Flow)
 
 Accounts without a password (for example Google sign-in) can authenticate with

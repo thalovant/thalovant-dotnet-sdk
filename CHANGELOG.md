@@ -2,6 +2,8 @@
 
 ## 0.3.3
 
+- Redact recognized credential fields recursively in default bootstrap and identity metadata displays, including case, underscore, and hyphen variants; preserve explicit secret serialization and reference fields.
+
 - Preserve successful engine-manifest fallback replies when another engine is policy-denied or silent; propagate caller cancellation and fail when every engine is unavailable.
 - Reject duplicate active Ask request IDs and Query IDs on the same client before subscribing or dispatching; preserve separate namespaces and remove reservations on collector cleanup.
 - Correct marketplace desired-state examples and fallback permission documentation; restore the missing 0.1.8 and 0.1.9 historical release notes.

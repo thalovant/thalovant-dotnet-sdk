@@ -177,24 +177,15 @@ namespace Thalovant
         /// and identity metadata. Covers the client-identify credentials, the
         /// bootstrap token, and the MQTT broker username/password — the broker
         /// username can equal the access key, so it is redacted too. Matched
-        /// case-insensitively, so only the snake_case/camelCase spellings are
-        /// listed.
+        /// case-insensitively after removing underscores and hyphens. Reference
+        /// fields such as apiKeyRef remain ordinary metadata.
         /// </summary>
         internal static readonly HashSet<string> SecretFieldNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "password",
-            "access_key",
-            "accessKey",
-            "crypto_key",
-            "cryptoKey",
-            "api_key",
-            "apiKey",
-            "initial_identify_token",
-            "username",
-            "broker_username",
-            "brokerUsername",
-            "broker_password",
-            "brokerPassword",
+            "password", "accesskey", "cryptokey", "apikey", "initialidentifytoken",
+            "username", "brokerusername", "brokerpassword", "authorization",
+            "clientsecret", "privatekey", "apisecret", "secretkey", "credentials",
+            "token", "accesstoken", "refreshtoken", "authtoken", "initialidentify",
         };
 
         /// <summary>
@@ -217,7 +208,7 @@ namespace Thalovant
                     }
                     foreach (var name in names)
                     {
-                        if (SecretFieldNames.Contains(name))
+                        if (SecretFieldNames.Contains(name.Replace("_", "").Replace("-", "")))
                         {
                             obj.Remove(name);
                             continue;

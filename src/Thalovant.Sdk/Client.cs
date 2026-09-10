@@ -56,6 +56,17 @@ namespace Thalovant
         private readonly TimeSpan _emptyReplyWait;
         private readonly object _lock = new object();
         private bool _connected;
+        private readonly HashSet<string> _activeAskIds = new HashSet<string>(StringComparer.Ordinal);
+        private readonly HashSet<string> _activeQueryIds = new HashSet<string>(StringComparer.Ordinal);
+
+        private IDisposable ReserveRuntimeId(string id, bool query)
+        {
+            var active = query ? _activeQueryIds : _activeAskIds;
+            lock (_lock) {
+                if (!active.Add(id)) throw new ThalovantRuntimeException("The correlation ID is already active for this operation type on this client.");
+            }
+            return new ThalovantSubscription(() => { lock (_lock) active.Remove(id); });
+        }
 
         public ThalovantClient(
             ThalovantIdentity identity,
@@ -266,6 +277,7 @@ namespace Thalovant
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             deadline.CancelAfter(effectiveTimeout);
             var effectiveRequestId = requestId ?? ThalovantContext.NewRequestId();
+            using var correlation = ReserveRuntimeId(effectiveRequestId, query: false);
             var effectiveSessionId = sessionId ?? ThalovantContext.NewSessionId();
             var correlatedContext = ThalovantContext.WithCorrelation(
                 ContextWithIdentityMetadata(context ?? new JsonObject()),

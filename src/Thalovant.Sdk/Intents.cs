@@ -57,9 +57,11 @@ namespace Thalovant
         public bool Describe { get; set; } = true;
 
         /// <summary>
-        /// Whether to fall back to the engines' own manifests when the hub refuses
-        /// <c>ovos.intent.list</c>. On by default; off surfaces the refusal as
-        /// <see cref="ThalovantPolicyDeniedException"/>.
+        /// Whether to fall back to engine manifests after a policy denial or
+        /// silent <c>ovos.intent.list</c> query. On by default. A negative
+        /// <c>ok: false</c> listing still throws; it does not trigger fallback.
+        /// Successful engine replies survive another engine's denial or timeout.
+        /// If all engines are unavailable, the first failure is surfaced.
         /// </summary>
         public bool Fallback { get; set; } = true;
     }
@@ -872,8 +874,8 @@ namespace Thalovant
                         // otherwise turn the whole inventory into a timeout while
                         // the same skill with fewer intents only loses its
                         // sentences. A hub silent from the start still fails at
-                        // the first window, since nothing is found.
-                        if (found.Count == 0)
+                        // the first window, unless usable definitions were found.
+                        if (!found.Values.Any(definitions => definitions.Count > 0))
                         {
                             throw;
                         }
@@ -957,7 +959,7 @@ namespace Thalovant
                 {
                     lock (sync)
                     {
-                        if (found.Count == 0)
+                        if (!found.Values.Any(definitions => definitions.Count > 0))
                         {
                             throw;
                         }
@@ -984,9 +986,12 @@ namespace Thalovant
             CancellationToken cancellationToken)
         {
             var names = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+            Exception? unavailable = null;
             foreach (var manifest in EngineManifests)
             {
-                var reply = await RequestReplyAsync(
+                ThalovantEvent reply;
+                try {
+                    reply = await RequestReplyAsync(
                     client,
                     manifest.QueryType,
                     manifest.ReplyType,
@@ -994,6 +999,11 @@ namespace Thalovant
                     lang,
                     timeout,
                     cancellationToken).ConfigureAwait(false);
+                } catch (Exception error) when (error is ThalovantPolicyDeniedException || error is ThalovantTimeoutException) {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    unavailable ??= error;
+                    continue;
+                }
                 var listed = new List<string>();
                 if (reply.Data["intents"] is JsonArray raw)
                 {
@@ -1007,6 +1017,9 @@ namespace Thalovant
                 }
                 names[manifest.Engine] = listed;
             }
+            cancellationToken.ThrowIfCancellationRequested();
+            if (names.Count == 0 && unavailable != null)
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(unavailable).Throw();
             return names;
         }
 
@@ -1016,8 +1029,9 @@ namespace Thalovant
         /// Everything the hub can be asked, in each language, grouped by skill.
         /// Asks the intent manifest per language and, unless the runtime attached
         /// definitions to the listing, describes every registration at once. When
-        /// the hub refuses <c>ovos.intent.list</c> and the fallback is on, the
-        /// engines' manifests give the names and the result says so.
+        /// <c>ovos.intent.list</c> is policy-denied or silent and fallback is on,
+        /// the available engines' manifests give the names and the result says so.
+        /// A listing that returns <c>ok: false</c> remains an error.
         /// </summary>
         internal static async Task<HubIntentInventory> InventoryAsync(
             ThalovantClient client,

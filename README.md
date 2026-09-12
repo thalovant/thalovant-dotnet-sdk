@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/>
 ## Install
 
 ```bash
-dotnet add package Thalovant.Sdk --version 0.6.0
+dotnet add package Thalovant.Sdk --version 0.6.1
 ```
 
 The library multi-targets `net8.0` and `netstandard2.1` (Unity 2021+
@@ -723,7 +723,7 @@ Raw unlimited examples retain registration order. Omitted languages preserve the
 selected registration's locale. OVOS-compatible CLDR matching uses langcodes
 3.5.1 data; distances above ten do not match and ties preserve candidate order.
 
-`ListingRules.Default` uses embedded thalovant-languages 0.1.1 data.
+`ListingRules.Default` uses embedded thalovant-languages 0.2.1 data.
 `new ListingRules(data)` snapshots a complete JSON tree; pass it as `listing` or
 call its methods. `new ListingRules(null)` selects bare rendering with slot
 names. Unknown languages also remain bare. Invalid patterns fail construction;
@@ -738,3 +738,13 @@ the pinned public Python environment specified in that script.
 
 The SDK code, CLDR matching tables and bundled `thalovant-languages` data
 retain their upstream MIT license notices. Both data notices ship with the SDK.
+
+### Language data refresh
+
+The bundled listing data follows `thalovant-languages` 0.2.1: 270 languages
+(290 base and regional entries), with regional rules resolved through the
+public package loader. Sentence marks and trailing words now match Python 0.6.8;
+for example Spanish `qué hora es` becomes `Qué hora es?`, while French
+`coupe le son` remains a complete sentence. Undescribed languages such as
+`tlh` still render bare. The reference fixtures cover 4,652 listing cases and
+990 OVOS language-selection cases.

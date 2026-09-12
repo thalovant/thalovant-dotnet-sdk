@@ -61,6 +61,14 @@ namespace Thalovant.Sdk.Tests {
             Assert.True(costly.AsSentence(text,"xq")=="A"+text.Substring(1));
         }
 
+        [Fact] public void SentenceMarksCompareWholeUnicodeScalars() {
+            var rules=ListingRules.Default;
+            Assert.Equal("Go \U00010441.",rules.AsSentence("go \U00010441","en"));
+            Assert.Equal("Go \U00011C41",rules.AsSentence("go \U00011C41","en"));
+            Assert.False(rules.Dangling("weather in\U00010441","en"));
+            Assert.True(rules.Dangling("weather in\U00011C41","en"));
+        }
+
         [Fact] public void UnicodeNonBoundaries() {
             var rules=new ListingRules((JsonObject)JsonNode.Parse("""{"languages":{"xq":{"question_patterns":["\\Bété\\B"]}}}""")!);
             Assert.False(rules.Asks("été","xq"));

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Linq;
 using System.Text.Json.Nodes;
 
 namespace Thalovant
@@ -9,6 +10,9 @@ namespace Thalovant
     public static class ThalovantEvents
     {
         public const string RecognizerLoopUtterance = "recognizer_loop:utterance";
+        public const string AudioQueue = "mycroft.audio.queue";
+        public const int MaxAudioClipBytes = 4 * 1024 * 1024;
+        public const int MaxReplyMediaBytes = 16 * 1024 * 1024;
         public const string Speak = "speak";
         public const string OvosUtteranceSpeak = "ovos.utterance.speak";
         public const string UtteranceHandled = "ovos.utterance.handled";
@@ -121,6 +125,27 @@ namespace Thalovant
 
         public string? RequestId => RequestIdFromContext(Context) ?? RequestIdFromMapping(Data);
 
+        public string? Lang => new[] { Data["lang"], Context["lang"], (Context["session"] as JsonObject)?["lang"] }
+            .Select(JsonUtil.GetString).FirstOrDefault(value => !string.IsNullOrEmpty(value));
+        public bool IsAudio => Name == ThalovantEvents.AudioQueue;
+        public bool HasAudio => IsAudio && !string.IsNullOrEmpty(JsonUtil.GetString(Data["binary_data"]));
+        /// <summary>Decode bounded embedded hex. Never fetch a skill-provided path or URL.</summary>
+        public byte[] AudioBytes(int maxBytes = ThalovantEvents.MaxAudioClipBytes)
+        {
+            var encoded = JsonUtil.GetString(Data["binary_data"]);
+            if (!IsAudio || maxBytes < 0 || string.IsNullOrEmpty(encoded) || encoded!.Length > (long)maxBytes * 2)
+                throw new ArgumentException("Missing or oversized embedded audio.");
+            var bytes = new List<byte>(); int high = -1;
+            foreach (char c in encoded) {
+                if (" \t\n\r\v\f".IndexOf(c) >= 0) { if (high >= 0) throw new FormatException("Invalid embedded audio hex."); continue; }
+                int value = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+                if (value < 0) throw new FormatException("Invalid embedded audio hex.");
+                if (high < 0) high = value; else { bytes.Add((byte)(high * 16 + value)); high = -1; }
+            }
+            if (high >= 0) throw new FormatException("Invalid embedded audio hex.");
+            return bytes.ToArray();
+        }
+
         public bool IsFailure => ThalovantEvents.FailureEventSet.Contains(Name);
 
         public JsonObject ToJsonObject()
@@ -206,6 +231,10 @@ namespace Thalovant
         public string? RequestId { get; }
         public IReadOnlyList<ThalovantEvent> Events { get; }
         public ThalovantEvent? FailureEvent { get; }
+        public int DroppedMedia { get; internal set; }
+        public string? Lang => Events.Select(e => e.Lang).FirstOrDefault(value => !string.IsNullOrEmpty(value));
+        public bool HasAudio => Events.Any(e => e.IsAudio);
+        public IReadOnlyList<ThalovantEvent> MediaEvents => Events.Where(e => e.IsAudio || e.Name == ThalovantEvents.Speak || e.Name == ThalovantEvents.OvosUtteranceSpeak).ToArray();
 
         public ThalovantReply(
             string text,
@@ -231,7 +260,7 @@ namespace Thalovant
     }
 
     /// <summary>Correlation and payload helpers shared by the data-plane client.</summary>
-    public static class ThalovantContext
+    public static partial class ThalovantContext
     {
         public static string NewSessionId()
         {

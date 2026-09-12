@@ -357,7 +357,7 @@ namespace Thalovant
                     sessionId: final.ResponseSessionId ?? effectiveSessionId,
                     requestId: effectiveRequestId,
                     events: final.Events,
-                    failureEvent: effectiveFailure);
+                    failureEvent: effectiveFailure) { DroppedMedia = final.DroppedMedia };
             }
             finally
             {
@@ -472,6 +472,7 @@ namespace Thalovant
             internal long? FirstSpeechAt { get; }
             internal long? EmptyStartedAt { get; }
             internal Exception? Error { get; }
+            internal int DroppedMedia { get; set; }
 
             internal StateSnapshot(IReadOnlyList<string> fragments, IReadOnlyList<ThalovantEvent> events, ThalovantEvent? failureEvent, ThalovantEvent? softFailureEvent, bool handled, long? firstSpeechAt, long? emptyStartedAt, string? responseSessionId, Exception? error)
             {
@@ -486,6 +487,7 @@ namespace Thalovant
         private readonly object _lock = new object();
         private readonly List<string> _fragments = new List<string>();
         private readonly List<ThalovantEvent> _events = new List<ThalovantEvent>();
+        private readonly ReplyMediaBudget _mediaBudget = new ReplyMediaBudget();
         private ThalovantEvent? _failureEvent;
         // An intent miss is a soft failure: it ends phase 1 but leaves _failureEvent
         // null so the empty-reply wait still runs and a fallback reply can win.
@@ -539,7 +541,7 @@ namespace Thalovant
         {
             lock (_lock)
             {
-                return new StateSnapshot(_fragments.ToArray(), _events.ToArray(), _failureEvent, _softFailureEvent, _handled, _firstSpeechAt, _emptyStartedAt, _responseSessionId, _error);
+                return new StateSnapshot(_fragments.ToArray(), _events.ToArray(), _failureEvent, _softFailureEvent, _handled, _firstSpeechAt, _emptyStartedAt, _responseSessionId, _error) { DroppedMedia = _mediaBudget.Dropped };
             }
         }
 
@@ -556,8 +558,11 @@ namespace Thalovant
             lock (_lock)
             {
                 if (_stopped || _failureEvent != null || Expired()) return;
+                if (!_mediaBudget.Accept(busEvent)) return;
                 switch (busEvent.Name)
                 {
+                    case ThalovantEvents.AudioQueue:
+                        _events.Add(busEvent); break;
                     case ThalovantEvents.Speak:
                     case ThalovantEvents.OvosUtteranceSpeak:
                         _events.Add(busEvent);

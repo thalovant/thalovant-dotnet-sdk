@@ -184,6 +184,7 @@ namespace Thalovant
             using var correlation = ReserveRuntimeId(query, query: true);
             var gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var stateLock = new object();
+            var mediaBudget = new ReplyMediaBudget();
             var events = new List<ThalovantEvent>(); var fragments = new List<string>();
             ThalovantEvent? failure = null;
             Exception? sendError = null;
@@ -194,6 +195,7 @@ namespace Thalovant
                 var item = QueryEvent(message.Payload); if (item == null) return;
                 lock (stateLock) {
                     if (gate.Task.IsCompleted) return;
+                    if (!mediaBudget.Accept(item)) return;
                     events.Add(item);
                     if (responseSessionId == null && !string.IsNullOrWhiteSpace(item.SessionId)) responseSessionId = item.SessionId;
                     if (item.Name == "hive.query.complete") gate.TrySetResult(true);
@@ -237,7 +239,7 @@ namespace Thalovant
                     var joined = string.Join(" ", fragments);
                     var terminalFailure = failure?.Name == ThalovantEvents.PolicyDenied || failure?.Name == ThalovantEvents.QueryTimeout ? failure : null;
                     return new ThalovantReply(joined, ThalovantContext.StripSsml(joined), fragments.ToArray(), terminalFailure == null, terminalFailure == null,
-                        responseSessionId ?? session, request, events.ToArray(), terminalFailure);
+                        responseSessionId ?? session, request, events.ToArray(), terminalFailure) { DroppedMedia = mediaBudget.Dropped };
                 }
             } catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) {
                 throw new ThalovantTimeoutException("Hub did not complete the query in time.");

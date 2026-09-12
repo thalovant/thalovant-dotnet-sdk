@@ -748,13 +748,14 @@ namespace Thalovant
         public async Task<JsonObject> UpdateRuntimeGroupConfigAsync(string runtimeGroupId, JsonObject config,
             JsonObject? personas = null, CancellationToken cancellationToken = default) {
             var delta = JsonUtil.CloneObject(config);
+            var stablePersonas = personas == null ? null : JsonUtil.CloneObject(personas);
             for (int attempt = 0; ; attempt++) {
                 var snapshot = await GetRuntimeGroupConfigAsync(runtimeGroupId, cancellationToken).ConfigureAwait(false);
                 var revision = JsonUtil.GetString(snapshot["revision"]);
                 if (revision == null || !System.Text.RegularExpressions.Regex.IsMatch(revision, "\\A[0-9a-f]{64}\\z") || snapshot["config"] is not JsonObject stored)
                     throw new ThalovantApiException("Safe configuration merge requires a valid config and revision from the API.");
                 var body = new JsonObject { ["config"] = MergeRuntimeConfig(stored, delta), ["expected_revision"] = revision };
-                if (personas != null) body["personas"] = JsonUtil.CloneObject(personas);
+                if (stablePersonas != null) body["personas"] = JsonUtil.CloneObject(stablePersonas);
                 try { return await RequestObjectAsync("PUT", "/v1/runtime-groups/" + Uri.EscapeDataString(runtimeGroupId) + "/config", body, cancellationToken: cancellationToken).ConfigureAwait(false); }
                 catch (ThalovantApiException error) when (error.StatusCode == 412 && attempt < 2) { }
             }

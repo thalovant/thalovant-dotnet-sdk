@@ -8,6 +8,29 @@ using Xunit;
 namespace Thalovant.Sdk.Tests {
     public class PythonParityTests {
         private static JsonObject Obj(string value) => JsonNode.Parse(value)!.AsObject();
+        private sealed class SnapshotHandler : System.Net.Http.HttpMessageHandler {
+            internal readonly JsonObject Config = Obj("{\"nested\":{\"value\":\"original\"}}");
+            internal readonly JsonObject Personas = Obj("{\"default\":{\"name\":\"original\"}}");
+            internal int Writes;
+            protected override async Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request, System.Threading.CancellationToken cancellationToken) {
+                if (request.Method == System.Net.Http.HttpMethod.Get) {
+                    Config["nested"]!["value"] = "changed";
+                    Personas["default"]!["name"] = "changed";
+                    return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK) {
+                        Content = new System.Net.Http.StringContent("{\"config\":{},\"revision\":\"" + new string('a',64) + "\"}") };
+                }
+                var body = Obj(await request.Content!.ReadAsStringAsync());
+                Assert.Equal("original", (string?)body["config"]!["nested"]!["value"]);
+                Assert.Equal("original", (string?)body["personas"]!["default"]!["name"]);
+                return new System.Net.Http.HttpResponseMessage(++Writes == 1 ? System.Net.HttpStatusCode.PreconditionFailed : System.Net.HttpStatusCode.OK) { Content = new System.Net.Http.StringContent("{}") };
+            }
+        }
+        [Fact] public async Task ConfigSnapshotsCompletePayloadBeforeReads() {
+            var handler = new SnapshotHandler();
+            var api = new ThalovantControlPlane(apiUrl:"https://api.example.com", accessToken:"test", httpMessageHandler:handler);
+            await api.UpdateRuntimeGroupConfigAsync("g", handler.Config, handler.Personas);
+            Assert.Equal(2, handler.Writes);
+        }
         [Fact] public void HintsAndLocationPreserveCaller() {
             var original=Obj("""{"session":{"pipeline":["old"],"session_id":"kept"}}""");
             var location=ThalovantContext.BuildLocation(" Montréal ",country:" ca ",latitude:45.5,longitude:-73.5)!;
@@ -25,6 +48,7 @@ namespace Thalovant.Sdk.Tests {
             var e=new ThalovantEvent(ThalovantEvents.AudioQueue,Obj("""{"binary_data":"00 ff\n10","lang":"fr"}"""),Obj("""{"request_id":"r"}"""));
             Assert.Equal(new byte[]{0,255,16},e.AudioBytes());Assert.Equal("fr",e.Lang);
             foreach(var value in new[]{"","0","0 0","gg","https://example.com","00\u00a0ff"}) Assert.ThrowsAny<Exception>(()=>new ThalovantEvent(ThalovantEvents.AudioQueue,new JsonObject{["binary_data"]=value}).AudioBytes());
+            Assert.Empty(new ThalovantEvent(ThalovantEvents.AudioQueue,new JsonObject{["binary_data"]=" \t"}).AudioBytes());
             var state=new AskState();state.Process(e,"r");state.Process(e,"r");
             var clip=new string('0',ThalovantEvents.MaxAudioClipBytes*2);
             for(int i=0;i<4;i++) state.Process(new ThalovantEvent(ThalovantEvents.AudioQueue,new JsonObject{["binary_data"]=clip},Obj("""{"request_id":"r"}""")),"r");

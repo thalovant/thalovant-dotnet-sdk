@@ -736,5 +736,5 @@ data with `python scripts/sync-listing-data.py --data-dir
 src/Thalovant.Sdk/ListingData --test-dir tests/Thalovant.Sdk.Tests/Fixtures` in
 the pinned public Python environment specified in that script.
 
-The SDK code and CLDR matching tables are MIT-licensed; bundled
-`thalovant-languages` data is Apache-2.0-licensed. Both notices ship with the SDK.
+The SDK code, CLDR matching tables and bundled `thalovant-languages` data
+retain their upstream MIT license notices. Both data notices ship with the SDK.

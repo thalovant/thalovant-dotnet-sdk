@@ -20,7 +20,7 @@
     <Authors>Thalovant</Authors>
     <Company>Thalovant</Company>
     <Description>.NET SDK for connecting enterprise .NET and Unity apps to Thalovant hubs: control-plane API client plus the HiveMind v3 Noise WSS data plane with authenticated binary frames.</Description>
-    <PackageLicenseExpression>MIT AND Apache-2.0</PackageLicenseExpression>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageProjectUrl>https://github.com/thalovant/thalovant-dotnet-sdk</PackageProjectUrl>
     <RepositoryUrl>https://github.com/thalovant/thalovant-dotnet-sdk</RepositoryUrl>

@@ -54,14 +54,16 @@ namespace Thalovant
             return options.Wait ? await WaitForHubSkillOperationAsync(accepted, options, cancellationToken).ConfigureAwait(false) : accepted;
         }
 
-        /// <summary>Resume an accepted operation without repeating its write. Retain accepted before waiting when cancellation is possible.</summary>
+        /// <remarks>The timeout bounds new poll admission; an in-flight GET retains its HTTP timeout and caller cancellation.</remarks>
+        /// <summary>Resume an accepted operation without repeating its write. Retain the complete accepted response, including state, before waiting when cancellation is possible.</summary>
         public async Task<JsonObject> WaitForHubSkillOperationAsync(JsonObject accepted, HubSkillWaitOptions? options = null, CancellationToken cancellationToken = default)
         {
             options ??= new HubSkillWaitOptions();
             options.Validate();
-            var id = accepted["operation_id"]?.GetValue<string>();
+            var id = JsonUtil.GetString(accepted["operation_id"]);
             if (string.IsNullOrWhiteSpace(id)) throw new ThalovantApiException("Missing accepted operation_id.");
-            var state = accepted["state"]?.GetValue<string>();
+            var state = JsonUtil.GetString(accepted["state"]);
+            if (string.IsNullOrWhiteSpace(state)) throw new ThalovantApiException($"Missing or invalid state in accepted operation {id}; retain the complete accepted response.");
             var converged = state == "removing" || state == "removed" ? "removed" : "installed";
             var clock = Stopwatch.StartNew();
             while (true)
@@ -71,8 +73,9 @@ namespace Thalovant
                 JsonObject operation;
                 try { operation = await RequestObjectAsync("GET", "/v1/operations/" + Uri.EscapeDataString(id), cancellationToken: cancellationToken).ConfigureAwait(false); }
                 catch (OperationCanceledException) { throw; }
-                catch (Exception) { throw new ThalovantApiException($"Could not read accepted operation {id}; resume using its ID."); }
-                var status = operation["status"]?.GetValue<string>();
+                catch (Exception) { throw new ThalovantApiException($"Could not read accepted operation {id}; inspect the operation by ID, or resume with the complete accepted response."); }
+                var status = JsonUtil.GetString(operation["status"]);
+                if (string.IsNullOrWhiteSpace(status)) throw new ThalovantApiException($"Missing or invalid status for accepted operation {id}.");
                 if (status == "ready")
                 {
                     var result = JsonUtil.ParseObject(accepted.ToJsonString());
@@ -83,7 +86,14 @@ namespace Thalovant
                 if (status == "failed" || status == "timed_out") throw new ThalovantApiException($"Accepted operation {id} failed; inspect GetOperationAsync for details.");
                 var remaining = options.Timeout - clock.Elapsed;
                 if (remaining <= TimeSpan.Zero) throw new ThalovantTimeoutException($"Timed out waiting for accepted operation {id}");
-                await Task.Delay(remaining < options.PollInterval ? remaining : options.PollInterval, cancellationToken).ConfigureAwait(false);
+                if (remaining <= options.PollInterval)
+                {
+                    // Task.Delay rounds sub-millisecond durations down. No further poll is due
+                    // within this budget, even if the timer wakes slightly early.
+                    await Task.Delay(TimeSpan.FromMilliseconds(Math.Ceiling(remaining.TotalMilliseconds)), cancellationToken).ConfigureAwait(false);
+                    throw new ThalovantTimeoutException($"Timed out waiting for accepted operation {id}");
+                }
+                await Task.Delay(options.PollInterval, cancellationToken).ConfigureAwait(false);
             }
         }
     }

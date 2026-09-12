@@ -39,6 +39,28 @@ namespace Thalovant.Sdk.Tests
             var error = await Assert.ThrowsAnyAsync<ThalovantException>(() => api.InstallHubSkillAsync("h", "s", options: new HubSkillWaitOptions { Wait = true, Timeout = TimeSpan.FromMilliseconds(50) }));
             Assert.Contains("op-1", error.Message); Assert.DoesNotContain("private-data", error.Message); Assert.Equal(2, handler.Requests.Count);
         }
+        [Theory]
+        [InlineData("operation_id", "{}")][InlineData("operation_id", "null")][InlineData("operation_id", "123")]
+        [InlineData("state", "{}")][InlineData("state", "null")][InlineData("state", "123")]
+        public async Task MalformedAcceptedFieldsFailWithoutPolling(string field, string value)
+        {
+            var handler = new StubHttpMessageHandler();
+            var api = new ThalovantControlPlane(apiUrl: "https://api.example.com", accessToken: "token", httpMessageHandler: handler);
+            var accepted = JsonNode.Parse(Accepted)!.AsObject();
+            accepted[field] = JsonNode.Parse(value);
+            await Assert.ThrowsAsync<ThalovantApiException>(() => api.WaitForHubSkillOperationAsync(accepted));
+            Assert.Empty(handler.Requests);
+        }
+        [Theory][InlineData("{}")][InlineData("null")][InlineData("123")]
+        public async Task MalformedPollStatusRetainsOperationId(string value)
+        {
+            var handler = new StubHttpMessageHandler();
+            var api = new ThalovantControlPlane(apiUrl: "https://api.example.com", accessToken: "token", httpMessageHandler: handler);
+            handler.Enqueue(200, "{\"status\":" + value + "}");
+            var error = await Assert.ThrowsAsync<ThalovantApiException>(() => api.WaitForHubSkillOperationAsync(JsonNode.Parse(Accepted)!.AsObject()));
+            Assert.Contains("op-1", error.Message);
+            Assert.Single(handler.Requests);
+        }
         [Fact] public async Task ValidationAndCancellationDoNotSend()
         {
             var handler = new StubHttpMessageHandler();

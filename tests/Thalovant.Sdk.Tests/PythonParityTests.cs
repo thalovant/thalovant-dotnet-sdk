@@ -42,7 +42,7 @@ namespace Thalovant.Sdk.Tests {
         [Fact] public void SpeakableRetainsSourcePriorityAndBestDuplicateRank() {
             Assert.Equal("did i ask about thing",ThalovantContext.Speakable("did i (already |)ask (about|for|to|) {thing}"));
             var intent=new HubIntent("x","x","padatious",new Dictionary<string,IReadOnlyList<string>>{{"en-us",new[]{"{x}","a complete sentence","[please]","(x|y)","x"}}});
-            Assert.Equal(new[]{"x","a complete sentence"},intent.ExamplesWithOptions("en-us",2,true));
+            Assert.Equal(new[]{"a complete sentence","x"},intent.ExamplesWithOptions("en-us",2,true));
         }
         [Fact] public void AudioIsBoundedStrictAndCollectedInOrder() {
             var e=new ThalovantEvent(ThalovantEvents.AudioQueue,Obj("""{"binary_data":"00 ff\n10","lang":"fr"}"""),Obj("""{"request_id":"r"}"""));

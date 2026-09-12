@@ -16,7 +16,7 @@
     <!-- The single source of truth for the SDK version. ThalovantSdkVersion
          reads it back off the built assembly, so every user agent derives from
          this one line; nothing else in the repository names the version. -->
-    <Version>0.5.0</Version>
+    <Version>0.6.0</Version>
     <Authors>Thalovant</Authors>
     <Company>Thalovant</Company>
     <Description>.NET SDK for connecting enterprise .NET and Unity apps to Thalovant hubs: control-plane API client plus the HiveMind v3 Noise WSS data plane with authenticated binary frames.</Description>
@@ -39,6 +39,12 @@
        needs the System.Text.Json package, the one allowed reference. -->
   <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1'">
     <PackageReference Include="System.Text.Json" Version="8.0.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="ListingData/*.json" LogicalName="Thalovant.ListingData.%(Filename)%(Extension)" />
+    <None Include="../../LICENSE-langcodes" Pack="true" PackagePath="/" />
+    <None Include="../../LICENSE-languages" Pack="true" PackagePath="/" />
   </ItemGroup>
 
   <ItemGroup>

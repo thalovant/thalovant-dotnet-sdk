@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/>
 ## Install
 
 ```bash
-dotnet add package Thalovant.Sdk --version 0.5.0
+dotnet add package Thalovant.Sdk --version 0.6.0
 ```
 
 The library multi-targets `net8.0` and `netstandard2.1` (Unity 2021+
@@ -661,7 +661,7 @@ without waiting, retain the complete accepted response (including `operation_id`
 and `state`), then pass that response to the wait helper separately. Cancelling waiting does not undo the server operation. After a polling
 failure, inspect/resume that operation instead of submitting the write again.
 
-## Request helpers and safe configuration updates (0.5.0)
+## Request helpers and safe configuration updates (0.6.0)
 
 Request hints carry a recognized language, ordered intent pipeline, and caller
 location without changing the caller's context. Empty hints are omitted. The
@@ -708,3 +708,33 @@ Distinct audio events may intentionally repeat identical sound content. Only
 repeated delivery of the same event object is suppressed where object identity
 is available, without counting it as a dropped clip. Rendered example ranking
 uses the original pattern's slot presence even when sample values are supplied.
+
+## Locale-aware intent listings
+
+`intent.ExamplesWithListing("fr-CA", sentence: true)` renders sentences from
+the closest registered locale. `ThalovantContext.AsSentence("quelle heure est-il",
+"fr-CA")` returns `"Quelle heure est-il?"`. `SpeakableWithLanguage(pattern, slots,
+lang)` fills canonical locale examples before explicit slot overrides. Existing
+`Speakable` and `ExamplesWithOptions` signatures remain available.
+
+Complete phrases rank before prefixes and slot patterns, then fuller wording up
+to eight words. Empty and duplicate rendered examples do not consume limits.
+Raw unlimited examples retain registration order. Omitted languages preserve the
+selected registration's locale. OVOS-compatible CLDR matching uses langcodes
+3.5.1 data; distances above ten do not match and ties preserve candidate order.
+
+`ListingRules.Default` uses embedded thalovant-languages 0.1.1 data.
+`new ListingRules(data)` snapshots a complete JSON tree; pass it as `listing` or
+call its methods. `new ListingRules(null)` selects bare rendering with slot
+names. Unknown languages also remain bare. Invalid patterns fail construction;
+`Asks` throws `RegexMatchTimeoutException` when a rule exceeds 100ms. Sentence
+rendering leaves such rules unpunctuated. The rules are safe for concurrent
+readers and use embedded assembly resources without new runtime packages.
+
+The package includes `LICENSE-languages` and `LICENSE-langcodes`. Regenerate
+data with `python scripts/sync-listing-data.py --data-dir
+src/Thalovant.Sdk/ListingData --test-dir tests/Thalovant.Sdk.Tests/Fixtures` in
+the pinned public Python environment specified in that script.
+
+The SDK code, CLDR matching tables and bundled `thalovant-languages` data
+retain their upstream MIT license notices. Both data notices ship with the SDK.

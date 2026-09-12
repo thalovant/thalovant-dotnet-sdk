@@ -298,55 +298,23 @@ namespace Thalovant
             }
         }
 
-        /// <summary>The sentences for one language; <c>fr-FR</c> and <c>fr_fr</c> find the same ones.</summary>
-        public IReadOnlyList<string> PhrasesFor(string lang)
-        {
-            foreach (var candidate in _languages)
-            {
-                if (ThalovantContext.SameLanguage(candidate, lang))
-                {
-                    return _phrases[candidate];
-                }
-            }
-            return Array.Empty<string>();
+        /// <summary>The closest OVOS-compatible registered locale.</summary>
+        public IReadOnlyList<string> PhrasesFor(string lang) {
+            var tag=ThalovantContext.ClosestLanguage(lang,_languages);return tag==null?Array.Empty<string>():_phrases[tag];
         }
-
-        /// <summary>
-        /// A few sentences worth showing: whole ones before ones with a slot, and
-        /// shorter ones first. Without a language the first registered language is
-        /// used; a <paramref name="limit"/> of zero or less returns the whole pool.
-        /// </summary>
-        public IReadOnlyList<string> Examples(string? lang = null, int limit = 2) => ExamplesWithOptions(lang, limit);
-
-        public IReadOnlyList<string> ExamplesWithOptions(string? lang = null, int limit = 2, bool speakable = false, IReadOnlyDictionary<string, string>? slots = null)
-        {
-            var pool = string.IsNullOrEmpty(lang)
-                ? (_languages.Count > 0 ? _phrases[_languages[0]] : Array.Empty<string>())
-                : PhrasesFor(lang!);
-            var ranks = new Dictionary<string, bool>(StringComparer.Ordinal);
-            if (speakable) {
-                var rendered = new List<string>();
-                foreach (var pattern in pool) {
-                    var sentence = ThalovantContext.Speakable(pattern, slots);
-                    if (sentence.Length == 0) continue;
-                    if (!ranks.TryGetValue(sentence, out var rank)) { rendered.Add(sentence); rank = true; }
-                    ranks[sentence] = rank && pattern.IndexOf('{') >= 0;
-                }
-                pool = rendered;
+        public IReadOnlyList<string> Examples(string? lang=null,int limit=2)=>ExamplesWithOptions(lang,limit);
+        public IReadOnlyList<string> ExamplesWithOptions(string? lang=null,int limit=2,bool speakable=false,IReadOnlyDictionary<string,string>? slots=null)=>ExamplesWithListing(lang,limit,speakable,false,slots);
+        public IReadOnlyList<string> ExamplesWithListing(string? lang=null,int limit=2,bool speakable=false,bool sentence=false,IReadOnlyDictionary<string,string>? slots=null,ListingRules? listing=null) {
+            var renderLang=string.IsNullOrEmpty(lang)?_languages.FirstOrDefault():lang;
+            var pool=renderLang==null?Array.Empty<string>():PhrasesFor(renderLang);
+            var rules=listing??ListingRules.Default;
+            if(!speakable&&!sentence)return limit<=0?pool:rules.Rank(pool,renderLang).Take(limit).ToArray();
+            var result=new List<string>();var seen=new HashSet<string>(StringComparer.Ordinal);
+            foreach(var pattern in rules.Rank(pool,renderLang)) {
+                var value=rules.Speakable(pattern,slots,renderLang);if(sentence)value=rules.AsSentence(value,renderLang);
+                if(value.Length==0||!seen.Add(value))continue;result.Add(value);if(limit>0&&result.Count>=limit)break;
             }
-            if (limit <= 0) return pool;
-            return pool
-                .OrderBy(text => ranks.TryGetValue(text, out var rank) ? rank : text.IndexOf('{') >= 0)
-                .ThenBy(UnicodeScalarLength)
-                .Take(limit)
-                .ToArray();
-        }
-
-        private static int UnicodeScalarLength(string text) {
-            int count = 0;
-            for (int i = 0; i < text.Length; i++, count++)
-                if (char.IsHighSurrogate(text[i]) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1])) i++;
-            return count;
+            return result;
         }
 
         public JsonObject ToJsonObject()

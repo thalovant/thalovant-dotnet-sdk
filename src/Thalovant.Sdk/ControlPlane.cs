@@ -137,7 +137,7 @@ namespace Thalovant
     }
 
     /// <summary>Client for the Thalovant control API (<c>https://api.thalovant.com</c>).</summary>
-    public sealed class ThalovantControlPlane
+    public sealed partial class ThalovantControlPlane
     {
         public string ApiUrl { get; }
         public string? AccessToken { get; set; }

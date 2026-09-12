@@ -17,6 +17,7 @@ namespace Thalovant {
         private readonly Dictionary<string,List<KeyValuePair<Regex,string>>> _written = new Dictionary<string,List<KeyValuePair<Regex,string>>>(StringComparer.Ordinal);
         public bool Available {get;}
         public string SentenceEnds {get;}
+        private readonly HashSet<int> _sentenceEndScalars = new HashSet<int>();
         internal static JsonObject LoadResource(string name) {
             using var stream=typeof(ListingRules).Assembly.GetManifestResourceStream("Thalovant.ListingData."+name) ?? throw new InvalidOperationException("Missing bundled listing data: "+name);
             using var reader=new StreamReader(stream,Encoding.UTF8);return JsonUtil.ParseObject(reader.ReadToEnd());
@@ -26,6 +27,9 @@ namespace Thalovant {
         public ListingRules(JsonObject? data) {
             Available=data!=null;var snapshot=JsonUtil.CloneObject(data);
             SentenceEnds=snapshot["sentence_ends"]?.GetValue<string>() ?? "";
+            for(int end=SentenceEnds.Length;end>0;) {
+                int scalar=ScalarBefore(SentenceEnds,end);_sentenceEndScalars.Add(scalar);end-=scalar>0xffff?2:1;
+            }
             _languages=snapshot["languages"] as JsonObject ?? new JsonObject();
             foreach(var pair in _languages) {
                 var language=(JsonObject)pair.Value!;
@@ -54,8 +58,15 @@ namespace Thalovant {
             return new HashSet<string>(values.SelectMany(v=>Values(v,key)).Select(v=>v.ToLowerInvariant()),StringComparer.Ordinal);
         }
         private static string[] Tokens(string text)=>text.Split((char[]?)null,StringSplitOptions.RemoveEmptyEntries);
+        private static int ScalarBefore(string text,int end)=>end>=2&&char.IsSurrogatePair(text,end-2)?char.ConvertToUtf32(text,end-2):text[end-1];
         public bool Dangling(string text,string? lang=null) {
-            var words=Tokens(text.TrimEnd((SentenceEnds+" ").ToCharArray()));return words.Length>0&&Words(lang,"trailing_words").Contains(words[words.Length-1].ToLowerInvariant());
+            int end=text.Length;
+            while(end>0) {
+                int scalar=ScalarBefore(text,end);
+                if(scalar!=' '&&!_sentenceEndScalars.Contains(scalar))break;
+                end-=scalar>0xffff?2:1;
+            }
+            var words=Tokens(text.Substring(0,end));return words.Length>0&&Words(lang,"trailing_words").Contains(words[words.Length-1].ToLowerInvariant());
         }
         /// <summary>Recognize questions; RegexMatchTimeoutException reports a rule exceeding 100ms.</summary>
         public bool Asks(string text,string? lang=null) {
@@ -69,7 +80,7 @@ namespace Thalovant {
             text=text.Trim();if(text.Length==0)return text;
             int first=char.IsHighSurrogate(text[0])&&text.Length>1&&char.IsLowSurrogate(text[1])?2:1;
             string scalar=text.Substring(0,first);text=(Upper.Value[scalar]?.GetValue<string>() ?? scalar.ToUpperInvariant())+text.Substring(first);
-            if(SentenceEnds.IndexOf(text[text.Length-1])>=0||Dangling(text,lang))return text;
+            if(_sentenceEndScalars.Contains(ScalarBefore(text,text.Length))||Dangling(text,lang))return text;
             var tag=Tag(lang);if(tag==null)return text;var data=(JsonObject)_languages[tag]!;
             if(!new[]{"question_openers","question_words_anywhere","question_patterns"}.Any(key=>Values(data,key).Any()))return text;
             try {

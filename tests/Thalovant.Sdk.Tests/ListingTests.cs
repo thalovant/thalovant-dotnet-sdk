@@ -60,5 +60,11 @@ namespace Thalovant.Sdk.Tests {
             Assert.Throws<RegexMatchTimeoutException>(()=>costly.Asks(text,"xq"));
             Assert.True(costly.AsSentence(text,"xq")=="A"+text.Substring(1));
         }
+
+        [Fact] public void UnicodeNonBoundaries() {
+            var rules=new ListingRules((JsonObject)JsonNode.Parse("""{"languages":{"xq":{"question_patterns":["\\Bété\\B"]}}}""")!);
+            Assert.False(rules.Asks("été","xq"));
+            Assert.True(rules.Asks("pétéx","xq"));
+        }
     }
 }

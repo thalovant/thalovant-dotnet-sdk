@@ -37,10 +37,11 @@ namespace Thalovant {
         }
         private static Regex Compile(string expression,bool ignoreCase) {
             const string boundary=@"(?:(?<![\p{L}\p{N}_])(?=[\p{L}\p{N}_])|(?<=[\p{L}\p{N}_])(?![\p{L}\p{N}_]))";
+            const string nonBoundary=@"(?:(?=[\s\S])|(?<=[\s\S]))(?:(?<=[\p{L}\p{N}_])(?=[\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?![\p{L}\p{N}_]))";
             var output=new StringBuilder();bool inClass=false;
             for(int i=0;i<expression.Length;i++) {
                 char c=expression[i];
-                if(c=='\\'&&i+1<expression.Length){char next=expression[++i];if(next=='b'&&!inClass)output.Append(boundary);else output.Append(c).Append(next);}
+                if(c=='\\'&&i+1<expression.Length){char next=expression[++i];if(next=='b'&&!inClass)output.Append(boundary);else if(next=='B'&&!inClass)output.Append(nonBoundary);else output.Append(c).Append(next);}
                 else {if(c=='[')inClass=true;if(c==']')inClass=false;output.Append(c);}
             }
             return new Regex(output.ToString(),RegexOptions.CultureInvariant|(ignoreCase?RegexOptions.IgnoreCase:RegexOptions.None),TimeSpan.FromMilliseconds(100));

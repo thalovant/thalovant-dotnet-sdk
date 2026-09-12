@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/>
 ## Install
 
 ```bash
-dotnet add package Thalovant.Sdk --version 0.4.0
+dotnet add package Thalovant.Sdk --version 0.5.0
 ```
 
 The library multi-targets `net8.0` and `netstandard2.1` (Unity 2021+
@@ -209,7 +209,7 @@ admin-only (HTTP 403). Runtime groups have no `If-Match` requirement at all, but
 the API refuses to delete the workspace default group or a group that still has
 hubs attached (HTTP 409).
 
-Runtime configuration is merged, not replaced, and `personas` is sent only when
+Runtime configuration is deep-merged using a revision precondition, and `personas` is sent only when
 you pass it:
 
 ```csharp
@@ -660,3 +660,51 @@ Methods: `ListHubSkillsAsync / ListHubSkillHistoryAsync / InstallHubSkillAsync /
 without waiting, retain the complete accepted response (including `operation_id`
 and `state`), then pass that response to the wait helper separately. Cancelling waiting does not undo the server operation. After a polling
 failure, inspect/resume that operation instead of submitting the write again.
+
+## Request helpers and safe configuration updates (0.5.0)
+
+Request hints carry a recognized language, ordered intent pipeline, and caller
+location without changing the caller's context. Empty hints are omitted. The
+location helper requires a city and omits invalid or zero/zero coordinates.
+The hub validates language hints against its configured languages.
+
+Replies expose their reported language, ordered speech/audio events, and a
+count of dropped media. Embedded skill clips are limited to 4 MiB each and
+16 MiB per reply, checked before retention and decoding. Audio does not extend
+the reply settlement window. Decoding accepts hexadecimal bytes with ASCII
+whitespace between bytes; it never fetches a skill-supplied URL or file path.
+The application owns playback (the `play`/`Play` function in this example).
+
+```csharp
+var location = ThalovantContext.BuildLocation("Montréal", country: "CA");
+var reply = await client.AskWithHintsAsync("Quel temps fait-il ?", sttLang: "fr-ca", location: location);
+foreach (var e in reply.MediaEvents) if (e.IsAudio) Play(e.AudioBytes());
+var examples = intent.ExamplesWithOptions("en-us", speakable: true);
+await api.UpdateRuntimeGroupConfigAsync(groupId, delta);
+// Explicit full replacement:
+await api.ReplaceRuntimeGroupConfigAsync(groupId, fullConfig);
+```
+
+Guarded merging requires the `hubs:read` and `hubs:write` scopes and a paid plan.
+Safe merging requires an API whose configuration GET returns a valid `revision`
+and whose configuration PUT checks `expected_revision`. The SDK rereads and
+reapplies the original delta only after HTTP 412, with at most three attempts.
+Arrays and scalar values replace; objects merge recursively. Personas replace
+only when explicitly supplied. Connection failures, redirects, other statuses,
+and ambiguous write results are never retried. No unsafe PATCH fallback is used.
+Unconditional replacements must still be coordinated with other writers.
+
+Use the explicit replacement operation shown above when a complete replacement
+is intended, including when working with an older API. Existing code relying on
+replacement must opt into it when upgrading. Raw intent patterns remain the
+default; speakable examples remove optional parts, choose alternatives, and
+substitute caller-supplied slots while retaining complete-phrase priority.
+
+The audio limits use encoded-length upper bounds before decoding, so formatting
+whitespace consumes budget too. Like Python's `bytes.fromhex`, ASCII whitespace
+alone decodes to zero bytes. Bounded malformed clips remain available as event
+metadata and fail when decoded; they are never fetched or played automatically.
+Distinct audio events may intentionally repeat identical sound content. Only
+repeated delivery of the same event object is suppressed where object identity
+is available, without counting it as a dropped clip. Rendered example ranking
+uses the original pattern's slot presence even when sample values are supplied.

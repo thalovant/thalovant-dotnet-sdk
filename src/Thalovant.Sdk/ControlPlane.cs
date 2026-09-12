@@ -743,18 +743,32 @@ namespace Thalovant
                 cancellationToken: cancellationToken);
         }
 
-        /// <summary>
-        /// <c>PATCH /v1/runtime-groups/{runtime_group_id}/config</c>. Merges runtime
-        /// configuration into a runtime group.
-        /// <para>
-        /// The API merges <paramref name="config"/> into the stored configuration
-        /// rather than replacing it, and marks the group pending so the runtime
-        /// operator reconciles the change. <paramref name="personas"/> is replaced,
-        /// and only when provided.
-        /// </para>
-        /// <para>Requires a paid plan and a token with the <c>hubs:write</c> scope.</para>
-        /// </summary>
-        public Task<JsonObject> UpdateRuntimeGroupConfigAsync(
+        /// <summary>Deep merge with a revision precondition. Retry only 412, at most three attempts.
+        /// Requires hubs:read and paid hubs:write; older servers fail before any write.</summary>
+        public async Task<JsonObject> UpdateRuntimeGroupConfigAsync(string runtimeGroupId, JsonObject config,
+            JsonObject? personas = null, CancellationToken cancellationToken = default) {
+            var delta = JsonUtil.CloneObject(config);
+            var stablePersonas = personas == null ? null : JsonUtil.CloneObject(personas);
+            for (int attempt = 0; ; attempt++) {
+                var snapshot = await GetRuntimeGroupConfigAsync(runtimeGroupId, cancellationToken).ConfigureAwait(false);
+                var revision = JsonUtil.GetString(snapshot["revision"]);
+                if (revision == null || !System.Text.RegularExpressions.Regex.IsMatch(revision, "\\A[0-9a-f]{64}\\z") || snapshot["config"] is not JsonObject stored)
+                    throw new ThalovantApiException("Safe configuration merge requires a valid config and revision from the API.");
+                var body = new JsonObject { ["config"] = MergeRuntimeConfig(stored, delta), ["expected_revision"] = revision };
+                if (stablePersonas != null) body["personas"] = JsonUtil.CloneObject(stablePersonas);
+                try { return await RequestObjectAsync("PUT", "/v1/runtime-groups/" + Uri.EscapeDataString(runtimeGroupId) + "/config", body, cancellationToken: cancellationToken).ConfigureAwait(false); }
+                catch (ThalovantApiException error) when (error.StatusCode == 412 && attempt < 2) { }
+            }
+        }
+        private static JsonObject MergeRuntimeConfig(JsonObject stored, JsonObject delta) {
+            var result = JsonUtil.CloneObject(stored);
+            foreach (var pair in delta) result[pair.Key] = result[pair.Key] is JsonObject old && pair.Value is JsonObject next
+                ? MergeRuntimeConfig(old, next) : pair.Value?.DeepClone();
+            return result;
+        }
+
+        /// <summary>Explicit unconditional configuration replacement via PATCH.</summary>
+        public Task<JsonObject> ReplaceRuntimeGroupConfigAsync(
             string runtimeGroupId,
             JsonObject config,
             JsonObject? personas = null,

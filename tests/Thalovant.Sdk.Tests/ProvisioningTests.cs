@@ -311,7 +311,7 @@ namespace Thalovant.Sdk.Tests
             Assert.Equal("en-us", (string?)((JsonObject)config["config"]!)["lang"]);
 
             _handler.Enqueue(body: """{"runtime_group_id": "group-1"}""");
-            await _api.UpdateRuntimeGroupConfigAsync("group-1", new JsonObject { ["lang"] = "fr-fr" });
+            await _api.ReplaceRuntimeGroupConfigAsync("group-1", new JsonObject { ["lang"] = "fr-fr" });
             var request = LastRequest();
             Assert.Equal("PATCH", request.Method);
             Assert.Equal("https://api.example.com/v1/runtime-groups/group-1/config", request.Url.AbsoluteUri);
@@ -320,7 +320,7 @@ namespace Thalovant.Sdk.Tests
             Assert.False(body.ContainsKey("personas"));
 
             _handler.Enqueue(body: """{"runtime_group_id": "group-1"}""");
-            await _api.UpdateRuntimeGroupConfigAsync(
+            await _api.ReplaceRuntimeGroupConfigAsync(
                 "group-1",
                 new JsonObject { ["lang"] = "fr-fr" },
                 new JsonObject { ["default"] = "concierge" });

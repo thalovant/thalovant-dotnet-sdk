@@ -232,6 +232,20 @@ namespace Thalovant
         public IReadOnlyList<ThalovantEvent> Events { get; }
         public ThalovantEvent? FailureEvent { get; }
         public int DroppedMedia { get; internal set; }
+        public IReadOnlyList<string> PipelineIds => ContextIdentifiers("pipeline_id");
+        public IReadOnlyList<string> SkillIds => ContextIdentifiers("skill_id");
+        /// <summary>Advisory claim status; successful unstamped legacy replies remain claimed.</summary>
+        public bool Claimed => Handled && Ok && FailureEvent == null &&
+            (PipelineIds.Count == 0 || PipelineIds.Any(stage => stage.IndexOf("fallback", StringComparison.Ordinal) < 0));
+        private IReadOnlyList<string> ContextIdentifiers(string key)
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var result = new List<string>();
+            foreach (var item in Events)
+                if (item.Context[key] is JsonValue node && node.TryGetValue<string>(out var value) &&
+                    !string.IsNullOrEmpty(value) && seen.Add(value)) result.Add(value);
+            return result.ToArray();
+        }
         public string? Lang => Events.Select(e => e.Lang).FirstOrDefault(value => !string.IsNullOrEmpty(value));
         public bool HasAudio => Events.Any(e => e.IsAudio);
         public IReadOnlyList<ThalovantEvent> MediaEvents => Events.Where(e => e.IsAudio || e.Name == ThalovantEvents.Speak || e.Name == ThalovantEvents.OvosUtteranceSpeak).ToArray();

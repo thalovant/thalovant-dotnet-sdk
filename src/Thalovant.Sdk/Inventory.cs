@@ -122,7 +122,7 @@ namespace Thalovant
             for (int i = 0; i < Math.Min(a.Length, b.Length); i++) { var x = a[i]; var y = b[i]; bool nx = x[0] >= '0' && x[0] <= '9', ny = y[0] >= '0' && y[0] <= '9'; int compare = nx && ny ? BigInteger.Parse(x, CultureInfo.InvariantCulture).CompareTo(BigInteger.Parse(y, CultureInfo.InvariantCulture)) : nx != ny ? (nx ? -1 : 1) : StringComparer.Ordinal.Compare(x, y); if (compare != 0) return compare; }
             return a.Length.CompareTo(b.Length);
         }
-        public static string? IdentityHost(string path) { try { var value = JsonNode.Parse(File.ReadAllText(path))?["default_master"]?.GetValue<string>(); return Uri.TryCreate(value, UriKind.Absolute, out var uri) ? uri.Host : null; } catch { return null; } }
+        public static string? IdentityHost(string path) { try { var value = JsonNode.Parse(File.ReadAllText(path))?["default_master"]?.GetValue<string>(); var host = OriginPreference.HubHostname(value); return host.Length == 0 ? null : host; } catch { return null; } }
     }
     public sealed class InventoryCache
     {
@@ -132,10 +132,29 @@ namespace Thalovant
         public static string Key(string mode, string? identity = null)
         {
             var host = identity == null ? null : InventoryHelpers.IdentityHost(identity); var readable = Regex.Replace(host ?? "local", "[^A-Za-z0-9._-]", "-"); if (readable.Length > 40) readable = readable.Substring(0, 40);
-            using var hash = SHA256.Create(); var digest = BitConverter.ToString(hash.ComputeHash(Encoding.UTF8.GetBytes(mode + "|" + (identity ?? "")))).Replace("-", "").ToLowerInvariant().Substring(0, 8); return mode + "-" + readable + "-" + digest;
+            using var hash = SHA256.Create(); var digest = BitConverter.ToString(hash.ComputeHash(Encoding.UTF8.GetBytes(mode + "|" + (identity ?? "") + "|" + (host ?? "local")))).Replace("-", "").ToLowerInvariant().Substring(0, 8); return mode + "-" + readable + "-" + digest;
         }
         public string PathFor(string key) { if (key.Length > 160 || !Regex.IsMatch(key, "\\A[A-Za-z0-9._-]+\\z")) throw new ArgumentException("Invalid inventory cache key", nameof(key)); return Path.Combine(DirectoryPath, "intents-" + key + ".json"); }
-        public Inventory? Load(string key) { try { var path = PathFor(key); var file = new FileInfo(path); if (file.Length > 8 * 1024 * 1024 || DateTime.UtcNow - file.LastWriteTimeUtc > Ttl) return null; return Inventory.FromObject(JsonNode.Parse(File.ReadAllText(path))); } catch { return null; } }
+        public Inventory? Load(string key)
+        {
+            try
+            {
+                var path = PathFor(key);
+                using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+                const int limit = 8 * 1024 * 1024;
+                if (file.Length > limit || DateTime.UtcNow - File.GetLastWriteTimeUtc(path) > Ttl) return null;
+                using var contents = new MemoryStream();
+                var buffer = new byte[8192];
+                int count;
+                while ((count = file.Read(buffer, 0, Math.Min(buffer.Length, limit + 1 - (int)contents.Length))) > 0)
+                {
+                    contents.Write(buffer, 0, count);
+                    if (contents.Length > limit) return null;
+                }
+                return Inventory.FromObject(JsonNode.Parse(contents.ToArray()));
+            }
+            catch { return null; }
+        }
         [DllImport("libc", SetLastError = true)] private static extern int fchmod(int descriptor, uint mode);
         public void Store(string key, Inventory inventory)
         {

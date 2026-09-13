@@ -13,9 +13,26 @@ namespace Thalovant.Sdk.Tests;
 public sealed class SessionInventoryTests
 {
     [Fact]
+    public void CacheKeysHashFullNormalizedHostsAndOversizedValidRecordsAreMisses()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")); Directory.CreateDirectory(directory);
+        try
+        {
+            var path = Path.Combine(directory, "identity.json"); var first = new string('a', 40) + "one.example"; var second = new string('a', 40) + "two.example";
+            File.WriteAllText(path, new JsonObject { ["default_master"] = first }.ToJsonString());
+            Assert.Equal(first, InventoryHelpers.IdentityHost(path)); var key = InventoryCache.Key("hub", path);
+            File.WriteAllText(path, new JsonObject { ["default_master"] = second }.ToJsonString()); Assert.NotEqual(key, InventoryCache.Key("hub", path));
+            var cache = new InventoryCache(directory); var large = new Inventory("hub", "Kitchen", "hub", "now", notes: new[] { new string('x', 8 * 1024 * 1024) });
+            cache.Store("large", large); Assert.True(new FileInfo(cache.PathFor("large")).Length > 8 * 1024 * 1024); Assert.Null(cache.Load("large"));
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    [Fact]
     public void SharedPythonReferenceSurvivesSortedJson()
     {
         var data = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "inventory-vectors.json")))!;
+        Assert.Equal(data["cache_key"]!.GetValue<string>(), InventoryCache.Key("hub"));
         var inventory = Inventory.FromObject(data["inventory"]);
         foreach (var row in data["examples"]!.AsArray()) Assert.Equal(row!["expected"]!.AsArray().Select(v => v!.GetValue<string>()), inventory.Skills[0].Intents[0].Examples(row["language"]?.GetValue<string>(), row["limit"]!.GetValue<int>()));
         foreach (var row in data["speaks"]!.AsArray()) Assert.Equal(row!["expected"]!.GetValue<bool>(), inventory.Skills[0].Speaks(row["language"]!.GetValue<string>()));
@@ -107,7 +124,8 @@ public sealed class SessionInventoryTests
         Assert.False(preference.CoolingDown);
         using var cancelled = new CancellationTokenSource();
         int interruptedAttempts = 0;
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => preference.ConnectAsync<string>(options, (_, _) => {
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => preference.ConnectAsync<string>(options, (_, _) =>
+        {
             interruptedAttempts++; cancelled.Cancel(); throw new IOException("interrupted dial");
         }, cancelled.Token));
         Assert.Equal(1, interruptedAttempts); Assert.False(preference.CoolingDown);

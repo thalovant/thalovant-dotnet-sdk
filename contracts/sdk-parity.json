@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "reference_digests": [
+    "1133ac83dca463a5b7c69c980d1b5db46a1314d08151b31508982ad1cf41b6c6",
+    "47738ba99b2252964314e0c627c790021cc9597eb71c1097ad337535e7251298"
+  ],
+  "capabilities": {
+    "runtime": {
+      "status": "required",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
+      "implementation": {
+        "src/Thalovant.Sdk/Runtime.cs": "037c680410a2839321bf29e5ee1d318be87989cac0aeb2fb9a80b7faaca40fff",
+        "src/Thalovant.Sdk/Transport.cs": "4a99de736d5bb25fb2a0cfee1b2a0d8e033017a2947d21fe1c281eeaf11d3d63"
+      },
+      "tests": {
+        "tests/Thalovant.Sdk.Tests/RuntimeTests.cs": "781a47e8dc69cef90f95f8f696958fd503f2a523b9f9ebd914e365486d50db1f",
+        "tests/Thalovant.Sdk.Tests/NoiseTransportTests.cs": "54076eaea06a0b7d7592478a0d7bf5e024c80b1af727eed6a68f13d4ebc81304"
+      }
+    },
+    "control": {
+      "status": "required",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
+      "implementation": {
+        "src/Thalovant.Sdk/ControlPlane.cs": "b34118f3ca9034f45e62f4537c71dade3651e3789eb81499e3ccadad9100af74",
+        "src/Thalovant.Sdk/HubSkills.cs": "500577bd675f2c7c7a1bb111400d9253363037fa9d532ba4702ed43823b2e51d"
+      },
+      "tests": {
+        "tests/Thalovant.Sdk.Tests/HubSkillsTests.cs": "b34235e6db87dcdcc6df9afb0bd7327f861d25856880ef16438503e8ac6b6ed6",
+        "tests/Thalovant.Sdk.Tests/ControlPlaneSecurityTests.cs": "d9c778e14a6a513654c6f3207a79158a1202bac1bc205fadf7660514e9f891ca"
+      }
+    },
+    "identity": {
+      "status": "required",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
+      "implementation": {
+        "src/Thalovant.Sdk/Identity.cs": "4963d38f34f7ba561f8d1093fa21b1218012860c75c0181c75cc7aecb093f502",
+        "src/Thalovant.Sdk/Protocols.cs": "2c951c8d24b2600433c069dcb5248c4b6a1cf1089a982e7f2f20720522c6265d"
+      },
+      "tests": {
+        "tests/Thalovant.Sdk.Tests/ModelRoundTripTests.cs": "e95c35c9b6957626925426889a521060185eef9059bc4e5e53f4828b187408c4",
+        "tests/Thalovant.Sdk.Tests/ProtocolSelectionTests.cs": "0aa0aa5cddb07743f9363ea71f88c6ea1c76affb305665ce2d93cfafb7654bd3"
+      }
+    },
+    "listing": {
+      "status": "required",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
+      "implementation": {
+        "src/Thalovant.Sdk/Listing.cs": "a1617d3e3d749abb5472f45101c3eadab8f783c67b4f298a68c7c0591be4dacd",
+        "src/Thalovant.Sdk/Intents.cs": "2ed8eb073a031bf4dce4e94a88d35d4ad0677cd92d948af7e6ddf20ccfe2fd61"
+      },
+      "tests": {
+        "tests/Thalovant.Sdk.Tests/ListingTests.cs": "5b8efc246bf107c961dc5cea1e490e77ec7fa5b24c4583edaea60fafcbdd1635",
+        "tests/Thalovant.Sdk.Tests/Fixtures/question-vectors.json": "046a163f1340976ae5898da153f080dbdd9326a733c97c4acbe7c2302474286e"
+      }
+    },
+    "inventory": {
+      "status": "required",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
+      "implementation": {
+        "src/Thalovant.Sdk/Inventory.cs": "c13e192a06f57202488d2e071707ae30d944dcf06afc60f9963edb81de53666a"
+      },
+      "tests": {
+        "tests/Thalovant.Sdk.Tests/SessionInventoryTests.cs": "2c4a1dbfc8af2dfcb77d764753f8eed177232433f5c8031467965fda5094632e",
+        "tests/Thalovant.Sdk.Tests/Fixtures/inventory-vectors.json": "78c7bf51a748dc9b9f66277dc63d83f9cd75a54a341ca630fb8bc55d0b30bcf5"
+      }
+    },
+    "session": {
+      "status": "required",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
+      "implementation": {
+        "src/Thalovant.Sdk/Session.cs": "45562db56cbc266d5910e2c1a31f0e7186902306d741fd9051899a11ffbc3175"
+      },
+      "tests": {
+        "tests/Thalovant.Sdk.Tests/SessionInventoryTests.cs": "2c4a1dbfc8af2dfcb77d764753f8eed177232433f5c8031467965fda5094632e"
+      }
+    },
+    "cli": {
+      "status": "not-applicable",
+      "reason": "Python command line entry point; consumers expose idiomatic language APIs or MCP tools."
+    }
+  }
+}

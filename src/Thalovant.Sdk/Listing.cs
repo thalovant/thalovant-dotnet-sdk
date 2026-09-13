@@ -70,7 +70,12 @@ namespace Thalovant {
         }
         /// <summary>Recognize questions; RegexMatchTimeoutException reports a rule exceeding 100ms.</summary>
         public bool Asks(string text,string? lang=null) {
-            var tag=Tag(lang);if(tag!=null&&_patterns[tag].Any(p=>p.IsMatch(text)))return true;
+            if (!Available) return false;
+            text=text.Trim();
+            if(text.Length>0 && new[]{0x3f, 0xbf, 0x37e, 0x55e, 0x61f, 0x1367, 0x1945, 0x2047, 0x2049, 0x2753, 0x2754, 0x2a7b, 0x2a7c, 0x2cfa, 0x2cfb, 0x2e2e, 0x2e54, 0xa60f, 0xa6f7, 0xfe16, 0xfe56, 0xff1f, 0x11143, 0x1e95f, 0x1fbc4, 0xe003f}.Contains(ScalarBefore(text,text.Length)))return true;
+            var tag=Tag(lang);
+            var patterns=string.IsNullOrEmpty(lang)?_patterns.Values.SelectMany(p=>p):tag!=null?_patterns[tag]:Enumerable.Empty<Regex>();
+            if(patterns.Any(p=>p.IsMatch(text)))return true;
             var words=Tokens(text).Select(w=>w.Trim(",;:!?.’'\"()".ToCharArray()).ToLowerInvariant()).Where(w=>w.Length>0).ToArray();
             var openers=Words(lang,"question_openers");var anywhere=Words(lang,"question_words_anywhere");
             return words.Length>0&&(openers.Contains(words[0])||words.Any(anywhere.Contains));

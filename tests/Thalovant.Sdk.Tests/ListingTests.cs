@@ -8,6 +8,12 @@ using Xunit;
 
 namespace Thalovant.Sdk.Tests {
     public class ListingTests {
+        [Fact] public void QuestionReference() {
+            foreach(var node in (JsonArray)Fixture("question-vectors.json")["cases"]!) {
+                var row=(JsonObject)node!;
+                Assert.Equal(row["expected"]!.GetValue<bool>(),ListingRules.Default.Asks(row["text"]!.GetValue<string>(),row["lang"]?.GetValue<string>()));
+            }
+        }
         private static JsonObject Fixture(string name)=>(JsonObject)JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory,"Fixtures",name)))!;
         [Fact] public void PublishedPythonListingReferenceCases() {
             foreach(var node in (JsonArray)Fixture("listing-vectors.json")["cases"]!) {

@@ -15,7 +15,7 @@ namespace Thalovant.Sdk.Tests
     [Collection("Runtime deadlines")]
     public sealed class RuntimeTests
     {
-        private sealed class Fake : IHiveMindBus, IHiveMindQueryBus, IHiveMindRuntimeStatus
+        internal sealed class Fake : IHiveMindBus, IHiveMindQueryBus, IHiveMindRuntimeStatus
         {
             private readonly object _lock = new object();
             private readonly Dictionary<Guid, Action<JsonObject>> _bus = new Dictionary<Guid, Action<JsonObject>>();
@@ -56,7 +56,7 @@ namespace Thalovant.Sdk.Tests
                 foreach (var listener in listeners) listener(frame);
             }
         }
-        private static ThalovantClient Client(Fake fake) => new ThalovantClient(ThalovantIdentity.FromJson("""
+        internal static ThalovantClient Client(Fake fake) => new ThalovantClient(ThalovantIdentity.FromJson("""
             {"access_key":"fixture","password":"password","site_id":"fixture","default_master":"wss://hub.example"}
             """), fake, replySettle: TimeSpan.Zero, emptyReplyWait: TimeSpan.Zero);
         private static async Task Until(Func<bool> predicate)

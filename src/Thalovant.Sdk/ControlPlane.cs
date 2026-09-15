@@ -250,7 +250,6 @@ namespace Thalovant
             NativeSignIn.RequireSecureTokenExchange(ApiUrl);
             var body = new JsonObject
             {
-                ["grant_type"] = "authorization_code",
                 ["code"] = code,
                 ["code_verifier"] = verifier,
                 ["client_id"] = clientId,

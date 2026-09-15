@@ -6,7 +6,7 @@
     },
     "control": {
       "implementation": {
-        "src/Thalovant.Sdk/ControlPlane.cs": "572507f8ea0c99945f55eebbdaf1ee7d3dabada97aafa5bf61af04bb0ed8fff8",
+        "src/Thalovant.Sdk/ControlPlane.cs": "e77c09f41d1e057466d4e5e8a6827491ec330c07ed38ff39febd816759e12627",
         "src/Thalovant.Sdk/HubSkills.cs": "500577bd675f2c7c7a1bb111400d9253363037fa9d532ba4702ed43823b2e51d",
         "src/Thalovant.Sdk/Hubs.cs": "cdf29ca7c2e9be4bf9c25fcc7532cd878c79bab56d3976f107d3f77b05813cb6",
         "src/Thalovant.Sdk/NativeSignIn.cs": "63d49216335cfe1ff2170e6719b72a948c858b2aacc5b01d9884cc3829e16954"
@@ -90,7 +90,8 @@
     "8b71292c815a4b7219be7b1a7a5d01e9500faaa23e7c97c6a48683fc0411e1d0",
     "e1a17c218e70eb278e4a06161314076269c6d7f3fd24afc522711e1eedb2c2e8",
     "c1b37fdf37eba918c14fcbd234d02a4c80ffd6a72a55c3db5566cd8ed59e7a5b",
-    "c18d57ee45159a53773222e64586c9d36769ebc55475d1a283dc483296bb9107"
+    "c18d57ee45159a53773222e64586c9d36769ebc55475d1a283dc483296bb9107",
+    "d02b21380724ae606673f1b7e74b57f7962c2dea1b0640fe642856c2f2be97e2"
   ],
   "schema_version": 1
 }

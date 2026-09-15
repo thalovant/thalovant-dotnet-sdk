@@ -234,6 +234,15 @@ namespace Thalovant
             {
                 throw new ThalovantApiException("dashboardUrl must not carry credentials.");
             }
+            // A query or a fragment breaks the address this builds:
+            // "<dash>#x" becomes "<dash>#x/authorize?client_id=..." and every
+            // parameter lands in the fragment, which a browser never sends. A
+            // query mangles the path the same way.
+            if (!string.IsNullOrEmpty(parsed.Query) || !string.IsNullOrEmpty(parsed.Fragment))
+            {
+                throw new ThalovantApiException(
+                    "dashboardUrl must not carry a query or a fragment.");
+            }
             if (string.Equals(parsed.Scheme, "https", StringComparison.OrdinalIgnoreCase)) return;
             if (string.Equals(parsed.Scheme, "http", StringComparison.OrdinalIgnoreCase)
                 && IsLoopback(parsed.Host)) return;

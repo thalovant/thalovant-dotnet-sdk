@@ -170,6 +170,9 @@ namespace Thalovant.Sdk.Tests
         [InlineData("http://dash.example.test")]
         [InlineData("https://evil.test@dash.thalovant.com")]
         [InlineData("ftp://dash.thalovant.com")]
+        // A fragment puts every parameter somewhere a browser never sends.
+        [InlineData("https://dash.example.test#section")]
+        [InlineData("https://dash.example.test?next=/x")]
         public void ADashboardThatIsNotSafeIsRefused(string dashboard)
         {
             Assert.Throws<ThalovantApiException>(

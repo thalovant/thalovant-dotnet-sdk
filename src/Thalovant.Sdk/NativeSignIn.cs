@@ -116,6 +116,10 @@ namespace Thalovant
         {
             if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed)) return false;
             if (!string.Equals(parsed.Scheme, "https", StringComparison.OrdinalIgnoreCase)) return false;
+            // Reject embedded credentials: https://evil.test@dash.thalovant.com/
+            // has a host that passes, and a URL somebody is about to be sent to
+            // should not read as one host and resolve to another.
+            if (!string.IsNullOrEmpty(parsed.UserInfo)) return false;
             var host = parsed.Host.ToLowerInvariant();
             return host == "thalovant.com" || host.EndsWith(".thalovant.com", StringComparison.Ordinal);
         }

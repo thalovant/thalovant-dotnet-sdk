@@ -9,7 +9,7 @@
         "src/Thalovant.Sdk/ControlPlane.cs": "572507f8ea0c99945f55eebbdaf1ee7d3dabada97aafa5bf61af04bb0ed8fff8",
         "src/Thalovant.Sdk/HubSkills.cs": "500577bd675f2c7c7a1bb111400d9253363037fa9d532ba4702ed43823b2e51d",
         "src/Thalovant.Sdk/Hubs.cs": "cdf29ca7c2e9be4bf9c25fcc7532cd878c79bab56d3976f107d3f77b05813cb6",
-        "src/Thalovant.Sdk/NativeSignIn.cs": "f08e98e48d7a22d1d8bdca2cf0ab716ee921443d7a9d8933b458249b0b6acf52"
+        "src/Thalovant.Sdk/NativeSignIn.cs": "63d49216335cfe1ff2170e6719b72a948c858b2aacc5b01d9884cc3829e16954"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. The authorization-code grant with PKCE is covered here alongside the device grant: the challenge is checked to be S256 of the verifier, the verifier never to reach the browser, a redirect answering a different attempt or carrying error= to be refused, and the token exchange to refuse cleartext to a non-loopback host.",
       "status": "required",
@@ -17,7 +17,7 @@
         "tests/Thalovant.Sdk.Tests/ControlPlaneSecurityTests.cs": "d9c778e14a6a513654c6f3207a79158a1202bac1bc205fadf7660514e9f891ca",
         "tests/Thalovant.Sdk.Tests/HubSkillsTests.cs": "b34235e6db87dcdcc6df9afb0bd7327f861d25856880ef16438503e8ac6b6ed6",
         "tests/Thalovant.Sdk.Tests/HubsTests.cs": "591305b6772773de6d3ed7ab15e829a5c1fda887e12305f7e94ff2b92a4baff0",
-        "tests/Thalovant.Sdk.Tests/NativeSignInTests.cs": "6bc16220732d8c8275ff3336c13623360a8f849c90a3487efc1191757bdb64fd"
+        "tests/Thalovant.Sdk.Tests/NativeSignInTests.cs": "d020adfd275462a390cb6093dbe578ce0057e64a57cee46b4498b0e106d08687"
       }
     },
     "identity": {
@@ -89,7 +89,8 @@
     "676e935e66330f8614d6c23cccddd48e1c4577c3af761775f18e1ea0128b8007",
     "8b71292c815a4b7219be7b1a7a5d01e9500faaa23e7c97c6a48683fc0411e1d0",
     "e1a17c218e70eb278e4a06161314076269c6d7f3fd24afc522711e1eedb2c2e8",
-    "c1b37fdf37eba918c14fcbd234d02a4c80ffd6a72a55c3db5566cd8ed59e7a5b"
+    "c1b37fdf37eba918c14fcbd234d02a4c80ffd6a72a55c3db5566cd8ed59e7a5b",
+    "c18d57ee45159a53773222e64586c9d36769ebc55475d1a283dc483296bb9107"
   ],
   "schema_version": 1
 }

@@ -128,6 +128,8 @@ namespace Thalovant.Sdk.Tests
             Assert.False(NativeSignIn.IsThalovantUrl("http://dash.thalovant.com"));
             // The one that matters: a lookalike host ending in the same letters.
             Assert.False(NativeSignIn.IsThalovantUrl("https://dash.thalovant.com.evil.test"));
+            // A host that passes, reached through credentials reading as another.
+            Assert.False(NativeSignIn.IsThalovantUrl("https://evil.test@dash.thalovant.com"));
             Assert.False(NativeSignIn.IsThalovantUrl("https://notthalovant.com"));
             Assert.False(NativeSignIn.IsThalovantUrl("nonsense"));
         }

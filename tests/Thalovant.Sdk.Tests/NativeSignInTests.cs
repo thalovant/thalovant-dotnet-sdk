@@ -131,5 +131,27 @@ namespace Thalovant.Sdk.Tests
             Assert.False(NativeSignIn.IsThalovantUrl("https://notthalovant.com"));
             Assert.False(NativeSignIn.IsThalovantUrl("nonsense"));
         }
+        [Fact]
+        public void ARefusalThatAlsoCarriesACodeIsStillARefusal()
+        {
+            // CodeRabbit caught this: checking only for a missing code accepted
+            // error=access_denied&code=... and would have started an exchange
+            // on a code the authorization server had just declined to issue.
+            var begun = NativeSignIn.Begin("app", "app://auth");
+            Assert.Null(begun.CodeFrom($"app://auth?error=access_denied&code=abc&state={begun.State}"));
+            Assert.Null(begun.CodeFrom($"app://auth?code=abc&error=server_error&state={begun.State}"));
+        }
+
+        [Fact]
+        public void TheTokenExchangeRefusesCleartextAndAllowsLoopback()
+        {
+            Assert.Throws<ThalovantApiException>(
+                () => NativeSignIn.RequireSecureTokenExchange("http://control.example.test"));
+            // Loopback has no cleartext to observe, and is how the API is run locally.
+            foreach (var allowed in new[] { "http://localhost:8080", "http://127.0.0.1:8080", "https://api.thalovant.com" })
+            {
+                NativeSignIn.RequireSecureTokenExchange(allowed);
+            }
+        }
     }
 }

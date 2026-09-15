@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json.Nodes;
 
-namespace Thalovant.Sdk
+namespace Thalovant
 {
     /// <summary>
     /// What to call a hub on a screen somebody is reading.

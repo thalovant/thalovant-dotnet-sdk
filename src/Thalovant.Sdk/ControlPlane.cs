@@ -233,7 +233,7 @@ namespace Thalovant
         /// Exchange an authorization code for a scoped access token and store it.
         /// </summary>
         /// <remarks>
-        /// The other half of <c>NativeSignIn.Begin</c>. The verifier is
+        /// The other half of <see cref="NativeSignIn.Begin"/>. The verifier is
         /// sent here and nowhere else; it never entered the browser, which is
         /// what makes an intercepted code useless to whoever intercepted it.
         /// A code presented twice revokes the token the first exchange minted
@@ -247,6 +247,7 @@ namespace Thalovant
             string redirectUri,
             CancellationToken cancellationToken = default)
         {
+            NativeSignIn.RequireSecureTokenExchange(ApiUrl);
             var body = new JsonObject
             {
                 ["grant_type"] = "authorization_code",

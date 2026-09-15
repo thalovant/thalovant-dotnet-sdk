@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Security.Cryptography;
 using System.Text;
 
-namespace Thalovant.Sdk
+namespace Thalovant
 {
     /// <summary>
     /// The authorization-code grant with PKCE (RFC 7636), for a client that can
@@ -126,7 +126,8 @@ namespace Thalovant.Sdk
         /// </summary>
         /// <remarks>
         /// <c>null</c> rather than an exception on a state mismatch, a missing
-        /// code, or an <c>error=</c> response: all three mean "do not
+        /// code, or an <c>error=</c> response -- including one that also
+        /// carries a code: all of those mean "do not
         /// continue", and a caller that handles them alike cannot accidentally
         /// treat one of them as success.
         /// </remarks>
@@ -137,6 +138,7 @@ namespace Thalovant.Sdk
             if (mark < 0 || mark == redirect.Length - 1) return null;
             string? state = null;
             string? code = null;
+            var refused = false;
             foreach (var pair in redirect.Substring(mark + 1).Split('&'))
             {
                 var split = pair.IndexOf('=');
@@ -145,9 +147,42 @@ namespace Thalovant.Sdk
                 var value = Uri.UnescapeDataString(pair.Substring(split + 1));
                 if (name == "state") state = value;
                 else if (name == "code") code = value;
+                // A refusal that also carries a code is still a refusal.
+                // Checking only for a missing code accepted that pair and
+                // would have started an exchange on a code the server had just
+                // declined to issue.
+                else if (name == "error") refused = true;
             }
-            if (state != State) return null;
+            if (refused || state != State) return null;
             return string.IsNullOrEmpty(code) ? null : code;
+        }
+
+        /// <summary>
+        /// Refuse to put an authorization code and its PKCE verifier on the
+        /// wire in cleartext.
+        /// </summary>
+        /// <remarks>
+        /// The control-plane URL accepts an <c>http</c> scheme -- a self-hosted
+        /// or local deployment may legitimately be served that way -- and the
+        /// request path hands whatever it is given to HttpClient without
+        /// looking. Every other call that would leak over http leaks a bearer
+        /// token the caller already holds; this one leaks the two secrets that
+        /// are about to become one, and a code is exchangeable by whoever sees
+        /// it first. Loopback is allowed: a request that never leaves the
+        /// machine has no cleartext to observe.
+        /// </remarks>
+        public static void RequireSecureTokenExchange(string apiUrl)
+        {
+            if (!Uri.TryCreate(apiUrl, UriKind.Absolute, out var parsed))
+            {
+                throw new ThalovantApiException($"Thalovant API URL could not be read: {apiUrl}");
+            }
+            if (string.Equals(parsed.Scheme, "https", StringComparison.OrdinalIgnoreCase)) return;
+            var host = parsed.Host.ToLowerInvariant();
+            if (host == "localhost" || host == "127.0.0.1" || host == "::1") return;
+            throw new ThalovantApiException(
+                $"Refusing to send an authorization code and PKCE verifier in cleartext to {host}. " +
+                "Use https, or a loopback address while developing.");
         }
 
         private static string RandomUrlSafe(int byteCount)

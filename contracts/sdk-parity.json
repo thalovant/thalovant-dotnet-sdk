@@ -6,10 +6,10 @@
     },
     "control": {
       "implementation": {
-        "src/Thalovant.Sdk/ControlPlane.cs": "e77c09f41d1e057466d4e5e8a6827491ec330c07ed38ff39febd816759e12627",
+        "src/Thalovant.Sdk/ControlPlane.cs": "2b217d298e9ce93da77bdcc1c568db667d7bcdcf2db278cb6ca038486bce10b2",
         "src/Thalovant.Sdk/HubSkills.cs": "500577bd675f2c7c7a1bb111400d9253363037fa9d532ba4702ed43823b2e51d",
         "src/Thalovant.Sdk/Hubs.cs": "cdf29ca7c2e9be4bf9c25fcc7532cd878c79bab56d3976f107d3f77b05813cb6",
-        "src/Thalovant.Sdk/NativeSignIn.cs": "63d49216335cfe1ff2170e6719b72a948c858b2aacc5b01d9884cc3829e16954"
+        "src/Thalovant.Sdk/NativeSignIn.cs": "914aa6422bd7812f42a086dc369683b4add73591024105663f5d2394ff26c001"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. The authorization-code grant with PKCE is covered here alongside the device grant: the challenge is checked to be S256 of the verifier, the verifier never to reach the browser, a redirect answering a different attempt or carrying error= to be refused, and the token exchange to refuse cleartext to a non-loopback host.",
       "status": "required",
@@ -17,7 +17,7 @@
         "tests/Thalovant.Sdk.Tests/ControlPlaneSecurityTests.cs": "d9c778e14a6a513654c6f3207a79158a1202bac1bc205fadf7660514e9f891ca",
         "tests/Thalovant.Sdk.Tests/HubSkillsTests.cs": "b34235e6db87dcdcc6df9afb0bd7327f861d25856880ef16438503e8ac6b6ed6",
         "tests/Thalovant.Sdk.Tests/HubsTests.cs": "591305b6772773de6d3ed7ab15e829a5c1fda887e12305f7e94ff2b92a4baff0",
-        "tests/Thalovant.Sdk.Tests/NativeSignInTests.cs": "d020adfd275462a390cb6093dbe578ce0057e64a57cee46b4498b0e106d08687"
+        "tests/Thalovant.Sdk.Tests/NativeSignInTests.cs": "5f36b84a55b4014e77ccdb7d7f4d4e6bda3c2a63be79af27b41cc469b7aae06a"
       }
     },
     "identity": {
@@ -91,7 +91,8 @@
     "e1a17c218e70eb278e4a06161314076269c6d7f3fd24afc522711e1eedb2c2e8",
     "c1b37fdf37eba918c14fcbd234d02a4c80ffd6a72a55c3db5566cd8ed59e7a5b",
     "c18d57ee45159a53773222e64586c9d36769ebc55475d1a283dc483296bb9107",
-    "d02b21380724ae606673f1b7e74b57f7962c2dea1b0640fe642856c2f2be97e2"
+    "d02b21380724ae606673f1b7e74b57f7962c2dea1b0640fe642856c2f2be97e2",
+    "8c8c6d952c7d86633eb65eee20415f06ee114389b3cd5efc138e59a858ffdbab"
   ],
   "schema_version": 1
 }

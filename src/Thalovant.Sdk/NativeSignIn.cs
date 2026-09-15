@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -31,14 +32,18 @@ namespace Thalovant
         public const string DefaultDashboardUrl = "https://dash.thalovant.com";
 
         /// <summary>The three a phone needs; also the three a free plan may mint.</summary>
+        // ReadOnlyCollection, not an array behind an interface: a caller who
+        // casts the interface back to string[] can otherwise rewrite the
+        // defaults for every other caller in the process.
         public static readonly IReadOnlyList<string> DefaultScopes =
-            new[] { "hubs:read", "clients:read", "clients:write" };
+            new ReadOnlyCollection<string>(new[] { "hubs:read", "clients:read", "clients:write" });
 
-        private NativeSignIn(string authorizationUrl, string state, string verifier)
+        private NativeSignIn(string authorizationUrl, string state, string verifier, string redirectUri)
         {
             AuthorizationUrl = authorizationUrl;
             State = state;
             Verifier = verifier;
+            RedirectUri = redirectUri;
         }
 
         /// <summary>Open this in a browser.</summary>
@@ -49,6 +54,12 @@ namespace Thalovant
 
         /// <summary>Never send this to the browser. Exchanged with the code, once.</summary>
         public string Verifier { get; }
+
+        /// <summary>
+        /// What this attempt asked the callback to arrive at. One that lands
+        /// anywhere else is not this attempt's, however good its state looks.
+        /// </summary>
+        public string RedirectUri { get; }
 
         /// <summary>
         /// Start a sign-in. Returns the URL to open and the secrets to keep.
@@ -74,6 +85,7 @@ namespace Thalovant
                 throw new ArgumentException("redirectUri is required to start a sign-in.", nameof(redirectUri));
             }
 
+            RequireSafeDashboard(dashboardUrl);
             var verifier = NewVerifier();
             var state = RandomUrlSafe(24);
             var requested = scopes is null ? DefaultScopes : new List<string>(scopes);
@@ -94,7 +106,7 @@ namespace Thalovant
             Add("state", state);
 
             var dashboard = dashboardUrl.TrimEnd('/');
-            return new NativeSignIn($"{dashboard}/authorize?{query}", state, verifier);
+            return new NativeSignIn($"{dashboard}/authorize?{query}", state, verifier, redirectUri.Trim());
         }
 
         /// <summary>A PKCE verifier: 64 random bytes, base64url, no padding.</summary>
@@ -158,6 +170,10 @@ namespace Thalovant
                 else if (name == "error") refused = true;
             }
             if (refused || state != State) return null;
+            // The callback has to arrive where this attempt asked it to. State
+            // proves the answer belongs to this request; the address proves it
+            // came back to the app that made it.
+            if (!SameTarget(redirect, RedirectUri)) return null;
             return string.IsNullOrEmpty(code) ? null : code;
         }
 
@@ -182,11 +198,54 @@ namespace Thalovant
                 throw new ThalovantApiException($"Thalovant API URL could not be read: {apiUrl}");
             }
             if (string.Equals(parsed.Scheme, "https", StringComparison.OrdinalIgnoreCase)) return;
-            var host = parsed.Host.ToLowerInvariant();
-            if (host == "localhost" || host == "127.0.0.1" || host == "::1") return;
+            if (IsLoopback(parsed.Host)) return;
             throw new ThalovantApiException(
-                $"Refusing to send an authorization code and PKCE verifier in cleartext to {host}. " +
+                $"Refusing to send an authorization code and PKCE verifier in cleartext to {parsed.Host}. " +
                 "Use https, or a loopback address while developing.");
+        }
+
+        private static bool SameTarget(string got, string expected)
+        {
+            if (!Uri.TryCreate(got, UriKind.Absolute, out var a)) return false;
+            if (!Uri.TryCreate(expected, UriKind.Absolute, out var b)) return false;
+            return string.Equals(a.Scheme, b.Scheme, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(a.Host, b.Host, StringComparison.OrdinalIgnoreCase)
+                && a.AbsolutePath.TrimEnd('/') == b.AbsolutePath.TrimEnd('/');
+        }
+
+        /// <summary>
+        /// Refuse to hand the authorization request to a dashboard that cannot
+        /// be trusted with it.
+        /// </summary>
+        /// <remarks>
+        /// The request carries the challenge, the scopes and the state. A
+        /// caller may point this at their own dashboard -- a self-hosted
+        /// control plane is a real thing -- but not at a cleartext one, and not
+        /// at one whose address reads as a different host than it resolves to.
+        /// Loopback is allowed: it never leaves the machine.
+        /// </remarks>
+        public static void RequireSafeDashboard(string dashboardUrl)
+        {
+            if (!Uri.TryCreate(dashboardUrl, UriKind.Absolute, out var parsed))
+            {
+                throw new ThalovantApiException($"dashboardUrl is not a URL: {dashboardUrl}");
+            }
+            if (!string.IsNullOrEmpty(parsed.UserInfo))
+            {
+                throw new ThalovantApiException("dashboardUrl must not carry credentials.");
+            }
+            if (string.Equals(parsed.Scheme, "https", StringComparison.OrdinalIgnoreCase)) return;
+            if (string.Equals(parsed.Scheme, "http", StringComparison.OrdinalIgnoreCase)
+                && IsLoopback(parsed.Host)) return;
+            throw new ThalovantApiException(
+                $"dashboardUrl must be https (or a loopback address while developing), not {dashboardUrl}");
+        }
+
+        /// <summary>Loopback, in both spellings a URI parser hands back for IPv6.</summary>
+        internal static bool IsLoopback(string host)
+        {
+            var value = host.ToLowerInvariant();
+            return value == "localhost" || value == "127.0.0.1" || value == "::1" || value == "[::1]";
         }
 
         private static string RandomUrlSafe(int byteCount)

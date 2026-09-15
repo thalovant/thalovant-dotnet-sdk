@@ -252,8 +252,11 @@ namespace Thalovant
             {
                 ["code"] = code,
                 ["code_verifier"] = verifier,
-                ["client_id"] = clientId,
-                ["redirect_uri"] = redirectUri,
+                // Trimmed the way NativeSignIn.Begin trims them, so a caller
+                // passing the same strings to both does not get a redirect_uri
+                // mismatch the API cannot explain.
+                ["client_id"] = clientId?.Trim(),
+                ["redirect_uri"] = redirectUri?.Trim(),
             };
             var token = await RequestObjectAsync("POST", "/v1/auth/native/token", body, auth: false, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);

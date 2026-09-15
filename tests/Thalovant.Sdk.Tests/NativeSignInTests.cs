@@ -155,5 +155,41 @@ namespace Thalovant.Sdk.Tests
                 NativeSignIn.RequireSecureTokenExchange(allowed);
             }
         }
+        [Fact]
+        public void ACallbackArrivingSomewhereElseIsRefused()
+        {
+            // CodeRabbit: state proves the answer belongs to this request; it
+            // does not prove it came back to the app that made it.
+            var begun = NativeSignIn.Begin("app", "app://auth");
+            Assert.Equal("abc", begun.CodeFrom($"app://auth?code=abc&state={begun.State}"));
+            Assert.Null(begun.CodeFrom($"app://elsewhere?code=abc&state={begun.State}"));
+            Assert.Null(begun.CodeFrom($"https://evil.test/auth?code=abc&state={begun.State}"));
+        }
+
+        [Theory]
+        [InlineData("http://dash.example.test")]
+        [InlineData("https://evil.test@dash.thalovant.com")]
+        [InlineData("ftp://dash.thalovant.com")]
+        public void ADashboardThatIsNotSafeIsRefused(string dashboard)
+        {
+            Assert.Throws<ThalovantApiException>(
+                () => NativeSignIn.Begin("app", "app://auth", null, dashboard));
+        }
+
+        [Theory]
+        [InlineData("https://dash.example.test")]
+        [InlineData("http://localhost:9000")]
+        [InlineData("http://[::1]:9000")]
+        public void ASelfHostedOrLoopbackDashboardIsAllowed(string dashboard)
+        {
+            var begun = NativeSignIn.Begin("app", "app://auth", null, dashboard);
+            Assert.StartsWith(dashboard, begun.AuthorizationUrl);
+        }
+
+        [Fact]
+        public void TheDefaultScopesCannotBeRewrittenByACaller()
+        {
+            Assert.IsNotType<string[]>(NativeSignIn.DefaultScopes);
+        }
     }
 }

@@ -230,6 +230,46 @@ namespace Thalovant
         // -- Auth ------------------------------------------------------------
 
         /// <summary>
+        /// Exchange an authorization code for a scoped access token and store it.
+        /// </summary>
+        /// <remarks>
+        /// The other half of <see cref="NativeSignIn.Begin"/>. The verifier is
+        /// sent here and nowhere else; it never entered the browser, which is
+        /// what makes an intercepted code useless to whoever intercepted it.
+        /// A code presented twice revokes the token the first exchange minted
+        /// (RFC 9700), so retrying a failed exchange with the same code
+        /// destroys the token it is trying to obtain.
+        /// </remarks>
+        public async Task<JsonObject> CompleteNativeSignInAsync(
+            string code,
+            string verifier,
+            string clientId,
+            string redirectUri,
+            CancellationToken cancellationToken = default)
+        {
+            NativeSignIn.RequireSecureTokenExchange(ApiUrl);
+            var body = new JsonObject
+            {
+                ["code"] = code,
+                ["code_verifier"] = verifier,
+                // Trimmed the way NativeSignIn.Begin trims them, so a caller
+                // passing the same strings to both does not get a redirect_uri
+                // mismatch the API cannot explain.
+                ["client_id"] = clientId?.Trim(),
+                ["redirect_uri"] = redirectUri?.Trim(),
+            };
+            var token = await RequestObjectAsync("POST", "/v1/auth/native/token", body, auth: false, cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+            var accessToken = JsonUtil.GetString(token["access_token"]);
+            if (string.IsNullOrEmpty(accessToken))
+            {
+                throw new ThalovantApiException("Thalovant API token response did not include access_token.");
+            }
+            AccessToken = accessToken;
+            return token;
+        }
+
+        /// <summary>
         /// <c>POST /v1/auth/token</c>. <paramref name="otpCode"/>/<paramref name="recoveryCode"/>
         /// are sent as <c>otp_code</c>/<c>recovery_code</c> only when provided; MFA-enabled
         /// accounts receive HTTP 401 with code <c>mfa_required</c> without one (surfaced

@@ -54,6 +54,60 @@ namespace Thalovant
         private readonly IHiveMindBus _bus;
         private readonly TimeSpan _replySettle;
         private readonly TimeSpan _emptyReplyWait;
+
+        /// <summary>The conversation each session id is in the middle of.</summary>
+        /// <remarks>
+        /// A hub keeps nothing for a named session, so what the last turn activated
+        /// comes back on ovos.utterance.handled and has to be sent again with the next
+        /// utterance or it is gone. Bounded, because a long-lived client handed a fresh
+        /// session id per turn must not accumulate one entry per turn for ever; a
+        /// satellite runs one session for its whole life.
+        /// </remarks>
+        private readonly Dictionary<string, JsonObject> _conversations = new Dictionary<string, JsonObject>();
+        private const int MaxRememberedConversations = 32;
+
+        /// <summary>Keep the session a hub returned, to send with the next utterance.</summary>
+        private void RememberConversation(string sessionId, JsonObject? session)
+        {
+            var kept = new JsonObject();
+            foreach (var field in ThalovantContext.ConversationSessionFields)
+            {
+                if (session is not null
+                    && session.TryGetPropertyValue(field, out var value)
+                    && value is not null
+                    && !(value is JsonArray emptyArray && emptyArray.Count == 0)
+                    && !(value is JsonObject emptyObject && emptyObject.Count == 0))
+                {
+                    kept[field] = value.DeepClone();
+                }
+            }
+            lock (_lock)
+            {
+                // Forgetting is the state, not the absence of one: a turn that ended
+                // with nothing active must not leave the old entry to resurrect it.
+                _conversations.Remove(sessionId);
+                if (kept.Count == 0) return;
+                if (_conversations.Count >= MaxRememberedConversations)
+                {
+                    foreach (var oldest in _conversations.Keys) { _conversations.Remove(oldest); break; }
+                }
+                _conversations[sessionId] = kept;
+            }
+        }
+
+        /// <summary>Put the last turn's conversation state back into this turn.</summary>
+        private JsonObject ContinueConversation(JsonObject context, string sessionId)
+        {
+            JsonObject? previous;
+            lock (_lock)
+            {
+                if (!_conversations.TryGetValue(sessionId, out previous)) return context;
+            }
+            var session = context["session"] as JsonObject ?? new JsonObject();
+            var next = (JsonObject)context.DeepClone();
+            next["session"] = ThalovantContext.CarryConversation(previous, session);
+            return next;
+        }
         private readonly object _lock = new object();
         private bool _connected;
         private readonly HashSet<string> _activeAskIds = new HashSet<string>(StringComparer.Ordinal);
@@ -280,7 +334,7 @@ namespace Thalovant
             using var correlation = ReserveRuntimeId(effectiveRequestId, query: false);
             var effectiveSessionId = sessionId ?? ThalovantContext.NewSessionId();
             var correlatedContext = ThalovantContext.WithCorrelation(
-                ContextWithIdentityMetadata(context ?? new JsonObject()),
+                ContinueConversation(ContextWithIdentityMetadata(context ?? new JsonObject()), effectiveSessionId),
                 effectiveSessionId,
                 Identity.SiteId,
                 lang,
@@ -346,6 +400,15 @@ namespace Thalovant
                 {
                     var message = failure.Text.Length == 0 ? $"Hub reported {failure.Name}." : failure.Text;
                     throw new ThalovantRuntimeException(message);
+                }
+                // The end of the turn is the one place a hub states what the
+                // conversation now is, and it keeps none of it for a named session.
+                foreach (var collected in final.Events)
+                {
+                    if (collected.Name == ThalovantEvents.UtteranceHandled)
+                    {
+                        RememberConversation(effectiveSessionId, collected.Context?["session"] as JsonObject);
+                    }
                 }
                 var replyText = string.Join(" ", final.Fragments);
                 return new ThalovantReply(

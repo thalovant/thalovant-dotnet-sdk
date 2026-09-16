@@ -344,6 +344,79 @@ namespace Thalovant
         /// structure produced by the sibling SDKs (<c>request_id</c>,
         /// <c>thalovant_request_id</c>, and a <c>session</c> block).
         /// </summary>
+        /// <summary>
+        /// The hive's own frame kinds, which a client may subscribe to.
+        /// </summary>
+        /// <remarks>
+        /// <c>query</c> and <c>cascade</c> are deliberately absent: they are this
+        /// client's own request/response traffic and AskAsync already owns them, so
+        /// subscribing to one would quietly compete for the same replies.
+        /// </remarks>
+        public static readonly string[] HiveKinds =
+            { "broadcast", "propagate", "escalate", "intercom", "rendezvous" };
+
+        /// <summary>
+        /// Session fields a client carries from one turn of a conversation to the next.
+        /// </summary>
+        /// <remarks>
+        /// A hub keeps nothing for a named session: OVOS-SESSION-2 §2.2 makes the
+        /// orchestrator stateless for those, so the carrier a client sends is the whole
+        /// snapshot and whatever the last turn activated is discarded the moment it
+        /// ends. Without converse_handlers the converse pipeline has no skill to poll
+        /// and every follow-up reaches the fallback instead of the skill that just
+        /// answered.
+        /// <para>
+        /// An allow-list, not a deny-list. Deliberately absent: the caller's own
+        /// per-turn settings (lang, pipeline, site_id), because a client that decides
+        /// the language per utterance would otherwise be pinned to whichever one the
+        /// conversation opened in; and the live device flags, which describe a moment
+        /// that has passed by the time the next turn is sent.
+        /// </para>
+        /// </remarks>
+        public static readonly string[] ConversationSessionFields =
+        {
+            "converse_handlers",
+            "active_handlers",
+            "active_skills",
+            "context",
+            "utterance_states",
+            "response_mode",
+        };
+
+        private static bool IsCarried(JsonNode? value) => value switch
+        {
+            null => false,
+            JsonArray array => array.Count > 0,
+            JsonObject json => json.Count > 0,
+            _ => true,
+        };
+
+        /// <summary>
+        /// Fill the conversation fields of <paramref name="session"/> from the hub's
+        /// last reply. This turn's own values win: a field the caller set is never
+        /// overwritten, only one it left out is taken from the turn before.
+        /// </summary>
+        public static JsonObject CarryConversation(JsonObject? previous, JsonObject session)
+        {
+            var carried = (JsonObject)session.DeepClone();
+            if (previous is null)
+            {
+                return carried;
+            }
+            foreach (var field in ConversationSessionFields)
+            {
+                if (carried.ContainsKey(field))
+                {
+                    continue;
+                }
+                if (previous.TryGetPropertyValue(field, out var value) && IsCarried(value))
+                {
+                    carried[field] = value!.DeepClone();
+                }
+            }
+            return carried;
+        }
+
         public static JsonObject WithCorrelation(
             JsonObject? context,
             string? sessionId = null,

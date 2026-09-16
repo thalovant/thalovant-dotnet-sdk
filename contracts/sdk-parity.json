@@ -1,5 +1,11 @@
 {
   "capabilities": {
+    "binary": {
+      "implementation": {},
+      "reason": "No WIRE-1 codec here, and nothing surfaces a BINARY frame's payload type or bytes. No hub emits one today: hivemind-core listen never wires the audio protocol.",
+      "status": "planned",
+      "tests": {}
+    },
     "cli": {
       "reason": "Python command line entry point; consumers expose idiomatic language APIs or MCP tools.",
       "status": "not-applicable"
@@ -18,6 +24,17 @@
         "tests/Thalovant.Sdk.Tests/HubSkillsTests.cs": "b34235e6db87dcdcc6df9afb0bd7327f861d25856880ef16438503e8ac6b6ed6",
         "tests/Thalovant.Sdk.Tests/HubsTests.cs": "591305b6772773de6d3ed7ab15e829a5c1fda887e12305f7e94ff2b92a4baff0",
         "tests/Thalovant.Sdk.Tests/NativeSignInTests.cs": "a08736ab5af19d41d0daf8d9a2b4c68b4f39467e2adf9158dc810dde45ea7eae"
+      }
+    },
+    "conversation": {
+      "implementation": {
+        "src/Thalovant.Sdk/Client.cs": "3b11c32cb448d960aced30ab12b049caa11b45d104b534327f3bb4c4c0f0a739",
+        "src/Thalovant.Sdk/Events.cs": "c1b8bf085ca3b2ceb330a8d7bcf0e3781da0d80fbf4c72a59f20c5b2aa279ecd"
+      },
+      "reason": "CarryConversation and the client's per-session memory, run against the shared conversation vectors on net8.0 and net9.0.",
+      "status": "required",
+      "tests": {
+        "tests/Thalovant.Sdk.Tests/ConversationCarryTests.cs": "d4cff9ca998343792cb6cecd1247f5d291cac31d36795a43d4e4a0ee081274be"
       }
     },
     "identity": {
@@ -55,9 +72,15 @@
         "tests/Thalovant.Sdk.Tests/ListingTests.cs": "5b8efc246bf107c961dc5cea1e490e77ec7fa5b24c4583edaea60fafcbdd1635"
       }
     },
+    "mesh": {
+      "implementation": {},
+      "reason": "HiveKinds is declared and checked against the shared mesh vectors, but IHiveMindBus surfaces only bus events: a relayed frame has nowhere to go, and sending needs a hive-frame method on the bus first.",
+      "status": "planned",
+      "tests": {}
+    },
     "runtime": {
       "implementation": {
-        "src/Thalovant.Sdk/Events.cs": "c280f264abdd93f91fd2009f4337ada1b9bcf758e2f6a1348b1325380b08b32f",
+        "src/Thalovant.Sdk/Events.cs": "c1b8bf085ca3b2ceb330a8d7bcf0e3781da0d80fbf4c72a59f20c5b2aa279ecd",
         "src/Thalovant.Sdk/Runtime.cs": "037c680410a2839321bf29e5ee1d318be87989cac0aeb2fb9a80b7faaca40fff",
         "src/Thalovant.Sdk/Transport.cs": "4a99de736d5bb25fb2a0cfee1b2a0d8e033017a2947d21fe1c281eeaf11d3d63"
       },
@@ -100,7 +123,8 @@
     "8669034d6987af946303913780cce419efaff2a9181de7d46fbffe7092d7be9e",
     "c0d883e69ee7fa301c6e4c1b1a5c433ed290d63f79a3e6b397fdb0a988d111fa",
     "49bab2a8922b69b5cd886e7acadf217cdaa78bd94bfb48374e2f4b1cde85dfc0",
-    "003cdf02562e53bd24cc58ac8eb44411cc7ac42d06ba3bbfa46e82386ea92ef7"
+    "003cdf02562e53bd24cc58ac8eb44411cc7ac42d06ba3bbfa46e82386ea92ef7",
+    "9af92bcafd77385cd7c9cfede859eeb3586f65d0b24c9dbff36352089e94821c"
   ],
   "schema_version": 1
 }

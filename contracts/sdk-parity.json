@@ -10,7 +10,7 @@
       "reason": "HiveWire.DecodeBinaryFrame reads WIRE-1: four bits of payload type, then the clip itself, never parsed or inflated. The Noise framing marks each frame JSON or not and a binary one was refused outright, so every such frame was unreachable; OnBinary delivers it now. Run against the shared binary vectors and against binary-frames.json, which is hivemind-bus-client's own encoder output rather than frames this SDK built for itself.",
       "status": "required",
       "tests": {
-        "tests/Thalovant.Sdk.Tests/BinaryFrameTests.cs": "7f9dcc41e7e63ef49e5ed7911b147d0fecddc6c5a6ec660271d15f1b7a90eb7b"
+        "tests/Thalovant.Sdk.Tests/BinaryFrameTests.cs": "640901bd992d26a378f0134104fc83f852035f4ad587fba195edd2c87310d51c"
       },
       "vectors": {
         "binary-frames.json": "tests/Thalovant.Sdk.Tests/Fixtures/binary-frames.json",
@@ -45,7 +45,7 @@
       "reason": "CarryConversation and the client's per-session memory, run against the shared conversation vectors on net8.0 and net9.0.",
       "status": "required",
       "tests": {
-        "tests/Thalovant.Sdk.Tests/ConversationCarryTests.cs": "d4cff9ca998343792cb6cecd1247f5d291cac31d36795a43d4e4a0ee081274be"
+        "tests/Thalovant.Sdk.Tests/ConversationCarryTests.cs": "88f03df7a40f5448a4be1986977bce4f82ed24879a3af6b7a17f070b4348f69e"
       },
       "vectors": {
         "conversation-vectors.json": "tests/Thalovant.Sdk.Tests/Fixtures/conversation-vectors.json"
@@ -100,7 +100,7 @@
       "reason": "OnHive over the five hive kinds, and PropagateAsync/EscalateAsync/BroadcastAsync. Run against the shared mesh vectors.",
       "status": "required",
       "tests": {
-        "tests/Thalovant.Sdk.Tests/BinaryFrameTests.cs": "7f9dcc41e7e63ef49e5ed7911b147d0fecddc6c5a6ec660271d15f1b7a90eb7b"
+        "tests/Thalovant.Sdk.Tests/BinaryFrameTests.cs": "640901bd992d26a378f0134104fc83f852035f4ad587fba195edd2c87310d51c"
       },
       "vectors": {
         "mesh-vectors.json": "tests/Thalovant.Sdk.Tests/Fixtures/mesh-vectors.json"
@@ -141,7 +141,8 @@
     "9af92bcafd77385cd7c9cfede859eeb3586f65d0b24c9dbff36352089e94821c",
     "083b2da8b256cd970b3050218d8d51f13e7355633913d086c9f4147d8790165b",
     "1e8b76b34b755207bb754e5f4c7364334f14476dee70fce1d2687bfdc1545f30",
-    "f6a74ead44d53658228da3f4457334f3e922b67dd1e33b43c3ba8b6f7c066bf9"
+    "f6a74ead44d53658228da3f4457334f3e922b67dd1e33b43c3ba8b6f7c066bf9",
+    "6f5f697b07eb86da6877faf8aa27138430f886495ac965d08a28fba780e411cd"
   ],
   "schema_version": 1
 }

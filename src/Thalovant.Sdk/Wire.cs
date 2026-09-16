@@ -29,6 +29,14 @@ namespace Thalovant
         /// </summary>
         public ThalovantBinary? Binary { get; }
 
+        /// <summary>The frame constructor as it has always been.</summary>
+        /// <remarks>
+        /// Adding an optional parameter changes the CLR signature, so an
+        /// assembly compiled against the previous constructor would fail with
+        /// MissingMethodException after a package upgrade even though the
+        /// source still compiles. The binary payload gets its own overload
+        /// instead, and this signature is preserved exactly.
+        /// </remarks>
         public HiveMessage(
             string msgType,
             JsonObject? payload = null,
@@ -37,8 +45,31 @@ namespace Thalovant
             string? node = null,
             string? targetSiteId = null,
             string? targetPubkey = null,
-            string? sourcePeer = null,
-            ThalovantBinary? binary = null)
+            string? sourcePeer = null)
+            : this(msgType, payload, metadata, route, node, targetSiteId, targetPubkey, sourcePeer, null)
+        {
+        }
+
+        /// <summary>A frame carrying a decoded WIRE-1 binary payload.</summary>
+        /// <remarks>
+        /// A factory rather than an overload: giving the binary constructor
+        /// optional parameters would make `new HiveMessage(type, metadata: x)`
+        /// ambiguous against the public one above.
+        /// </remarks>
+        internal static HiveMessage WithBinary(
+            string msgType, JsonObject? metadata, ThalovantBinary? binary) =>
+            new HiveMessage(msgType, null, metadata, null, null, null, null, null, binary);
+
+        private HiveMessage(
+            string msgType,
+            JsonObject? payload,
+            JsonObject? metadata,
+            JsonArray? route,
+            string? node,
+            string? targetSiteId,
+            string? targetPubkey,
+            string? sourcePeer,
+            ThalovantBinary? binary)
         {
             Binary = binary;
             MsgType = msgType;

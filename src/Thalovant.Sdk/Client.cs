@@ -64,11 +64,38 @@ namespace Thalovant
         /// session id per turn must not accumulate one entry per turn for ever; a
         /// satellite runs one session for its whole life.
         /// </remarks>
-        private readonly Dictionary<string, JsonObject> _conversations = new Dictionary<string, JsonObject>();
+        /// <summary>One conversation, however many session ids reach it.</summary>
+        /// <remarks>
+        /// Filed as an entry per id they aged and were evicted separately, so a
+        /// caller continuing under the id it sent could lose the carry while one
+        /// using the hub's answering id kept it -- and the cap counted names
+        /// rather than conversations.
+        /// </remarks>
+        private sealed class ConversationEntry
+        {
+            public ConversationEntry(IReadOnlyList<string> group, JsonObject kept, long sequence)
+            {
+                Group = group; Kept = kept; Sequence = sequence;
+            }
+
+            public IReadOnlyList<string> Group { get; }
+            public JsonObject Kept { get; }
+            public long Sequence { get; set; }
+        }
+
+        private readonly Dictionary<string, ConversationEntry> _conversations = new Dictionary<string, ConversationEntry>();
+        private long _conversationSequence;
         private const int MaxRememberedConversations = 32;
 
+        /// <summary>Session ids one conversation answers to.</summary>
+        /// <remarks>
+        /// The cap above counts a group once, so without this a hub that
+        /// re-translates the id every turn could grow a single group for ever.
+        /// </remarks>
+        private const int MaxConversationAliases = 8;
+
         /// <summary>Keep the session a hub returned, to send with the next utterance.</summary>
-        private void RememberConversation(string sessionId, JsonObject? session)
+        private void RememberConversation(IReadOnlyList<string> sessionIds, JsonObject? session)
         {
             var kept = new JsonObject();
             foreach (var field in ThalovantContext.ConversationSessionFields)
@@ -77,23 +104,71 @@ namespace Thalovant
                     && session.TryGetPropertyValue(field, out var value)
                     && value is not null
                     && !(value is JsonArray emptyArray && emptyArray.Count == 0)
-                    && !(value is JsonObject emptyObject && emptyObject.Count == 0))
+                    && !(value is JsonObject emptyObject && emptyObject.Count == 0)
+                    // An empty scalar is not carried state: keeping
+                    // `response_mode: ""` spent one of the entries the cap
+                    // allows on a cleared session, so eviction could drop a
+                    // session that still had state.
+                    && !(value is JsonValue scalar && scalar.TryGetValue(out string? text) && text?.Length == 0))
                 {
                     kept[field] = value.DeepClone();
                 }
             }
             lock (_lock)
             {
+                var keys = new List<string>();
+                foreach (var id in sessionIds)
+                {
+                    if (!keys.Contains(id)) keys.Add(id);
+                }
+                if (keys.Count == 0) return;
+                // Take over every id these already reach rather than dropping
+                // them: a turn continued under the hub's id must not forget the
+                // id a satellite still uses for the same conversation.
+                for (var index = 0; index < keys.Count; index++)
+                {
+                    if (!_conversations.TryGetValue(keys[index], out var previous)) continue;
+                    foreach (var sibling in previous.Group)
+                    {
+                        _conversations.Remove(sibling);
+                        if (!keys.Contains(sibling)) keys.Add(sibling);
+                    }
+                    _conversations.Remove(keys[index]);
+                }
                 // Forgetting is the state, not the absence of one: a turn that ended
                 // with nothing active must not leave the old entry to resurrect it.
-                _conversations.Remove(sessionId);
-                if (kept.Count == 0) return;
-                if (_conversations.Count >= MaxRememberedConversations)
+                if (kept.Count == 0)
                 {
-                    foreach (var oldest in _conversations.Keys) { _conversations.Remove(oldest); break; }
+                    foreach (var key in keys) _conversations.Remove(key);
+                    return;
                 }
-                _conversations[sessionId] = kept;
+                // This turn's ids come first and inherited ones after, so the
+                // tail is the stalest and the id the next turn sends is kept.
+                if (keys.Count > MaxConversationAliases) keys.RemoveRange(MaxConversationAliases, keys.Count - MaxConversationAliases);
+                var entry = new ConversationEntry(keys.ToArray(), kept, ++_conversationSequence);
+                foreach (var key in keys) _conversations[key] = entry;
+                // Evict whole conversations, oldest first. Taking the first key
+                // a Dictionary happened to enumerate dropped an arbitrary entry
+                // -- enumeration order is unspecified once anything is removed.
+                while (DistinctConversations() > MaxRememberedConversations)
+                {
+                    ConversationEntry? oldest = null;
+                    foreach (var candidate in _conversations.Values)
+                    {
+                        if (oldest is null || candidate.Sequence < oldest.Sequence) oldest = candidate;
+                    }
+                    if (oldest is null) break;
+                    foreach (var sibling in oldest.Group) _conversations.Remove(sibling);
+                }
             }
+        }
+
+        /// <summary>Conversations held, counting a group of aliases once.</summary>
+        private int DistinctConversations()
+        {
+            var seen = new HashSet<long>();
+            foreach (var entry in _conversations.Values) seen.Add(entry.Sequence);
+            return seen.Count;
         }
 
         /// <summary>Put the last turn's conversation state back into this turn.</summary>
@@ -102,7 +177,11 @@ namespace Thalovant
             JsonObject? previous;
             lock (_lock)
             {
-                if (!_conversations.TryGetValue(sessionId, out previous)) return context;
+                if (!_conversations.TryGetValue(sessionId, out var entry)) return context;
+                // Most recently used: a client juggling more conversations than
+                // the cap keeps the ones it is actually using.
+                entry.Sequence = ++_conversationSequence;
+                previous = entry.Kept;
             }
             var session = context["session"] as JsonObject ?? new JsonObject();
             var next = (JsonObject)context.DeepClone();
@@ -509,17 +588,19 @@ namespace Thalovant
                     if (collected.Name == ThalovantEvents.UtteranceHandled)
                     {
                         var carried = collected.Context?["session"] as JsonObject;
-                        RememberConversation(effectiveSessionId, carried);
-                        // And under the id the hub answered with, when it
-                        // differs. A reply's SessionId is the first non-empty
-                        // *event* session id, so a caller that passes it to the
-                        // next AskAsync looked up a key nothing was filed
-                        // under and sent no carried state at all.
+                        // Both ids in one call: the id the request used, which
+                        // a satellite reuses, and the one the hub answered with,
+                        // which is what a reply's SessionId hands an ordinary
+                        // caller. Filed separately they aged and were evicted
+                        // separately, so with the cache full the second could
+                        // evict the first and the next AskAsync carried nothing.
                         var answeredWith = collected.SessionId;
+                        var keys = new List<string> { effectiveSessionId };
                         if (!string.IsNullOrEmpty(answeredWith) && answeredWith != effectiveSessionId)
                         {
-                            RememberConversation(answeredWith!, carried);
+                            keys.Add(answeredWith!);
                         }
+                        RememberConversation(keys, carried);
                     }
                 }
                 var replyText = string.Join(" ", final.Fragments);

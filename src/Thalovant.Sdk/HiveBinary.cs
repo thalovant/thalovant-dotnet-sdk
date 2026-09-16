@@ -162,8 +162,8 @@ namespace Thalovant
             var metadata = DecodeWireObject(metadataBytes, compressed, required: false);
             if (msgType == "bin") {
                 var kind = reader.ReadUInt(4);
-                return new HiveMessage(msgType, metadata: metadata,
-                    binary: new ThalovantBinary(ThalovantBinary.KindName(kind), reader.ReadRemainingBytes(), metadata));
+                return HiveMessage.WithBinary(msgType, metadata,
+                    new ThalovantBinary(ThalovantBinary.KindName(kind), reader.ReadRemainingBytes(), metadata));
             }
             // The payload is not. A binarized bus frame whose body will not
             // decode is a malformed frame, and turning it into {} handed bus
@@ -222,7 +222,19 @@ namespace Thalovant
                     // netstandard2.1 has no ZLibStream. A zlib stream is a
                     // two-byte header, raw DEFLATE, then an adler32 checksum, so
                     // skipping the header leaves exactly what DeflateStream reads.
-                    if (bytes.Length < 2) return new JsonObject();
+                    // Shorter than the zlib header: there is no stream here.
+                    // Returning {} before the `required` check let a non-bin
+                    // frame -- a bus frame included -- reach the transport as an
+                    // empty object, where FromBusPayload dropped it for having
+                    // no type. The event vanished and a matching AskAsync timed
+                    // out with nothing to say why.
+                    if (bytes.Length < 2) {
+                        if (required) {
+                            throw new ThalovantConnectionException(
+                                "HiveMind binary payload is compressed but too short to be a zlib stream.");
+                        }
+                        return new JsonObject();
+                    }
                     using (var source = new MemoryStream(bytes, 2, bytes.Length - 2))
                     using (var inflate = new DeflateStream(source, CompressionMode.Decompress)) {
                         CopyBounded(inflate, buffer, metadataInflationLimit);

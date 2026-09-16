@@ -3,9 +3,9 @@
     "binary": {
       "implementation": {
         "src/Thalovant.Sdk/Client.cs": "bce095bcd4dc0224fd997e34dc61507f886866fe9dbf6d2831ca8434d303de10",
-        "src/Thalovant.Sdk/HiveBinary.cs": "7330cd60b65b7b1e648851e6556f07478b4edfb660492fbfb35b63ff14283f4b",
+        "src/Thalovant.Sdk/HiveBinary.cs": "696849f0bf3ec67946cf994f029efbfbc657832f145131eba7bbac151fc281eb",
         "src/Thalovant.Sdk/Transport.cs": "c9f706a5c3ff6abb19694f0aa0d2bab1f27c966b23c3bec54618aaebfc0a448c",
-        "src/Thalovant.Sdk/Wire.cs": "0a1b26c135b83d200c1a91b05f1d74cb3ec6491ef67d85159fe1186a7c411c3f"
+        "src/Thalovant.Sdk/Wire.cs": "be690ab4aa60c7d546f15e98199739bc4f672225d35c0f185751352513d86061"
       },
       "reason": "HiveWire.DecodeBinaryFrame reads WIRE-1: four bits of payload type, then the clip itself, never parsed or inflated. The Noise framing marks each frame JSON or not and a binary one was refused outright, so every such frame was unreachable; OnBinary delivers it now. Run against the shared binary vectors and against binary-frames.json, which is hivemind-bus-client's own encoder output rather than frames this SDK built for itself.",
       "status": "required",

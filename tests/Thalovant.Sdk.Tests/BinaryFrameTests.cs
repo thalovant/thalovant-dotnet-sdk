@@ -101,7 +101,7 @@ public sealed class BinaryFrameTests {
         foreach (var item in Vectors("mesh-vectors.json")["cases"]!.AsArray()) {
             var row = item!;
             var accepted = (bool)row["expected"]!["accepted"]!;
-            Assert.Equal(accepted, ThalovantEvents.HiveKinds.Contains((string)row["kind"]!));
+            Assert.Equal(accepted, ThalovantContext.HiveKinds.Contains((string)row["kind"]!));
         }
     }
 }

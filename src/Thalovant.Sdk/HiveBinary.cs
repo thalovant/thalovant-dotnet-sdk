@@ -180,10 +180,22 @@ namespace Thalovant
             var raw = bytes;
             if (compressed) {
                 try {
-                    using var source = new MemoryStream(bytes);
-                    using var inflate = new ZLibStream(source, CompressionMode.Decompress);
                     using var buffer = new MemoryStream();
-                    inflate.CopyTo(buffer);
+#if NET6_0_OR_GREATER
+                    using (var source = new MemoryStream(bytes))
+                    using (var inflate = new ZLibStream(source, CompressionMode.Decompress)) {
+                        inflate.CopyTo(buffer);
+                    }
+#else
+                    // netstandard2.1 has no ZLibStream. A zlib stream is a
+                    // two-byte header, raw DEFLATE, then an adler32 checksum, so
+                    // skipping the header leaves exactly what DeflateStream reads.
+                    if (bytes.Length < 2) return new JsonObject();
+                    using (var source = new MemoryStream(bytes, 2, bytes.Length - 2))
+                    using (var inflate = new DeflateStream(source, CompressionMode.Decompress)) {
+                        inflate.CopyTo(buffer);
+                    }
+#endif
                     raw = buffer.ToArray();
                 } catch (InvalidDataException) {
                     return new JsonObject();

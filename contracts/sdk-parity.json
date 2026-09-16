@@ -2,15 +2,15 @@
   "capabilities": {
     "binary": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "3ce91c87b15e1288a02830d75ad81f3dc87ef34c1e44425c43ac85fb3e69e18e",
-        "src/Thalovant.Sdk/HiveBinary.cs": "e26af5b03568a3348278549f27acbc64939a5f67796636e4d4d9f2fc10c5dcf1",
+        "src/Thalovant.Sdk/Client.cs": "ca8b86d5c0309dd57b0dc12f28dd62e396802b8e57da8c5f60beec764fb9a36f",
+        "src/Thalovant.Sdk/HiveBinary.cs": "cf5b6b75f248289880c01f9405b49e99987679439009c3e818e937b8126e1d3d",
         "src/Thalovant.Sdk/Transport.cs": "c9f706a5c3ff6abb19694f0aa0d2bab1f27c966b23c3bec54618aaebfc0a448c",
         "src/Thalovant.Sdk/Wire.cs": "0a1b26c135b83d200c1a91b05f1d74cb3ec6491ef67d85159fe1186a7c411c3f"
       },
       "reason": "HiveWire.DecodeBinaryFrame reads WIRE-1: four bits of payload type, then the clip itself, never parsed or inflated. The Noise framing marks each frame JSON or not and a binary one was refused outright, so every such frame was unreachable; OnBinary delivers it now. Run against the shared binary vectors and against binary-frames.json, which is hivemind-bus-client's own encoder output rather than frames this SDK built for itself.",
       "status": "required",
       "tests": {
-        "tests/Thalovant.Sdk.Tests/BinaryFrameTests.cs": "41335378f1444ab18a6d4dc683b2ec3e4db50076b6097035852f45935ed503dd"
+        "tests/Thalovant.Sdk.Tests/BinaryFrameTests.cs": "7f9dcc41e7e63ef49e5ed7911b147d0fecddc6c5a6ec660271d15f1b7a90eb7b"
       },
       "vectors": {
         "binary-frames.json": "tests/Thalovant.Sdk.Tests/Fixtures/binary-frames.json",
@@ -39,7 +39,7 @@
     },
     "conversation": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "3ce91c87b15e1288a02830d75ad81f3dc87ef34c1e44425c43ac85fb3e69e18e",
+        "src/Thalovant.Sdk/Client.cs": "ca8b86d5c0309dd57b0dc12f28dd62e396802b8e57da8c5f60beec764fb9a36f",
         "src/Thalovant.Sdk/Events.cs": "c1b8bf085ca3b2ceb330a8d7bcf0e3781da0d80fbf4c72a59f20c5b2aa279ecd"
       },
       "reason": "CarryConversation and the client's per-session memory, run against the shared conversation vectors on net8.0 and net9.0.",
@@ -94,13 +94,13 @@
     },
     "mesh": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "3ce91c87b15e1288a02830d75ad81f3dc87ef34c1e44425c43ac85fb3e69e18e",
+        "src/Thalovant.Sdk/Client.cs": "ca8b86d5c0309dd57b0dc12f28dd62e396802b8e57da8c5f60beec764fb9a36f",
         "src/Thalovant.Sdk/Events.cs": "c1b8bf085ca3b2ceb330a8d7bcf0e3781da0d80fbf4c72a59f20c5b2aa279ecd"
       },
       "reason": "OnHive over the five hive kinds, and PropagateAsync/EscalateAsync/BroadcastAsync. Run against the shared mesh vectors.",
       "status": "required",
       "tests": {
-        "tests/Thalovant.Sdk.Tests/BinaryFrameTests.cs": "41335378f1444ab18a6d4dc683b2ec3e4db50076b6097035852f45935ed503dd"
+        "tests/Thalovant.Sdk.Tests/BinaryFrameTests.cs": "7f9dcc41e7e63ef49e5ed7911b147d0fecddc6c5a6ec660271d15f1b7a90eb7b"
       },
       "vectors": {
         "mesh-vectors.json": "tests/Thalovant.Sdk.Tests/Fixtures/mesh-vectors.json"

@@ -216,16 +216,16 @@ namespace Thalovant
         /// is aimed down at every child, <c>propagate</c> walks the whole hive,
         /// <c>escalate</c> goes up to the parent, <c>intercom</c> is addressed
         /// node to node, and <c>rendezvous</c> is the mailbox peers use to find
-        /// each other through NAT. See <see cref="ThalovantEvents.HiveKinds"/>.
+        /// each other through NAT. See <see cref="ThalovantContext.HiveKinds"/>.
         /// </summary>
         public ThalovantSubscription OnHive(string kind, Action<HiveMessage> handler)
         {
-            if (Array.IndexOf(ThalovantEvents.HiveKinds, kind) < 0)
+            if (Array.IndexOf(ThalovantContext.HiveKinds, kind) < 0)
             {
                 // Named rather than silently never firing: subscribing to "bus"
                 // or to a typo is the kind of mistake that looks like a quiet hub.
                 throw new ArgumentException(
-                    $"{kind} is not a hive frame kind; expected one of {string.Join(", ", ThalovantEvents.HiveKinds)}.",
+                    $"{kind} is not a hive frame kind; expected one of {string.Join(", ", ThalovantContext.HiveKinds)}.",
                     nameof(kind));
             }
             if (_bus is not IHiveMindQueryBus frames)

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
@@ -54,6 +55,139 @@ namespace Thalovant
         private readonly IHiveMindBus _bus;
         private readonly TimeSpan _replySettle;
         private readonly TimeSpan _emptyReplyWait;
+
+        /// <summary>The conversation each session id is in the middle of.</summary>
+        /// <remarks>
+        /// A hub keeps nothing for a named session, so what the last turn activated
+        /// comes back on ovos.utterance.handled and has to be sent again with the next
+        /// utterance or it is gone. Bounded, because a long-lived client handed a fresh
+        /// session id per turn must not accumulate one entry per turn for ever; a
+        /// satellite runs one session for its whole life.
+        /// </remarks>
+        /// <summary>One conversation, however many session ids reach it.</summary>
+        /// <remarks>
+        /// Filed as an entry per id they aged and were evicted separately, so a
+        /// caller continuing under the id it sent could lose the carry while one
+        /// using the hub's answering id kept it -- and the cap counted names
+        /// rather than conversations.
+        /// </remarks>
+        private sealed class ConversationEntry
+        {
+            public ConversationEntry(IReadOnlyList<string> group, JsonObject kept, long sequence)
+            {
+                Group = group; Kept = kept; Sequence = sequence;
+            }
+
+            public IReadOnlyList<string> Group { get; }
+            public JsonObject Kept { get; }
+            public long Sequence { get; set; }
+        }
+
+        private readonly Dictionary<string, ConversationEntry> _conversations = new Dictionary<string, ConversationEntry>();
+        private long _conversationSequence;
+        private const int MaxRememberedConversations = 32;
+
+        /// <summary>Session ids one conversation answers to.</summary>
+        /// <remarks>
+        /// The cap above counts a group once, so without this a hub that
+        /// re-translates the id every turn could grow a single group for ever.
+        /// </remarks>
+        private const int MaxConversationAliases = 8;
+
+        /// <summary>Keep the session a hub returned, to send with the next utterance.</summary>
+        private void RememberConversation(IReadOnlyList<string> sessionIds, JsonObject? session)
+        {
+            var kept = new JsonObject();
+            foreach (var field in ThalovantContext.ConversationSessionFields)
+            {
+                if (session is not null
+                    && session.TryGetPropertyValue(field, out var value)
+                    && value is not null
+                    && !(value is JsonArray emptyArray && emptyArray.Count == 0)
+                    && !(value is JsonObject emptyObject && emptyObject.Count == 0)
+                    // An empty scalar is not carried state: keeping
+                    // `response_mode: ""` spent one of the entries the cap
+                    // allows on a cleared session, so eviction could drop a
+                    // session that still had state.
+                    && !(value is JsonValue scalar && scalar.TryGetValue(out string? text) && text?.Length == 0))
+                {
+                    kept[field] = value.DeepClone();
+                }
+            }
+            lock (_lock)
+            {
+                var keys = new List<string>();
+                foreach (var id in sessionIds)
+                {
+                    if (!keys.Contains(id)) keys.Add(id);
+                }
+                if (keys.Count == 0) return;
+                // Take over every id these already reach rather than dropping
+                // them: a turn continued under the hub's id must not forget the
+                // id a satellite still uses for the same conversation.
+                for (var index = 0; index < keys.Count; index++)
+                {
+                    if (!_conversations.TryGetValue(keys[index], out var previous)) continue;
+                    foreach (var sibling in previous.Group)
+                    {
+                        _conversations.Remove(sibling);
+                        if (!keys.Contains(sibling)) keys.Add(sibling);
+                    }
+                    _conversations.Remove(keys[index]);
+                }
+                // Forgetting is the state, not the absence of one: a turn that ended
+                // with nothing active must not leave the old entry to resurrect it.
+                if (kept.Count == 0)
+                {
+                    foreach (var key in keys) _conversations.Remove(key);
+                    return;
+                }
+                // This turn's ids come first and inherited ones after, so the
+                // tail is the stalest and the id the next turn sends is kept.
+                if (keys.Count > MaxConversationAliases) keys.RemoveRange(MaxConversationAliases, keys.Count - MaxConversationAliases);
+                var entry = new ConversationEntry(keys.ToArray(), kept, ++_conversationSequence);
+                foreach (var key in keys) _conversations[key] = entry;
+                // Evict whole conversations, oldest first. Taking the first key
+                // a Dictionary happened to enumerate dropped an arbitrary entry
+                // -- enumeration order is unspecified once anything is removed.
+                while (DistinctConversations() > MaxRememberedConversations)
+                {
+                    ConversationEntry? oldest = null;
+                    foreach (var candidate in _conversations.Values)
+                    {
+                        if (oldest is null || candidate.Sequence < oldest.Sequence) oldest = candidate;
+                    }
+                    if (oldest is null) break;
+                    foreach (var sibling in oldest.Group) _conversations.Remove(sibling);
+                }
+            }
+        }
+
+        /// <summary>Conversations held, counting a group of aliases once.</summary>
+        private int DistinctConversations()
+        {
+            var seen = new HashSet<long>();
+            foreach (var entry in _conversations.Values) seen.Add(entry.Sequence);
+            return seen.Count;
+        }
+
+        /// <summary>Put the last turn's conversation state back into this turn.</summary>
+        private JsonObject ContinueConversation(JsonObject context, string sessionId)
+        {
+            JsonObject? previous;
+            lock (_lock)
+            {
+                if (!_conversations.TryGetValue(sessionId, out var entry)) return context;
+                // Most recently used: a client juggling more conversations than
+                // the cap keeps the ones it is actually using.
+                entry.Sequence = ++_conversationSequence;
+                previous = entry.Kept;
+            }
+            var session = context["session"] as JsonObject ?? new JsonObject();
+            var next = (JsonObject)context.DeepClone();
+            next["session"] = ThalovantContext.CarryConversation(previous, session);
+            return next;
+        }
         private readonly object _lock = new object();
         private bool _connected;
         private readonly HashSet<string> _activeAskIds = new HashSet<string>(StringComparer.Ordinal);
@@ -154,6 +288,106 @@ namespace Thalovant
         }
 
         // -- Events ----------------------------------------------------------
+
+        /// <summary>
+        /// Listens to one of the hive's own frame kinds.
+        ///
+        /// A hub relays more than this client's conversation: <c>broadcast</c>
+        /// is aimed down at every child, <c>propagate</c> walks the whole hive,
+        /// <c>escalate</c> goes up to the parent, <c>intercom</c> is addressed
+        /// node to node, and <c>rendezvous</c> is the mailbox peers use to find
+        /// each other through NAT. See <see cref="ThalovantContext.HiveKinds"/>.
+        /// </summary>
+        public ThalovantSubscription OnHive(string kind, Action<HiveMessage> handler)
+        {
+            if (!ThalovantContext.HiveKinds.Contains(kind))
+            {
+                // Named rather than silently never firing: subscribing to "bus"
+                // or to a typo is the kind of mistake that looks like a quiet hub.
+                throw new ArgumentException(
+                    $"{kind} is not a hive frame kind; expected one of {string.Join(", ", ThalovantContext.HiveKinds)}.",
+                    nameof(kind));
+            }
+            if (_bus is not IHiveMindQueryBus frames)
+            {
+                throw new ThalovantRuntimeException("This transport does not carry hive frames.");
+            }
+            var id = frames.AddQueryHandler(message =>
+            {
+                if (message.MsgType == kind) handler(message);
+            });
+            return new ThalovantSubscription(() => frames.RemoveQueryHandler(id));
+        }
+
+        /// <summary>
+        /// Listens for binary frames: rendered speech, and files.
+        ///
+        /// This is what a hub sends back for <c>speak:synth</c> -- the audio
+        /// itself, so a client with no synthesiser can still speak -- and how it
+        /// hands over a file. Delivered by subscription and not on a reply,
+        /// because a binary frame carries no request id: it cannot be attributed
+        /// to one <c>AskAsync</c>. Its <c>Utterance</c> is the only thread back
+        /// to a turn.
+        /// </summary>
+        public ThalovantSubscription OnBinary(Action<ThalovantBinary> handler)
+        {
+            if (_bus is not IHiveMindQueryBus frames)
+            {
+                throw new ThalovantRuntimeException("This transport does not carry hive frames.");
+            }
+            var id = frames.AddQueryHandler(message =>
+            {
+                if (message.Binary is ThalovantBinary binary) handler(binary);
+            });
+            return new ThalovantSubscription(() => frames.RemoveQueryHandler(id));
+        }
+
+        /// <summary>Sends an event across the hive; every node sees it once.</summary>
+        public Task PropagateAsync(string eventType, JsonObject? data = null, JsonObject? context = null,
+                                   CancellationToken cancellationToken = default) =>
+            SendHiveAsync("propagate", eventType, data, context, cancellationToken);
+
+        /// <summary>Sends an event up to the parent node.</summary>
+        public Task EscalateAsync(string eventType, JsonObject? data = null, JsonObject? context = null,
+                                  CancellationToken cancellationToken = default) =>
+            SendHiveAsync("escalate", eventType, data, context, cancellationToken);
+
+        /// <summary>
+        /// Sends an event down to every child of this hub. <b>Admin only.</b>
+        ///
+        /// A hub requires admin standing and the <c>can_broadcast</c> grant, and
+        /// a client that sends one without them is not answered with an error --
+        /// it is disconnected for misbehaviour. Nothing here can check first: a
+        /// hub's HELLO carries its public key, peer name and node id, and
+        /// nothing about what this client may do, so a refusal arrives as a
+        /// closed socket on the next read.
+        /// </summary>
+        public Task BroadcastAsync(string eventType, JsonObject? data = null, JsonObject? context = null,
+                                   CancellationToken cancellationToken = default) =>
+            SendHiveAsync("broadcast", eventType, data, context, cancellationToken);
+
+        private async Task SendHiveAsync(string kind, string eventType, JsonObject? data, JsonObject? context,
+                                         CancellationToken cancellationToken)
+        {
+            if (_bus is not IHiveMindQueryBus frames)
+            {
+                throw new ThalovantRuntimeException("This transport does not carry hive frames.");
+            }
+            await ConnectAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            // Nested on purpose: a hub reads message.payload as a HiveMessage of
+            // its own and rewrites the route on it, so a flat frame loses the route.
+            var inner = new JsonObject
+            {
+                ["msg_type"] = "bus",
+                ["payload"] = new JsonObject
+                {
+                    ["type"] = eventType,
+                    ["data"] = data is null ? new JsonObject() : JsonUtil.CloneObject(data),
+                    ["context"] = ContextWithIdentityMetadata(context ?? new JsonObject()),
+                },
+            };
+            await frames.SendQueryFrameAsync(new HiveMessage(kind, payload: inner), cancellationToken).ConfigureAwait(false);
+        }
 
         /// <summary>
         /// Registers a handler for a named bus event, optionally filtered by
@@ -280,7 +514,7 @@ namespace Thalovant
             using var correlation = ReserveRuntimeId(effectiveRequestId, query: false);
             var effectiveSessionId = sessionId ?? ThalovantContext.NewSessionId();
             var correlatedContext = ThalovantContext.WithCorrelation(
-                ContextWithIdentityMetadata(context ?? new JsonObject()),
+                ContinueConversation(ContextWithIdentityMetadata(context ?? new JsonObject()), effectiveSessionId),
                 effectiveSessionId,
                 Identity.SiteId,
                 lang,
@@ -346,6 +580,28 @@ namespace Thalovant
                 {
                     var message = failure.Text.Length == 0 ? $"Hub reported {failure.Name}." : failure.Text;
                     throw new ThalovantRuntimeException(message);
+                }
+                // The end of the turn is the one place a hub states what the
+                // conversation now is, and it keeps none of it for a named session.
+                foreach (var collected in final.Events)
+                {
+                    if (collected.Name == ThalovantEvents.UtteranceHandled)
+                    {
+                        var carried = collected.Context?["session"] as JsonObject;
+                        // Both ids in one call: the id the request used, which
+                        // a satellite reuses, and the one the hub answered with,
+                        // which is what a reply's SessionId hands an ordinary
+                        // caller. Filed separately they aged and were evicted
+                        // separately, so with the cache full the second could
+                        // evict the first and the next AskAsync carried nothing.
+                        var answeredWith = collected.SessionId;
+                        var keys = new List<string> { effectiveSessionId };
+                        if (!string.IsNullOrEmpty(answeredWith) && answeredWith != effectiveSessionId)
+                        {
+                            keys.Add(answeredWith!);
+                        }
+                        RememberConversation(keys, carried);
+                    }
                 }
                 var replyText = string.Join(" ", final.Fragments);
                 return new ThalovantReply(

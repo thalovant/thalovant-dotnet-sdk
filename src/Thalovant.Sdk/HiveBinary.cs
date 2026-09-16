@@ -158,13 +158,20 @@ namespace Thalovant
             var compressed = reader.ReadBit() == 1;
             var metadataBytes = reader.ReadBytes(reader.ReadUInt(8));
             var msgType = TypeCodes.TryGetValue(typeCode, out var named) ? named : "3rdparty";
-            var metadata = DecodeWireObject(metadataBytes, compressed);
+            // Metadata is optional, so an unreadable block reads as absent.
+            var metadata = DecodeWireObject(metadataBytes, compressed, required: false);
             if (msgType == "bin") {
                 var kind = reader.ReadUInt(4);
                 return new HiveMessage(msgType, metadata: metadata,
                     binary: new ThalovantBinary(ThalovantBinary.KindName(kind), reader.ReadRemainingBytes(), metadata));
             }
-            return new HiveMessage(msgType, payload: DecodeWireObject(reader.ReadRemainingBytes(), compressed), metadata: metadata);
+            // The payload is not. A binarized bus frame whose body will not
+            // decode is a malformed frame, and turning it into {} handed bus
+            // handlers an empty event instead -- the text path rejects exactly
+            // the same bytes.
+            return new HiveMessage(msgType,
+                payload: DecodeWireObject(reader.ReadRemainingBytes(), compressed, required: true),
+                metadata: metadata);
         }
 
         /// <summary>
@@ -174,17 +181,42 @@ namespace Thalovant
         /// language and no filename beside its audio. The clip itself is never
         /// compressed, whatever the flag says.
         /// </summary>
-        private static JsonObject DecodeWireObject(byte[] bytes, bool compressed)
+        /// <summary>
+        /// Copy at most <paramref name="limit"/> bytes, then give up. A
+        /// compressed metadata block that inflates beyond any plausible size is
+        /// a bomb, not a frame.
+        /// </summary>
+        private static void CopyBounded(Stream source, Stream destination, int limit)
         {
-            if (bytes.Length == 0) return new JsonObject();
+            var chunk = new byte[8192];
+            var total = 0;
+            int read;
+            while ((read = source.Read(chunk, 0, chunk.Length)) > 0) {
+                total += read;
+                if (total > limit) throw new InvalidDataException("HiveMind metadata inflated past its limit.");
+                destination.Write(chunk, 0, read);
+            }
+        }
+
+        private static JsonObject DecodeWireObject(byte[] bytes, bool compressed, bool required)
+        {
+            if (bytes.Length == 0) {
+                if (required) throw new ThalovantConnectionException("HiveMind binary frame carries no payload.");
+                return new JsonObject();
+            }
             var raw = bytes;
             if (compressed) {
                 try {
                     using var buffer = new MemoryStream();
+                    // A frame is capped at 255 bytes of metadata on the wire,
+                    // so anything that inflates past this is not metadata --
+                    // it is a decompression bomb, and CopyTo would follow it
+                    // until the process ran out of memory.
+                    const int metadataInflationLimit = 1 << 20;
 #if NET6_0_OR_GREATER
                     using (var source = new MemoryStream(bytes))
                     using (var inflate = new ZLibStream(source, CompressionMode.Decompress)) {
-                        inflate.CopyTo(buffer);
+                        CopyBounded(inflate, buffer, metadataInflationLimit);
                     }
 #else
                     // netstandard2.1 has no ZLibStream. A zlib stream is a
@@ -193,17 +225,21 @@ namespace Thalovant
                     if (bytes.Length < 2) return new JsonObject();
                     using (var source = new MemoryStream(bytes, 2, bytes.Length - 2))
                     using (var inflate = new DeflateStream(source, CompressionMode.Decompress)) {
-                        inflate.CopyTo(buffer);
+                        CopyBounded(inflate, buffer, metadataInflationLimit);
                     }
 #endif
                     raw = buffer.ToArray();
-                } catch (InvalidDataException) {
+                } catch (InvalidDataException error) {
+                    if (required) throw new ThalovantConnectionException($"HiveMind binary payload could not be decompressed: {error.Message}");
                     return new JsonObject();
                 }
             }
             try {
-                return JsonNode.Parse(new UTF8Encoding(false, true).GetString(raw)) as JsonObject ?? new JsonObject();
-            } catch (Exception) {
+                var parsed = JsonNode.Parse(new UTF8Encoding(false, true).GetString(raw)) as JsonObject;
+                if (parsed is null && required) throw new ThalovantConnectionException("HiveMind binary payload is not a JSON object.");
+                return parsed ?? new JsonObject();
+            } catch (Exception error) when (error is not ThalovantConnectionException) {
+                if (required) throw new ThalovantConnectionException($"HiveMind binary payload could not be read: {error.Message}");
                 return new JsonObject();
             }
         }

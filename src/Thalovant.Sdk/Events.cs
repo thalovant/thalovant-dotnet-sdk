@@ -352,8 +352,8 @@ namespace Thalovant
         /// client's own request/response traffic and AskAsync already owns them, so
         /// subscribing to one would quietly compete for the same replies.
         /// </remarks>
-        public static readonly string[] HiveKinds =
-            { "broadcast", "propagate", "escalate", "intercom", "rendezvous" };
+        public static readonly IReadOnlyList<string> HiveKinds =
+            new[] { "broadcast", "propagate", "escalate", "intercom", "rendezvous" };
 
         /// <summary>
         /// Session fields a client carries from one turn of a conversation to the next.
@@ -373,7 +373,7 @@ namespace Thalovant
         /// that has passed by the time the next turn is sent.
         /// </para>
         /// </remarks>
-        public static readonly string[] ConversationSessionFields =
+        public static readonly IReadOnlyList<string> ConversationSessionFields = new[]
         {
             "converse_handlers",
             "active_handlers",

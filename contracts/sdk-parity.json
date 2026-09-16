@@ -2,8 +2,8 @@
   "capabilities": {
     "binary": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "ca8b86d5c0309dd57b0dc12f28dd62e396802b8e57da8c5f60beec764fb9a36f",
-        "src/Thalovant.Sdk/HiveBinary.cs": "cf5b6b75f248289880c01f9405b49e99987679439009c3e818e937b8126e1d3d",
+        "src/Thalovant.Sdk/Client.cs": "bce095bcd4dc0224fd997e34dc61507f886866fe9dbf6d2831ca8434d303de10",
+        "src/Thalovant.Sdk/HiveBinary.cs": "7330cd60b65b7b1e648851e6556f07478b4edfb660492fbfb35b63ff14283f4b",
         "src/Thalovant.Sdk/Transport.cs": "c9f706a5c3ff6abb19694f0aa0d2bab1f27c966b23c3bec54618aaebfc0a448c",
         "src/Thalovant.Sdk/Wire.cs": "0a1b26c135b83d200c1a91b05f1d74cb3ec6491ef67d85159fe1186a7c411c3f"
       },
@@ -39,8 +39,8 @@
     },
     "conversation": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "ca8b86d5c0309dd57b0dc12f28dd62e396802b8e57da8c5f60beec764fb9a36f",
-        "src/Thalovant.Sdk/Events.cs": "c1b8bf085ca3b2ceb330a8d7bcf0e3781da0d80fbf4c72a59f20c5b2aa279ecd"
+        "src/Thalovant.Sdk/Client.cs": "bce095bcd4dc0224fd997e34dc61507f886866fe9dbf6d2831ca8434d303de10",
+        "src/Thalovant.Sdk/Events.cs": "378a7b68d45c12839032d7e3405b0421fa6553e994e0b0eab82f82badd7b04c9"
       },
       "reason": "CarryConversation and the client's per-session memory, run against the shared conversation vectors on net8.0 and net9.0.",
       "status": "required",
@@ -94,8 +94,8 @@
     },
     "mesh": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "ca8b86d5c0309dd57b0dc12f28dd62e396802b8e57da8c5f60beec764fb9a36f",
-        "src/Thalovant.Sdk/Events.cs": "c1b8bf085ca3b2ceb330a8d7bcf0e3781da0d80fbf4c72a59f20c5b2aa279ecd"
+        "src/Thalovant.Sdk/Client.cs": "bce095bcd4dc0224fd997e34dc61507f886866fe9dbf6d2831ca8434d303de10",
+        "src/Thalovant.Sdk/Events.cs": "378a7b68d45c12839032d7e3405b0421fa6553e994e0b0eab82f82badd7b04c9"
       },
       "reason": "OnHive over the five hive kinds, and PropagateAsync/EscalateAsync/BroadcastAsync. Run against the shared mesh vectors.",
       "status": "required",
@@ -108,7 +108,7 @@
     },
     "runtime": {
       "implementation": {
-        "src/Thalovant.Sdk/Events.cs": "c1b8bf085ca3b2ceb330a8d7bcf0e3781da0d80fbf4c72a59f20c5b2aa279ecd",
+        "src/Thalovant.Sdk/Events.cs": "378a7b68d45c12839032d7e3405b0421fa6553e994e0b0eab82f82badd7b04c9",
         "src/Thalovant.Sdk/Runtime.cs": "037c680410a2839321bf29e5ee1d318be87989cac0aeb2fb9a80b7faaca40fff",
         "src/Thalovant.Sdk/Transport.cs": "c9f706a5c3ff6abb19694f0aa0d2bab1f27c966b23c3bec54618aaebfc0a448c"
       },
@@ -139,7 +139,8 @@
     "49bab2a8922b69b5cd886e7acadf217cdaa78bd94bfb48374e2f4b1cde85dfc0",
     "003cdf02562e53bd24cc58ac8eb44411cc7ac42d06ba3bbfa46e82386ea92ef7",
     "9af92bcafd77385cd7c9cfede859eeb3586f65d0b24c9dbff36352089e94821c",
-    "083b2da8b256cd970b3050218d8d51f13e7355633913d086c9f4147d8790165b"
+    "083b2da8b256cd970b3050218d8d51f13e7355633913d086c9f4147d8790165b",
+    "1e8b76b34b755207bb754e5f4c7364334f14476dee70fce1d2687bfdc1545f30"
   ],
   "schema_version": 1
 }

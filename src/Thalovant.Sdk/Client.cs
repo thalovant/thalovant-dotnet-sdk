@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
@@ -220,7 +221,7 @@ namespace Thalovant
         /// </summary>
         public ThalovantSubscription OnHive(string kind, Action<HiveMessage> handler)
         {
-            if (Array.IndexOf(ThalovantContext.HiveKinds, kind) < 0)
+            if (!ThalovantContext.HiveKinds.Contains(kind))
             {
                 // Named rather than silently never firing: subscribing to "bus"
                 // or to a typo is the kind of mistake that looks like a quiet hub.
@@ -507,7 +508,18 @@ namespace Thalovant
                 {
                     if (collected.Name == ThalovantEvents.UtteranceHandled)
                     {
-                        RememberConversation(effectiveSessionId, collected.Context?["session"] as JsonObject);
+                        var carried = collected.Context?["session"] as JsonObject;
+                        RememberConversation(effectiveSessionId, carried);
+                        // And under the id the hub answered with, when it
+                        // differs. A reply's SessionId is the first non-empty
+                        // *event* session id, so a caller that passes it to the
+                        // next AskAsync looked up a key nothing was filed
+                        // under and sent no carried state at all.
+                        var answeredWith = collected.SessionId;
+                        if (!string.IsNullOrEmpty(answeredWith) && answeredWith != effectiveSessionId)
+                        {
+                            RememberConversation(answeredWith!, carried);
+                        }
                     }
                 }
                 var replyText = string.Join(" ", final.Fragments);

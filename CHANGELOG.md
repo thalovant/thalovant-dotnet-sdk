@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0
+
+- Speak the rest of the HiveMind protocol. `OnHive(kind, handler)` listens to the five hive kinds -- `broadcast`, `propagate`, `escalate`, `intercom`, `rendezvous` -- and `PropagateAsync`, `EscalateAsync` and `BroadcastAsync` send. A refusal is a disconnection rather than an error: a hub's HELLO says nothing about what a client may do, so nothing can check first.
+- Receive binary frames. This is how a hub answers `speak:synth`: it renders the utterance and sends the audio back, so a client with no synthesiser of its own can still speak, and it is how a file arrives. The Noise framing marks each frame JSON or not, and a frame marked binary was refused outright -- "Binary HiveMind payloads were not negotiated" -- so every one of them was unreachable. `HiveWire.DecodeBinaryFrame` reads WIRE-1 properly, including the four payload-type bits and the clip after them, and `OnBinary(handler)` delivers it.
+- Read the metadata of a frame the hub chose to compress. The encoder picks per frame whichever of the two is shorter, so compressed metadata is not an edge case; the clip itself is never inflated whatever the flag says.
+
 ## 0.7.2
 
 - Automated patch release of the unreleased changes on `main` since v0.7.1.

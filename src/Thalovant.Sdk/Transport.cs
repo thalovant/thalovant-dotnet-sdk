@@ -458,17 +458,20 @@ namespace Thalovant
                     lock (_lock) {
                         RequireSocket(socket);
                         var data = frame.ToArray();
-                        string text;
                         if (authenticated) {
                             var state = _noiseSession ?? throw new ThalovantConnectionException("Binary frame received before Noise authentication.");
                             var decoded = state.Decrypt(data); if (!decoded.HasValue) continue;
-                            if (!decoded.Value.Json) throw new ThalovantConnectionException("Binary HiveMind payloads were not negotiated.");
-                            text = new UTF8Encoding(false, true).GetString(decoded.Value.Data);
+                            // The Noise framing marks each frame JSON or not. One
+                            // marked binary is a WIRE-1 frame -- how a hub answers
+                            // speak:synth with the rendered audio, and how a file
+                            // arrives. Refusing it here made every one unreachable.
+                            message = decoded.Value.Json
+                                ? HiveWire.Decode(new UTF8Encoding(false, true).GetString(decoded.Value.Data), cryptoKey: null)
+                                : HiveWire.DecodeBinaryFrame(decoded.Value.Data);
                         } else {
                             if (_noiseSession != null) throw new ThalovantConnectionException("Plaintext frame received after Noise authentication.");
-                            text = new UTF8Encoding(false, true).GetString(data);
+                            message = HiveWire.Decode(new UTF8Encoding(false, true).GetString(data), cryptoKey: null);
                         }
-                        message = HiveWire.Decode(text, cryptoKey: null);
                     }
                     await HandleFrameAsync(socket, message, cancellationToken, authenticated).ConfigureAwait(false);
                 }

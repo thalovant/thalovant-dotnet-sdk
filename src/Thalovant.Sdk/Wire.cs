@@ -23,6 +23,12 @@ namespace Thalovant
         public string? TargetPubkey { get; }
         public string? SourcePeer { get; }
 
+        /// <summary>
+        /// Set only on a BINARY frame, whose payload is bytes rather than JSON.
+        /// Not part of the wire encoding: there is no JSON shape for it.
+        /// </summary>
+        public ThalovantBinary? Binary { get; }
+
         public HiveMessage(
             string msgType,
             JsonObject? payload = null,
@@ -31,8 +37,10 @@ namespace Thalovant
             string? node = null,
             string? targetSiteId = null,
             string? targetPubkey = null,
-            string? sourcePeer = null)
+            string? sourcePeer = null,
+            ThalovantBinary? binary = null)
         {
+            Binary = binary;
             MsgType = msgType;
             Payload = payload ?? new JsonObject();
             Metadata = metadata ?? new JsonObject();
@@ -81,7 +89,7 @@ namespace Thalovant
     }
 
     /// <summary>Pure encode/decode helpers for the HiveMind WSS wire protocol.</summary>
-    public static class HiveWire
+    public static partial class HiveWire
     {
         /// <summary>
         /// The <c>authorization</c> credential sent on connect:

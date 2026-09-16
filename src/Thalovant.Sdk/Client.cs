@@ -210,6 +210,106 @@ namespace Thalovant
         // -- Events ----------------------------------------------------------
 
         /// <summary>
+        /// Listens to one of the hive's own frame kinds.
+        ///
+        /// A hub relays more than this client's conversation: <c>broadcast</c>
+        /// is aimed down at every child, <c>propagate</c> walks the whole hive,
+        /// <c>escalate</c> goes up to the parent, <c>intercom</c> is addressed
+        /// node to node, and <c>rendezvous</c> is the mailbox peers use to find
+        /// each other through NAT. See <see cref="ThalovantEvents.HiveKinds"/>.
+        /// </summary>
+        public ThalovantSubscription OnHive(string kind, Action<HiveMessage> handler)
+        {
+            if (Array.IndexOf(ThalovantEvents.HiveKinds, kind) < 0)
+            {
+                // Named rather than silently never firing: subscribing to "bus"
+                // or to a typo is the kind of mistake that looks like a quiet hub.
+                throw new ArgumentException(
+                    $"{kind} is not a hive frame kind; expected one of {string.Join(", ", ThalovantEvents.HiveKinds)}.",
+                    nameof(kind));
+            }
+            if (_bus is not IHiveMindQueryBus frames)
+            {
+                throw new ThalovantRuntimeException("This transport does not carry hive frames.");
+            }
+            var id = frames.AddQueryHandler(message =>
+            {
+                if (message.MsgType == kind) handler(message);
+            });
+            return new ThalovantSubscription(() => frames.RemoveQueryHandler(id));
+        }
+
+        /// <summary>
+        /// Listens for binary frames: rendered speech, and files.
+        ///
+        /// This is what a hub sends back for <c>speak:synth</c> -- the audio
+        /// itself, so a client with no synthesiser can still speak -- and how it
+        /// hands over a file. Delivered by subscription and not on a reply,
+        /// because a binary frame carries no request id: it cannot be attributed
+        /// to one <c>AskAsync</c>. Its <c>Utterance</c> is the only thread back
+        /// to a turn.
+        /// </summary>
+        public ThalovantSubscription OnBinary(Action<ThalovantBinary> handler)
+        {
+            if (_bus is not IHiveMindQueryBus frames)
+            {
+                throw new ThalovantRuntimeException("This transport does not carry hive frames.");
+            }
+            var id = frames.AddQueryHandler(message =>
+            {
+                if (message.Binary is ThalovantBinary binary) handler(binary);
+            });
+            return new ThalovantSubscription(() => frames.RemoveQueryHandler(id));
+        }
+
+        /// <summary>Sends an event across the hive; every node sees it once.</summary>
+        public Task PropagateAsync(string eventType, JsonObject? data = null, JsonObject? context = null,
+                                   CancellationToken cancellationToken = default) =>
+            SendHiveAsync("propagate", eventType, data, context, cancellationToken);
+
+        /// <summary>Sends an event up to the parent node.</summary>
+        public Task EscalateAsync(string eventType, JsonObject? data = null, JsonObject? context = null,
+                                  CancellationToken cancellationToken = default) =>
+            SendHiveAsync("escalate", eventType, data, context, cancellationToken);
+
+        /// <summary>
+        /// Sends an event down to every child of this hub. <b>Admin only.</b>
+        ///
+        /// A hub requires admin standing and the <c>can_broadcast</c> grant, and
+        /// a client that sends one without them is not answered with an error --
+        /// it is disconnected for misbehaviour. Nothing here can check first: a
+        /// hub's HELLO carries its public key, peer name and node id, and
+        /// nothing about what this client may do, so a refusal arrives as a
+        /// closed socket on the next read.
+        /// </summary>
+        public Task BroadcastAsync(string eventType, JsonObject? data = null, JsonObject? context = null,
+                                   CancellationToken cancellationToken = default) =>
+            SendHiveAsync("broadcast", eventType, data, context, cancellationToken);
+
+        private async Task SendHiveAsync(string kind, string eventType, JsonObject? data, JsonObject? context,
+                                         CancellationToken cancellationToken)
+        {
+            if (_bus is not IHiveMindQueryBus frames)
+            {
+                throw new ThalovantRuntimeException("This transport does not carry hive frames.");
+            }
+            await ConnectAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            // Nested on purpose: a hub reads message.payload as a HiveMessage of
+            // its own and rewrites the route on it, so a flat frame loses the route.
+            var inner = new JsonObject
+            {
+                ["msg_type"] = "bus",
+                ["payload"] = new JsonObject
+                {
+                    ["type"] = eventType,
+                    ["data"] = data is null ? new JsonObject() : JsonUtil.CloneObject(data),
+                    ["context"] = ContextWithIdentityMetadata(context ?? new JsonObject()),
+                },
+            };
+            await frames.SendQueryFrameAsync(new HiveMessage(kind, payload: inner), cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <summary>
         /// Registers a handler for a named bus event, optionally filtered by
         /// correlation ids. Returns a subscription; call <see cref="ThalovantSubscription.Close"/>
         /// to remove it.

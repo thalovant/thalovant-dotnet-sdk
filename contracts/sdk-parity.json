@@ -2,7 +2,7 @@
   "capabilities": {
     "binary": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "bce095bcd4dc0224fd997e34dc61507f886866fe9dbf6d2831ca8434d303de10",
+        "src/Thalovant.Sdk/Client.cs": "0fa82be4c0b66d21f57dd775f838ff6310320d88fc12279eafac8db033c2fcf1",
         "src/Thalovant.Sdk/HiveBinary.cs": "696849f0bf3ec67946cf994f029efbfbc657832f145131eba7bbac151fc281eb",
         "src/Thalovant.Sdk/Transport.cs": "c9f706a5c3ff6abb19694f0aa0d2bab1f27c966b23c3bec54618aaebfc0a448c",
         "src/Thalovant.Sdk/Wire.cs": "be690ab4aa60c7d546f15e98199739bc4f672225d35c0f185751352513d86061"
@@ -39,7 +39,7 @@
     },
     "conversation": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "bce095bcd4dc0224fd997e34dc61507f886866fe9dbf6d2831ca8434d303de10",
+        "src/Thalovant.Sdk/Client.cs": "0fa82be4c0b66d21f57dd775f838ff6310320d88fc12279eafac8db033c2fcf1",
         "src/Thalovant.Sdk/Events.cs": "378a7b68d45c12839032d7e3405b0421fa6553e994e0b0eab82f82badd7b04c9"
       },
       "reason": "CarryConversation and the client's per-session memory, run against the shared conversation vectors on net8.0 and net9.0.",
@@ -94,7 +94,7 @@
     },
     "mesh": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "bce095bcd4dc0224fd997e34dc61507f886866fe9dbf6d2831ca8434d303de10",
+        "src/Thalovant.Sdk/Client.cs": "0fa82be4c0b66d21f57dd775f838ff6310320d88fc12279eafac8db033c2fcf1",
         "src/Thalovant.Sdk/Events.cs": "378a7b68d45c12839032d7e3405b0421fa6553e994e0b0eab82f82badd7b04c9"
       },
       "reason": "OnHive over the five hive kinds, and PropagateAsync/EscalateAsync/BroadcastAsync. Run against the shared mesh vectors.",

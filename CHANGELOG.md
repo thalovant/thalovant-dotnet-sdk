@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.1
+
+- Automated patch release of the unreleased changes on `main` since v0.8.0.
+
 ## 0.8.0
 
 - Carry the conversation between the turns of a named session. A hub keeps nothing for a named session -- OVOS-SESSION-2 §2.2 makes the orchestrator stateless for those -- so whatever a turn activated is discarded the moment it ends, and every follow-up fell past the converse pipeline to the fallback. `ThalovantContext.CarryConversation` and `ConversationSessionFields` carry conversation state only, by allow-list: never `lang`, which would pin a bilingual conversation to whichever language it opened in. The state is remembered under the session id the request used *and* the one the hub answered with, because `ThalovantReply.SessionId` hands the caller the latter.

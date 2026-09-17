@@ -30,6 +30,9 @@ public sealed class ConversationCarryTests {
             var previous = row["previous"]!.AsObject();
             var session = row["session"]!.AsObject();
             var carried = ThalovantContext.CarryConversation(previous, session);
+            // Recorded before the assert: what this SDK produced, not a
+            // restatement of what the vector says it should have.
+            ConformanceRecord.Record("conversation-vectors.json", (string)row["name"]!, carried.DeepClone());
             Assert.Equal(row["expected"]!.ToJsonString(), carried.ToJsonString());
         }
     }

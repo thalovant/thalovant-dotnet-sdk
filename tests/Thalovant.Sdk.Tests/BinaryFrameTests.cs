@@ -76,6 +76,15 @@ public sealed class BinaryFrameTests {
             var name = (string)row["name"]!;
             var binary = HiveWire.DecodeBinaryFrame(Frame(name)).Binary;
             Assert.NotNull(binary);
+            // Recorded before the assert, for the same reason as the carry.
+            // Absent is already null here, so nothing needs the translation the
+            // Go recorder gives its empty strings.
+            ConformanceRecord.Record("binary-vectors.json", name, new JsonObject {
+                ["kind"] = binary!.Kind,
+                ["utterance"] = binary.Utterance,
+                ["lang"] = binary.Lang,
+                ["file_name"] = binary.FileName,
+            });
             var expected = row["expected"]!;
             Assert.Equal((string)expected["kind"]!, binary!.Kind);
             // An empty name is no name: rendering "" would put a blank filename

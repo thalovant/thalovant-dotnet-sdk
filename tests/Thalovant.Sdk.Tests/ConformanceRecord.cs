@@ -91,12 +91,25 @@ internal static class ConformanceRecord {
     /// SDK writes that value as 1.
     /// </remarks>
     private static string WholeNumber(string raw) {
-        if (!raw.Contains('.') && !raw.Contains('e') && !raw.Contains('E')) return raw;
-        return double.TryParse(raw, System.Globalization.NumberStyles.Float,
-                   System.Globalization.CultureInfo.InvariantCulture, out var number)
-               && Math.Floor(number) == number && !double.IsInfinity(number)
-            ? ((long)number).ToString(System.Globalization.CultureInfo.InvariantCulture)
-            : raw;
+        var invariant = System.Globalization.CultureInfo.InvariantCulture;
+        // Exactly, through BigInteger and decimal rather than double: a double
+        // loses integer precision above 2^53 and a cast clamps rather than
+        // failing, which would record a digest for a value nobody produced.
+        if (System.Numerics.BigInteger.TryParse(
+                raw, System.Globalization.NumberStyles.Integer, invariant, out var whole)) {
+            return whole.ToString(invariant);
+        }
+        if (decimal.TryParse(raw, System.Globalization.NumberStyles.Float, invariant, out var exact)
+            && decimal.Truncate(exact) == exact) {
+            return ((System.Numerics.BigInteger)exact).ToString(invariant);
+        }
+        // Refused rather than passed through. Only a whole number is written
+        // the same way by every language here -- 1.5 and 1E-07 (which Python
+        // spells 1e-07) have per-language spellings. No vector contains one,
+        // and if one ever does this should stop rather than lie.
+        throw new InvalidOperationException(
+            $"conformance: cannot canonicalise {raw}: only whole numbers are "
+            + "spelled the same way in every language");
     }
 
     private static string QuoteString(string value) =>

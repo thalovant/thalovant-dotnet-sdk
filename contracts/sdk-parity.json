@@ -10,7 +10,8 @@
       "reason": "HiveWire.DecodeBinaryFrame reads WIRE-1: four bits of payload type, then the clip itself, never parsed or inflated. The Noise framing marks each frame JSON or not and a binary one was refused outright, so every such frame was unreachable; OnBinary delivers it now. Run against the shared binary vectors and against binary-frames.json, which is hivemind-bus-client's own encoder output rather than frames this SDK built for itself.",
       "status": "required",
       "tests": {
-        "tests/Thalovant.Sdk.Tests/BinaryFrameTests.cs": "640901bd992d26a378f0134104fc83f852035f4ad587fba195edd2c87310d51c"
+        "tests/Thalovant.Sdk.Tests/BinaryFrameTests.cs": "640901bd992d26a378f0134104fc83f852035f4ad587fba195edd2c87310d51c",
+        "tests/Thalovant.Sdk.Tests/ConformanceRecord.cs": "63897e752ba8662dd89d4d90eb20b3208b6ff6d16e94c9965858a76593114d73"
       },
       "vectors": {
         "binary-frames.json": "tests/Thalovant.Sdk.Tests/Fixtures/binary-frames.json",
@@ -45,6 +46,7 @@
       "reason": "CarryConversation and the client's per-session memory, run against the shared conversation vectors on net8.0 and net9.0.",
       "status": "required",
       "tests": {
+        "tests/Thalovant.Sdk.Tests/ConformanceRecord.cs": "63897e752ba8662dd89d4d90eb20b3208b6ff6d16e94c9965858a76593114d73",
         "tests/Thalovant.Sdk.Tests/ConversationCarryTests.cs": "88f03df7a40f5448a4be1986977bce4f82ed24879a3af6b7a17f070b4348f69e"
       },
       "vectors": {
@@ -100,7 +102,8 @@
       "reason": "OnHive over the five hive kinds, and PropagateAsync/EscalateAsync/BroadcastAsync. Run against the shared mesh vectors.",
       "status": "required",
       "tests": {
-        "tests/Thalovant.Sdk.Tests/BinaryFrameTests.cs": "640901bd992d26a378f0134104fc83f852035f4ad587fba195edd2c87310d51c"
+        "tests/Thalovant.Sdk.Tests/BinaryFrameTests.cs": "640901bd992d26a378f0134104fc83f852035f4ad587fba195edd2c87310d51c",
+        "tests/Thalovant.Sdk.Tests/ConformanceRecord.cs": "63897e752ba8662dd89d4d90eb20b3208b6ff6d16e94c9965858a76593114d73"
       },
       "vectors": {
         "mesh-vectors.json": "tests/Thalovant.Sdk.Tests/Fixtures/mesh-vectors.json"

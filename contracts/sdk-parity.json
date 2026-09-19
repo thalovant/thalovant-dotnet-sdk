@@ -2,7 +2,7 @@
   "capabilities": {
     "binary": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "0fa82be4c0b66d21f57dd775f838ff6310320d88fc12279eafac8db033c2fcf1",
+        "src/Thalovant.Sdk/Client.cs": "1ca310fc1223847c07eba17cac3c0111e7b7030f0cb7698b1cef430b3cbc322b",
         "src/Thalovant.Sdk/HiveBinary.cs": "696849f0bf3ec67946cf994f029efbfbc657832f145131eba7bbac151fc281eb",
         "src/Thalovant.Sdk/Transport.cs": "c9f706a5c3ff6abb19694f0aa0d2bab1f27c966b23c3bec54618aaebfc0a448c",
         "src/Thalovant.Sdk/Wire.cs": "be690ab4aa60c7d546f15e98199739bc4f672225d35c0f185751352513d86061"
@@ -40,7 +40,7 @@
     },
     "conversation": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "0fa82be4c0b66d21f57dd775f838ff6310320d88fc12279eafac8db033c2fcf1",
+        "src/Thalovant.Sdk/Client.cs": "1ca310fc1223847c07eba17cac3c0111e7b7030f0cb7698b1cef430b3cbc322b",
         "src/Thalovant.Sdk/Events.cs": "378a7b68d45c12839032d7e3405b0421fa6553e994e0b0eab82f82badd7b04c9"
       },
       "reason": "CarryConversation and the client's per-session memory, run against the shared conversation vectors on net8.0 and net9.0.",
@@ -96,7 +96,7 @@
     },
     "mesh": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "0fa82be4c0b66d21f57dd775f838ff6310320d88fc12279eafac8db033c2fcf1",
+        "src/Thalovant.Sdk/Client.cs": "1ca310fc1223847c07eba17cac3c0111e7b7030f0cb7698b1cef430b3cbc322b",
         "src/Thalovant.Sdk/Events.cs": "378a7b68d45c12839032d7e3405b0421fa6553e994e0b0eab82f82badd7b04c9"
       },
       "reason": "OnHive over the five hive kinds, and PropagateAsync/EscalateAsync/BroadcastAsync. Run against the shared mesh vectors.",
@@ -107,6 +107,23 @@
       },
       "vectors": {
         "mesh-vectors.json": "tests/Thalovant.Sdk.Tests/Fixtures/mesh-vectors.json"
+      }
+    },
+    "refusal": {
+      "implementation": {
+        "src/Thalovant.Sdk/Client.cs": "1ca310fc1223847c07eba17cac3c0111e7b7030f0cb7698b1cef430b3cbc322b",
+        "src/Thalovant.Sdk/Errors.cs": "fa686499401002b7754478d8f1023ed9dd6adc41e9f572267de900e4d1b5abfc",
+        "src/Thalovant.Sdk/Refusal.cs": "dff4e8b79ceb6816b1386c9079f648e057647f472ae65aaaf5c5a74484d6a8f8"
+      },
+      "reason": "Refusal.BelongsToAsk() and Refusal.ErrorFor() in src/Thalovant.Sdk/Refusal.cs, applied by AskState.Process() and AskAsync() in Client.cs, which counts asks, queries and fire-and-forget utterances inside the shared grace window -- recorded once connected and immediately before the publish, and kept when that publish throws. ThalovantPolicyDeniedException carries Quota -- read from every numeric shape a JsonValue holds -- and ThalovantUnansweredException is new; both remain ThalovantRuntimeException. Run against the shared refusal vectors plus collector-level cases.",
+      "status": "required",
+      "tests": {
+        "tests/Thalovant.Sdk.Tests/Fixtures/refusal-vectors.json": "6b0f4128f1cc9fd8a54944410ce93c6515bac6cde9257284e313a4fea825bfcb",
+        "tests/Thalovant.Sdk.Tests/RefusalVectorTests.cs": "3490e7964ebd3501647bf12a18aa80c027ef976bfc4e16b5daee65b9b46ee1a7",
+        "tests/Thalovant.Sdk.Tests/RuntimeTests.cs": "0d7cbbd64ecca8e88882c7caf85a2ddb21285c43f93c52123b54897f50a97b1c"
+      },
+      "vectors": {
+        "refusal-vectors.json": "tests/Thalovant.Sdk.Tests/Fixtures/refusal-vectors.json"
       }
     },
     "runtime": {
@@ -121,7 +138,7 @@
         "tests/Thalovant.Sdk.Tests/Fixtures/reply-claim-vectors.json": "45f2731589e612d5a849376d94073c57b0fef426a92e1d065c58c48442b1ffdc",
         "tests/Thalovant.Sdk.Tests/NoiseTransportTests.cs": "54076eaea06a0b7d7592478a0d7bf5e024c80b1af727eed6a68f13d4ebc81304",
         "tests/Thalovant.Sdk.Tests/ReplyClaimsTests.cs": "4f2356d7f5bb956c1b26b564e79a9a5b04f6694ee798debbf89697f67d9d67ea",
-        "tests/Thalovant.Sdk.Tests/RuntimeTests.cs": "781a47e8dc69cef90f95f8f696958fd503f2a523b9f9ebd914e365486d50db1f"
+        "tests/Thalovant.Sdk.Tests/RuntimeTests.cs": "0d7cbbd64ecca8e88882c7caf85a2ddb21285c43f93c52123b54897f50a97b1c"
       },
       "vectors": {
         "reply-claim-vectors.json": "tests/Thalovant.Sdk.Tests/Fixtures/reply-claim-vectors.json"
@@ -145,7 +162,8 @@
     "083b2da8b256cd970b3050218d8d51f13e7355633913d086c9f4147d8790165b",
     "1e8b76b34b755207bb754e5f4c7364334f14476dee70fce1d2687bfdc1545f30",
     "f6a74ead44d53658228da3f4457334f3e922b67dd1e33b43c3ba8b6f7c066bf9",
-    "6f5f697b07eb86da6877faf8aa27138430f886495ac965d08a28fba780e411cd"
+    "6f5f697b07eb86da6877faf8aa27138430f886495ac965d08a28fba780e411cd",
+    "2377330566e575bb3fda77998d943667bf0795940f9d569a5b8bc7f4f0e5e486"
   ],
   "schema_version": 1
 }

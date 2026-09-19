@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.2 — 2026-09-18
+
+- A refusal ends an `AskAsync` at once instead of letting it run to the deadline. The hub sends `hive.policy.denied` the instant it refuses, with no request id, and the collector's correlation gate dropped it: the ask waited out its whole budget while a caller told somebody their hub "did not answer in time" about a question it had refused and explained. A denial with no request id is taken when it names the type this ask sent and this ask is the only utterance the client has out; a second ask, a query, or a fire-and-forget utterance still inside the shared 10-second grace window makes it ambiguous, so neither takes it.
+- `AskAsync` throws `ThalovantPolicyDeniedException` with `Quota` -- `Period`, `Limit`, `Used`, `ResetAfter` -- for a spent `intent_quota_exceeded`, and a message that fits the refusal rather than offering allow-list advice for a spent day or for `backend_unavailable`.
+- An unmatched intent throws the new `ThalovantUnansweredException`. Both remain `ThalovantRuntimeException`, so a caller catching that still catches these.
+- `ThalovantUnansweredException.Said` carries what the person said. Both event names put the input in the event's text; the old read of `reason`/`error` left it empty.
+- A fire-and-forget utterance whose publish never happened is dropped again, rather than suppressing a real refusal for the rest of the grace window.
+- A refusal on a quota the hub sent no numbers for says a quota has run out, rather than claiming "all questions used".
+- Quota counts read every numeric shape a `JsonValue` holds -- `TryGetValue<T>` coerces nothing, so `int`, `uint`, `ulong`, `byte`, `short`, `decimal`, `double`, `float` and numeric strings each answer only their own -- and are whole, non-negative and inside a signed 64-bit integer. Reading only `long` made a quota assembled in memory come back as zeros, which a new test caught.
+- Declares the parity contract's new `refusal` capability, run against the Python reference's `refusal-vectors.json`.
+
 ## 0.8.1
 
 - Automated patch release of the unreleased changes on `main` since v0.8.0.

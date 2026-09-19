@@ -209,6 +209,12 @@ namespace Thalovant
             // recognizer_loop:utterance" sent them to a page that could not help.
             if (quota != null)
             {
+                if (quota.Limit == 0 && quota.Used == 0 && quota.ResetAfter == 0 && quota.Period.Length == 0)
+                {
+                    // Refused on a quota, with none of the numbers. "All
+                    // questions used" would be inventing one.
+                    return $"The hub refused '{deniedType}': a quota has run out.";
+                }
                 var used = quota.Limit > 0 ? $"{quota.Used} of {quota.Limit}" : "all";
                 var period = quota.Period.Length > 0 ? $" {quota.Period}" : "";
                 var resets = quota.ResetAfter > 0 ? $"; it resets in {quota.ResetAfter}s" : "";
@@ -277,25 +283,38 @@ namespace Thalovant
         /// </summary>
         private static long WholeCount(JsonNode? value)
         {
-            if (value is JsonValue node)
+            if (value is not JsonValue node) return 0;
+            // Every numeric shape a JsonValue can hold: TryGetValue<T> does not
+            // coerce, so one built in code from an int, a uint, a decimal or a
+            // float answers only its own T -- and reading only long made a
+            // quota assembled in memory come back as zeros. Whole,
+            // non-negative, and inside a signed 64-bit integer; past that is
+            // not a count a policy can have meant.
+            if (node.TryGetValue<long>(out var number)) return Math.Max(number, 0);
+            if (node.TryGetValue<int>(out var small)) return Math.Max((long)small, 0);
+            if (node.TryGetValue<uint>(out var unsignedSmall)) return unsignedSmall;
+            if (node.TryGetValue<ulong>(out var unsigned)) return unsigned <= long.MaxValue ? (long)unsigned : 0;
+            if (node.TryGetValue<byte>(out var byteValue)) return byteValue;
+            if (node.TryGetValue<short>(out var shortValue)) return Math.Max((long)shortValue, 0);
+            if (node.TryGetValue<decimal>(out var exact))
             {
-                // Every numeric shape a JsonValue can hold. One built in code
-                // from an int does not answer TryGetValue<long>, where the same
-                // number parsed from a file does -- so reading only long made a
-                // quota assembled in memory come back as zeros.
-                if (node.TryGetValue<long>(out var number)) return Math.Max(number, 0);
-                if (node.TryGetValue<int>(out var small)) return Math.Max((long)small, 0);
-                if (node.TryGetValue<double>(out var real) && !double.IsInfinity(real) && real == Math.Truncate(real))
-                {
-                    return (long)Math.Max(real, 0);
-                }
-                if (node.TryGetValue<string>(out var text) && long.TryParse(text.Trim(), out var parsed))
-                {
-                    return Math.Max(parsed, 0);
-                }
+                return exact == Math.Truncate(exact) && exact >= 0 && exact <= long.MaxValue ? (long)exact : 0;
+            }
+            if (node.TryGetValue<double>(out var real)) return WholeInRange(real);
+            if (node.TryGetValue<float>(out var single)) return WholeInRange(single);
+            if (node.TryGetValue<string>(out var text) && long.TryParse(text.Trim(), out var parsed))
+            {
+                return Math.Max(parsed, 0);
             }
             return 0;
         }
+
+        private static long WholeInRange(double value) =>
+            !double.IsNaN(value) && !double.IsInfinity(value) && value == Math.Truncate(value)
+                && value >= 0 && value <= long.MaxValue
+                ? (long)value
+                : 0;
+
     }
 
     /// <summary>

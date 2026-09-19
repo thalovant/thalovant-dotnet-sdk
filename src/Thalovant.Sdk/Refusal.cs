@@ -65,9 +65,10 @@ namespace Thalovant
             }
             if (failure.Name == ThalovantEvents.IntentUnmatched || failure.Name == ThalovantEvents.IntentFailure)
             {
-                var said = JsonUtil.OptionalString(failure.Data["reason"])
-                    ?? JsonUtil.OptionalString(failure.Data["error"]);
-                return new ThalovantUnansweredException(said?.Trim());
+                // What the person said: both names carry the input, and that is
+                // what a caller shows. `reason` is not on these events at all,
+                // so reading it left Said empty.
+                return new ThalovantUnansweredException(failure.Text.Trim());
             }
             return new ThalovantRuntimeException($"Hub reported {failure.Name}.");
         }

@@ -454,22 +454,47 @@ namespace Thalovant
             JsonObject? context = null,
             CancellationToken cancellationToken = default)
         {
-            if (eventType == ThalovantEvents.RecognizerLoopUtterance)
+            if (eventType != ThalovantEvents.RecognizerLoopUtterance)
             {
-                // A fire-and-forget utterance: nothing will wait on it, but the
-                // hub may refuse it, and that refusal carries no request id.
+                await ConnectAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                await _bus.EmitBusAsync(
+                    eventType,
+                    data ?? new JsonObject(),
+                    ContextWithIdentityMetadata(context ?? new JsonObject()),
+                    cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            // A fire-and-forget utterance: nothing will wait on it, but the hub
+            // may refuse it, and that refusal carries no request id. Recorded
+            // before the publish so a denial cannot beat the record, and
+            // dropped again if the publish never happened -- a send that failed
+            // to leave leaves nothing for the hub to refuse, and a phantom
+            // would suppress a real refusal for the whole grace window.
+            var sentAt = DateTime.UtcNow;
+            lock (_lock)
+            {
+                _untrackedSends.Enqueue(sentAt);
+                while (_untrackedSends.Count > 1024) _untrackedSends.Dequeue();
+            }
+            try
+            {
+                await ConnectAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                await _bus.EmitBusAsync(
+                    eventType,
+                    data ?? new JsonObject(),
+                    ContextWithIdentityMetadata(context ?? new JsonObject()),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
                 lock (_lock)
                 {
-                    _untrackedSends.Enqueue(DateTime.UtcNow);
-                    while (_untrackedSends.Count > 1024) _untrackedSends.Dequeue();
+                    var kept = _untrackedSends.Where(entry => entry != sentAt).ToArray();
+                    _untrackedSends.Clear();
+                    foreach (var entry in kept) _untrackedSends.Enqueue(entry);
                 }
+                throw;
             }
-            await ConnectAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-            await _bus.EmitBusAsync(
-                eventType,
-                data ?? new JsonObject(),
-                ContextWithIdentityMetadata(context ?? new JsonObject()),
-                cancellationToken).ConfigureAwait(false);
         }
 
         /// <summary>Sends an utterance without waiting for a reply.</summary>

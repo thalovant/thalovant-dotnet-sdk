@@ -2,7 +2,7 @@
   "capabilities": {
     "binary": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "ed3d13829440ec7c581e335cd91fc1ca741411909711aa303d6040c94e9aafc8",
+        "src/Thalovant.Sdk/Client.cs": "1947d4d41ce9d5776d8ec01788435fc70236ac71b9ff361892c02b4c20ea90c2",
         "src/Thalovant.Sdk/HiveBinary.cs": "696849f0bf3ec67946cf994f029efbfbc657832f145131eba7bbac151fc281eb",
         "src/Thalovant.Sdk/Transport.cs": "c9f706a5c3ff6abb19694f0aa0d2bab1f27c966b23c3bec54618aaebfc0a448c",
         "src/Thalovant.Sdk/Wire.cs": "be690ab4aa60c7d546f15e98199739bc4f672225d35c0f185751352513d86061"
@@ -40,7 +40,7 @@
     },
     "conversation": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "ed3d13829440ec7c581e335cd91fc1ca741411909711aa303d6040c94e9aafc8",
+        "src/Thalovant.Sdk/Client.cs": "1947d4d41ce9d5776d8ec01788435fc70236ac71b9ff361892c02b4c20ea90c2",
         "src/Thalovant.Sdk/Events.cs": "378a7b68d45c12839032d7e3405b0421fa6553e994e0b0eab82f82badd7b04c9"
       },
       "reason": "CarryConversation and the client's per-session memory, run against the shared conversation vectors on net8.0 and net9.0.",
@@ -96,7 +96,7 @@
     },
     "mesh": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "ed3d13829440ec7c581e335cd91fc1ca741411909711aa303d6040c94e9aafc8",
+        "src/Thalovant.Sdk/Client.cs": "1947d4d41ce9d5776d8ec01788435fc70236ac71b9ff361892c02b4c20ea90c2",
         "src/Thalovant.Sdk/Events.cs": "378a7b68d45c12839032d7e3405b0421fa6553e994e0b0eab82f82badd7b04c9"
       },
       "reason": "OnHive over the five hive kinds, and PropagateAsync/EscalateAsync/BroadcastAsync. Run against the shared mesh vectors.",
@@ -111,15 +111,15 @@
     },
     "refusal": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "ed3d13829440ec7c581e335cd91fc1ca741411909711aa303d6040c94e9aafc8",
-        "src/Thalovant.Sdk/Errors.cs": "a76c4540cb453505fb812eeb3f4658c1966023cc2adc01a0967933de0521bd70",
-        "src/Thalovant.Sdk/Refusal.cs": "2aed13cdfa29bbbd68e8005e107304ba7acf881b69b471b478b8d072e1d5c2c4"
+        "src/Thalovant.Sdk/Client.cs": "1947d4d41ce9d5776d8ec01788435fc70236ac71b9ff361892c02b4c20ea90c2",
+        "src/Thalovant.Sdk/Errors.cs": "414c4eeb47214f88dc80c7c3f77ac140a149da020f0eae998f0e76441a736302",
+        "src/Thalovant.Sdk/Refusal.cs": "dff4e8b79ceb6816b1386c9079f648e057647f472ae65aaaf5c5a74484d6a8f8"
       },
-      "reason": "Refusal.BelongsToAsk() and Refusal.ErrorFor() in src/Thalovant.Sdk/Refusal.cs, applied by AskState.Process() and AskAsync() in Client.cs, which counts asks, queries and fire-and-forget utterances inside the shared grace window. ThalovantPolicyDeniedException carries Quota and ThalovantUnansweredException is new, both still ThalovantRuntimeException. Run against the shared refusal vectors plus collector-level cases.",
+      "reason": "Refusal.BelongsToAsk() and Refusal.ErrorFor() in src/Thalovant.Sdk/Refusal.cs, applied by AskState.Process() and AskAsync() in Client.cs, which counts asks, queries and fire-and-forget utterances inside the shared grace window and drops a send whose publish never happened. ThalovantPolicyDeniedException carries Quota -- read from every numeric shape a JsonValue holds -- and ThalovantUnansweredException is new; both remain ThalovantRuntimeException. Run against the shared refusal vectors plus collector-level cases.",
       "status": "required",
       "tests": {
-        "tests/Thalovant.Sdk.Tests/Fixtures/refusal-vectors.json": "12301b6ac38137c871e80e04e2a4fc94581be47655ebe0fb87a008b33119d925",
-        "tests/Thalovant.Sdk.Tests/RefusalVectorTests.cs": "b86c9b14106734f249857c1887dba093953e64c9e8a05fcc9c9c6b9f22665573",
+        "tests/Thalovant.Sdk.Tests/Fixtures/refusal-vectors.json": "8795fcd9d8b5ac790176c13ea077b701a5dc1fd584a717ed08744bcab8d21c82",
+        "tests/Thalovant.Sdk.Tests/RefusalVectorTests.cs": "f230cf1e944d74e05b1e681a38feb39b3da604fb357ba8690deeaeaab2287883",
         "tests/Thalovant.Sdk.Tests/RuntimeTests.cs": "0d7cbbd64ecca8e88882c7caf85a2ddb21285c43f93c52123b54897f50a97b1c"
       },
       "vectors": {
@@ -163,7 +163,7 @@
     "1e8b76b34b755207bb754e5f4c7364334f14476dee70fce1d2687bfdc1545f30",
     "f6a74ead44d53658228da3f4457334f3e922b67dd1e33b43c3ba8b6f7c066bf9",
     "6f5f697b07eb86da6877faf8aa27138430f886495ac965d08a28fba780e411cd",
-    "8a58831221dc0529b40e1b336203455fad9b5d8f7d017cf04b609acbb7f9ac8c"
+    "4c7780ced5bb3e011d10a0ac502bba61c08eaebfd27de6c827c5d47351ac2b4e"
   ],
   "schema_version": 1
 }

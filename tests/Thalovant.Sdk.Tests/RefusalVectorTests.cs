@@ -38,7 +38,9 @@ namespace Thalovant.Sdk.Tests
                 var error = Refusal.ErrorFor(EventOf(vector["event"]!));
                 if (expect["kind"]!.GetValue<string>() == "unanswered")
                 {
-                    Assert.True(error is ThalovantUnansweredException, $"{name}: {error}");
+                    var unanswered = Assert.IsType<ThalovantUnansweredException>(error);
+                    // What the person said, which is what a caller shows.
+                    Assert.Equal(expect["said"]!.GetValue<string>(), unanswered.Said);
                     continue;
                 }
                 var refused = Assert.IsType<ThalovantPolicyDeniedException>(error);
@@ -112,6 +114,60 @@ namespace Thalovant.Sdk.Tests
                 ["data"] = new JsonObject { ["period"] = "daily", ["limit"] = 50, ["used"] = 50, ["reset_after"] = 36120 },
             },
             new JsonObject { ["source"] = "hivemind-core" });
+
+        public static TheoryData<JsonNode, long> NumericShapes => new()
+        {
+            { JsonValue.Create(50)!, 50 },                      // int
+            { JsonValue.Create(50L)!, 50 },                     // long
+            { JsonValue.Create(50u)!, 50 },                     // uint
+            { JsonValue.Create(50ul)!, 50 },                    // ulong
+            { JsonValue.Create((byte)50)!, 50 },                // byte
+            { JsonValue.Create((short)50)!, 50 },               // short
+            { JsonValue.Create(50m)!, 50 },                     // decimal
+            { JsonValue.Create(50d)!, 50 },                     // double
+            { JsonValue.Create(50f)!, 50 },                     // float
+            { JsonValue.Create("50")!, 50 },                    // numeric string
+            { JsonValue.Create(50.5d)!, 0 },                    // not whole
+            { JsonValue.Create(1e20d)!, 0 },                    // past a long
+            { JsonValue.Create(ulong.MaxValue)!, 0 },           // past a long
+            { JsonValue.Create(-5)!, 0 },                       // no policy means this
+            { JsonValue.Create(true)!, 0 },                     // not a number at all
+        };
+
+        [Theory]
+        [MemberData(nameof(NumericShapes))]
+        public void AQuotaReadsEveryNumericShapeAJsonValueHolds(JsonNode limit, long expected)
+        {
+            // TryGetValue<T> does not coerce: a value built in code answers only
+            // its own T, so reading one shape made a quota come back as zeros.
+            var denial = new ThalovantEvent(
+                ThalovantEvents.PolicyDenied,
+                new JsonObject
+                {
+                    ["denied_type"] = ThalovantEvents.RecognizerLoopUtterance,
+                    ["code"] = "intent_quota_exceeded",
+                    ["data"] = new JsonObject { ["limit"] = limit },
+                },
+                new JsonObject());
+            Assert.Equal(expected, ThalovantPolicyDeniedException.FromEvent(denial).Quota!.Limit);
+        }
+
+        [Fact]
+        public void ASendThatNeverLeftIsNotInFlight()
+        {
+            // A phantom would suppress a real refusal for the whole grace window.
+            var client = new ThalovantClient(new ThalovantIdentity(new JsonObject
+            {
+                ["access_key"] = "k",
+                ["password"] = "p",
+                ["site_id"] = "s",
+                // Nothing listens here, so the publish cannot happen.
+                ["default_master"] = "wss://hub.invalid:1",
+            }));
+            Assert.ThrowsAny<Exception>(() => client.EmitAsync(
+                ThalovantEvents.RecognizerLoopUtterance, new JsonObject()).GetAwaiter().GetResult());
+            Assert.Equal(0, client.UtterancesInFlight().Sends);
+        }
 
         [Fact]
         public void TheCollectorTakesAnUncorrelatedRefusalWhenItIsTheOnlyUtteranceOut()

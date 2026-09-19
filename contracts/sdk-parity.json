@@ -112,13 +112,13 @@
     "refusal": {
       "implementation": {
         "src/Thalovant.Sdk/Client.cs": "1ca310fc1223847c07eba17cac3c0111e7b7030f0cb7698b1cef430b3cbc322b",
-        "src/Thalovant.Sdk/Errors.cs": "414c4eeb47214f88dc80c7c3f77ac140a149da020f0eae998f0e76441a736302",
+        "src/Thalovant.Sdk/Errors.cs": "fa686499401002b7754478d8f1023ed9dd6adc41e9f572267de900e4d1b5abfc",
         "src/Thalovant.Sdk/Refusal.cs": "dff4e8b79ceb6816b1386c9079f648e057647f472ae65aaaf5c5a74484d6a8f8"
       },
       "reason": "Refusal.BelongsToAsk() and Refusal.ErrorFor() in src/Thalovant.Sdk/Refusal.cs, applied by AskState.Process() and AskAsync() in Client.cs, which counts asks, queries and fire-and-forget utterances inside the shared grace window -- recorded once connected and immediately before the publish, and kept when that publish throws. ThalovantPolicyDeniedException carries Quota -- read from every numeric shape a JsonValue holds -- and ThalovantUnansweredException is new; both remain ThalovantRuntimeException. Run against the shared refusal vectors plus collector-level cases.",
       "status": "required",
       "tests": {
-        "tests/Thalovant.Sdk.Tests/Fixtures/refusal-vectors.json": "08a55b252514427ea7123294685f1f6dd72306ee274cff77013590870d8fde7e",
+        "tests/Thalovant.Sdk.Tests/Fixtures/refusal-vectors.json": "6b0f4128f1cc9fd8a54944410ce93c6515bac6cde9257284e313a4fea825bfcb",
         "tests/Thalovant.Sdk.Tests/RefusalVectorTests.cs": "3490e7964ebd3501647bf12a18aa80c027ef976bfc4e16b5daee65b9b46ee1a7",
         "tests/Thalovant.Sdk.Tests/RuntimeTests.cs": "0d7cbbd64ecca8e88882c7caf85a2ddb21285c43f93c52123b54897f50a97b1c"
       },
@@ -163,7 +163,7 @@
     "1e8b76b34b755207bb754e5f4c7364334f14476dee70fce1d2687bfdc1545f30",
     "f6a74ead44d53658228da3f4457334f3e922b67dd1e33b43c3ba8b6f7c066bf9",
     "6f5f697b07eb86da6877faf8aa27138430f886495ac965d08a28fba780e411cd",
-    "e0de5ebc373fcec60d083651e4001e22da8978419ad0d24a24d326db1e4e8e2a"
+    "2377330566e575bb3fda77998d943667bf0795940f9d569a5b8bc7f4f0e5e486"
   ],
   "schema_version": 1
 }

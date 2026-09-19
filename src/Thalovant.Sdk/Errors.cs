@@ -283,13 +283,29 @@ namespace Thalovant
         /// </summary>
         private static long WholeCount(JsonNode? value)
         {
+            var whole = ReadWhole(value);
+            return whole >= 0 && whole <= MaxCount ? whole : 0;
+        }
+
+        /// <summary>
+        /// The largest count the wire can carry, being the largest whole number
+        /// every JSON decoder holds exactly. Above it a decoder backed by a
+        /// double can no longer tell one whole number from the next, so two
+        /// SDKs would report different allowances for the same denial -- and a
+        /// count nobody can agree on is worse than none.
+        /// </summary>
+        internal const long MaxCount = (1L << 53) - 1;
+
+        /// <summary>Reads the number out of whatever shape holds it; the range is WholeCount's.</summary>
+        private static long ReadWhole(JsonNode? value)
+        {
             if (value is not JsonValue node) return 0;
             // Every numeric shape a JsonValue can hold: TryGetValue<T> does not
             // coerce, so one built in code from an int, a uint, a decimal or a
             // float answers only its own T -- and reading only long made a
             // quota assembled in memory come back as zeros. Whole,
-            // non-negative, and inside a signed 64-bit integer; past that is
-            // not a count a policy can have meant.
+            // and inside a signed 64-bit integer, which is as far as this can
+            // read; WholeCount then applies the count rule's own ceiling.
             if (node.TryGetValue<long>(out var number)) return Math.Max(number, 0);
             if (node.TryGetValue<int>(out var small)) return Math.Max((long)small, 0);
             if (node.TryGetValue<uint>(out var unsignedSmall)) return unsignedSmall;

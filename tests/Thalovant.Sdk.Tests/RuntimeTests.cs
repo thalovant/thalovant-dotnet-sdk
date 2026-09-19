@@ -158,7 +158,8 @@ namespace Thalovant.Sdk.Tests
                 // windows; fixture startup speed is not part of this assertion.
                 var request = sdk.AskAsync("test", TimeSpan.FromSeconds(60), replySettle: TimeSpan.FromSeconds(60), cancellationToken: watchdog.Token);
                 if (partial) { var reply = await request; Assert.Equal("partial", reply.Text); Assert.False(reply.Ok); Assert.Equal(2, reply.Events.Count); }
-                else await Assert.ThrowsAsync<ThalovantRuntimeException>(() => request);
+                // A refusal is its own type now, and still a ThalovantRuntimeException.
+                else await Assert.ThrowsAsync<ThalovantPolicyDeniedException>(() => request);
                 Assert.Equal(0, fake.BusCount);
             }
         }
@@ -272,8 +273,11 @@ namespace Thalovant.Sdk.Tests
             var request = sdk.AskAsync("test", TimeSpan.FromSeconds(60), replySettle: TimeSpan.FromSeconds(60));
             if (partial) { var reply = await request.WaitAsync(TimeSpan.FromSeconds(5)); Assert.Equal("answer", reply.Text); Assert.False(reply.Ok); }
             else {
-                var error = await Assert.ThrowsAsync<ThalovantRuntimeException>(() => request.WaitAsync(TimeSpan.FromSeconds(5)));
-                Assert.Contains(ThalovantEvents.PolicyDenied, error.Message);
+                var error = await Assert.ThrowsAsync<ThalovantPolicyDeniedException>(() => request.WaitAsync(TimeSpan.FromSeconds(5)));
+                // The message names the refusal rather than the event: a
+                // caller shows it to somebody, and "hive.policy.denied" is not
+                // a sentence.
+                Assert.Contains("refused", error.Message);
             }
             Assert.Single(fake.Emitted); Assert.Equal(0, fake.BusCount);
         }

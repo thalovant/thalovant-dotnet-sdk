@@ -193,6 +193,24 @@ namespace Thalovant
         private readonly HashSet<string> _activeAskIds = new HashSet<string>(StringComparer.Ordinal);
         private readonly HashSet<string> _activeQueryIds = new HashSet<string>(StringComparer.Ordinal);
 
+        /// <summary>When each fire-and-forget utterance went out; see <see cref="UtterancesInFlight"/>.</summary>
+        private readonly Queue<DateTime> _untrackedSends = new Queue<DateTime>();
+
+        /// <summary>
+        /// How many utterances this client may still have refused, for a denial
+        /// with no request id: asks and queries while they wait, and a
+        /// fire-and-forget utterance for the shared grace window after it went out.
+        /// </summary>
+        internal (int Asks, int Queries, int Sends) UtterancesInFlight()
+        {
+            lock (_lock)
+            {
+                var cutoff = DateTime.UtcNow - Refusal.UntrackedUtteranceGrace;
+                while (_untrackedSends.Count > 0 && _untrackedSends.Peek() <= cutoff) _untrackedSends.Dequeue();
+                return (_activeAskIds.Count, _activeQueryIds.Count, _untrackedSends.Count);
+            }
+        }
+
         private IDisposable ReserveRuntimeId(string id, bool query)
         {
             var active = query ? _activeQueryIds : _activeAskIds;
@@ -436,6 +454,16 @@ namespace Thalovant
             JsonObject? context = null,
             CancellationToken cancellationToken = default)
         {
+            if (eventType == ThalovantEvents.RecognizerLoopUtterance)
+            {
+                // A fire-and-forget utterance: nothing will wait on it, but the
+                // hub may refuse it, and that refusal carries no request id.
+                lock (_lock)
+                {
+                    _untrackedSends.Enqueue(DateTime.UtcNow);
+                    while (_untrackedSends.Count > 1024) _untrackedSends.Dequeue();
+                }
+            }
             await ConnectAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
             await _bus.EmitBusAsync(
                 eventType,
@@ -519,7 +547,7 @@ namespace Thalovant
                 Identity.SiteId,
                 lang,
                 effectiveRequestId);
-            var state = new AskState(Remaining, effectiveEmptyReplyWait, effectiveReplySettle);
+            var state = new AskState(Remaining, effectiveEmptyReplyWait, effectiveReplySettle, UtterancesInFlight);
             var handlerId = _bus.AddBusHandler(payload =>
             {
                 var busEvent = ThalovantEvent.FromBusPayload(payload);
@@ -578,8 +606,9 @@ namespace Thalovant
                 }
                 if (effectiveFailure is ThalovantEvent failure && final.Fragments.Count == 0)
                 {
-                    var message = failure.Text.Length == 0 ? $"Hub reported {failure.Name}." : failure.Text;
-                    throw new ThalovantRuntimeException(message);
+                    // Typed: a refusal, a question the hub has nothing for, and
+                    // a fault need three different sentences.
+                    throw Refusal.ErrorFor(failure);
                 }
                 // The end of the turn is the one place a hub states what the
                 // conversation now is, and it keeps none of it for a named session.
@@ -756,8 +785,22 @@ namespace Thalovant
         private readonly Func<TimeSpan>? _remaining;
         private readonly TimeSpan _emptyReplyWait, _replySettle;
 
-        internal AskState(Func<TimeSpan>? remaining = null, TimeSpan emptyReplyWait = default, TimeSpan replySettle = default)
-        { _remaining = remaining; _emptyReplyWait = emptyReplyWait; _replySettle = replySettle; }
+        /// <summary>Asks, queries and recent fire-and-forget utterances, for a denial the hub could not correlate.</summary>
+        private readonly Func<(int Asks, int Queries, int Sends)> _utterancesInFlight;
+
+        internal AskState(
+            Func<TimeSpan>? remaining = null,
+            TimeSpan emptyReplyWait = default,
+            TimeSpan replySettle = default,
+            Func<(int Asks, int Queries, int Sends)>? utterancesInFlight = null)
+        {
+            _remaining = remaining;
+            _emptyReplyWait = emptyReplyWait;
+            _replySettle = replySettle;
+            // One ask and nothing else is what a lone collector is: the tests
+            // that build one directly mean exactly that.
+            _utterancesInFlight = utterancesInFlight ?? (() => (1, 0, 0));
+        }
 
         private bool Expired()
         {
@@ -807,7 +850,24 @@ namespace Thalovant
         /// </summary>
         internal void Process(ThalovantEvent busEvent, string requestId)
         {
-            if (busEvent.RequestId != requestId)
+            if (busEvent.Name == ThalovantEvents.PolicyDenied)
+            {
+                // The one reply the hub cannot correlate. A denial carries no
+                // request id, only the type it refused, and dropping it here
+                // turned a refusal the hub made at once into a full timeout.
+                var (asks, queries, sends) = _utterancesInFlight();
+                if (!Refusal.BelongsToAsk(
+                        busEvent.RequestId,
+                        requestId,
+                        JsonUtil.OptionalString(busEvent.Data["denied_type"]),
+                        asks,
+                        queries,
+                        sends))
+                {
+                    return;
+                }
+            }
+            else if (busEvent.RequestId != requestId)
             {
                 return;
             }

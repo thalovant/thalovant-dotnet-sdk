@@ -153,15 +153,18 @@ namespace Thalovant.Sdk.Tests
         }
 
         [Fact]
-        public void ASendThatNeverLeftIsNotInFlight()
+        public void ASendThatNeverConnectedIsNotInFlight()
         {
-            // A phantom would suppress a real refusal for the whole grace window.
+            // Nothing was published, so there is nothing for the hub to refuse
+            // -- and a phantom would suppress a real refusal for the whole
+            // grace window. (A publish that fails *after* connecting keeps its
+            // record: the hub may already hold the frame.)
             var client = new ThalovantClient(new ThalovantIdentity(new JsonObject
             {
                 ["access_key"] = "k",
                 ["password"] = "p",
                 ["site_id"] = "s",
-                // Nothing listens here, so the publish cannot happen.
+                // Nothing listens here, so the connection cannot be made.
                 ["default_master"] = "wss://hub.invalid:1",
             }));
             Assert.ThrowsAny<Exception>(() => client.EmitAsync(

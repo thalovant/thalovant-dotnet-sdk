@@ -205,10 +205,31 @@ namespace Thalovant
         {
             lock (_lock)
             {
-                var cutoff = DateTime.UtcNow - Refusal.UntrackedUtteranceGrace;
-                while (_untrackedSends.Count > 0 && _untrackedSends.Peek() <= cutoff) _untrackedSends.Dequeue();
+                PruneUntrackedSends();
                 return (_activeAskIds.Count, _activeQueryIds.Count, _untrackedSends.Count);
             }
+        }
+
+        /// <summary>
+        /// Notes a fire-and-forget utterance, pruning as it goes: a client that
+        /// only ever sends and never asks would otherwise keep one entry per
+        /// send for as long as it lives.
+        /// </summary>
+        private void RecordUntrackedSend()
+        {
+            lock (_lock)
+            {
+                _untrackedSends.Enqueue(DateTime.UtcNow);
+                PruneUntrackedSends();
+            }
+        }
+
+        /// <summary>Drops what is past the grace window, and any excess beyond the cap. Caller holds the lock.</summary>
+        private void PruneUntrackedSends()
+        {
+            var cutoff = DateTime.UtcNow - Refusal.UntrackedUtteranceGrace;
+            while (_untrackedSends.Count > 0 && _untrackedSends.Peek() <= cutoff) _untrackedSends.Dequeue();
+            while (_untrackedSends.Count > 1024) _untrackedSends.Dequeue();
         }
 
         private IDisposable ReserveRuntimeId(string id, bool query)
@@ -465,36 +486,26 @@ namespace Thalovant
                 return;
             }
             // A fire-and-forget utterance: nothing will wait on it, but the hub
-            // may refuse it, and that refusal carries no request id. Recorded
-            // before the publish so a denial cannot beat the record, and
-            // dropped again if the publish never happened -- a send that failed
-            // to leave leaves nothing for the hub to refuse, and a phantom
-            // would suppress a real refusal for the whole grace window.
-            var sentAt = DateTime.UtcNow;
-            lock (_lock)
-            {
-                _untrackedSends.Enqueue(sentAt);
-                while (_untrackedSends.Count > 1024) _untrackedSends.Dequeue();
-            }
-            try
-            {
-                await ConnectAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-                await _bus.EmitBusAsync(
-                    eventType,
-                    data ?? new JsonObject(),
-                    ContextWithIdentityMetadata(context ?? new JsonObject()),
-                    cancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                lock (_lock)
-                {
-                    var kept = _untrackedSends.Where(entry => entry != sentAt).ToArray();
-                    _untrackedSends.Clear();
-                    foreach (var entry in kept) _untrackedSends.Enqueue(entry);
-                }
-                throw;
-            }
+            // may refuse it, and that refusal carries no request id.
+            //
+            // Recorded once the connection is up and immediately before the
+            // publish. Connecting can wait on a transport and its handshake,
+            // and starting the window there would spend the grace on it --
+            // leaving a denial to land after it, where an unrelated ask would
+            // take it. A connect that fails publishes nothing, so it records
+            // nothing.
+            //
+            // A publish that throws keeps its record: a transport can fail
+            // after the hub already holds the frame, and the hub refuses what
+            // it holds. A record that need not have been there costs an ask its
+            // deadline; a missing one ends a question the hub never refused.
+            await ConnectAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            RecordUntrackedSend();
+            await _bus.EmitBusAsync(
+                eventType,
+                data ?? new JsonObject(),
+                ContextWithIdentityMetadata(context ?? new JsonObject()),
+                cancellationToken).ConfigureAwait(false);
         }
 
         /// <summary>Sends an utterance without waiting for a reply.</summary>

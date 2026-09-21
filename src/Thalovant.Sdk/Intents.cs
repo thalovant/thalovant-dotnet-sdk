@@ -64,6 +64,14 @@ namespace Thalovant
         /// If all engines are unavailable, the first failure is surfaced.
         /// </summary>
         public bool Fallback { get; set; } = true;
+
+        /// <summary>
+        /// Whether to retry an empty listing once in the language's usual
+        /// form. On by default: a listing that returns nothing from a hub
+        /// which demonstrably answers in that language is a fault, not a
+        /// preference. See <see cref="ThalovantContext.UsualForm"/>.
+        /// </summary>
+        public bool Nearest { get; set; } = true;
     }
 
     /// <summary>Options for <see cref="ThalovantClient.ListIntentsAsync"/>.</summary>
@@ -418,6 +426,15 @@ namespace Thalovant
         /// <summary>The languages that were asked, as given.</summary>
         public IReadOnlyList<string> Languages { get; }
 
+        /// <summary>
+        /// The tag the hub actually listed each requested language under, in
+        /// <see cref="Languages"/> order. Equal to <see cref="Languages"/>
+        /// unless a listing came back empty and the language's usual form
+        /// answered instead, which is the only way the two differ. Callers
+        /// rendering sentences must read them from the tag that answered.
+        /// </summary>
+        public IReadOnlyList<string> ListedIn { get; }
+
         /// <summary>Skills in <c>skill_id</c> order, each with its intents in name order.</summary>
         public IReadOnlyList<HubSkillIntents> Skills { get; }
 
@@ -467,9 +484,11 @@ namespace Thalovant
             string source = SourceIntentManifest,
             IReadOnlyList<string>? denied = null,
             IReadOnlyList<HubFallback>? fallbacks = null,
-            bool fallbacksKnown = false)
+            bool fallbacksKnown = false,
+            IReadOnlyList<string>? listedIn = null)
         {
             Languages = languages;
+            ListedIn = listedIn ?? languages;
             Skills = skills;
             Source = source;
             Denied = denied ?? Array.Empty<string>();
@@ -589,7 +608,10 @@ namespace Thalovant
         private static async Task<HubIntentInventory> WithFallbacksAsync(ThalovantClient client, HubIntentInventory inventory, TimeSpan timeout, CancellationToken cancellationToken)
         {
             var handlers = await ListFallbacksAsync(client, timeout < TimeSpan.FromMilliseconds(1500) ? timeout : TimeSpan.FromMilliseconds(1500), cancellationToken).ConfigureAwait(false);
-            return new HubIntentInventory(inventory.Languages, inventory.Skills, inventory.Source, inventory.Denied, handlers, handlers != null);
+            // listedIn carried through: this rebuilds the value to attach
+            // the fallback handlers, and dropping it here would lose which
+            // tag answered on the very last line of the happy path.
+            return new HubIntentInventory(inventory.Languages, inventory.Skills, inventory.Source, inventory.Denied, handlers, handlers != null, inventory.ListedIn);
         }
 
         /// <summary>
@@ -1060,7 +1082,32 @@ namespace Thalovant
                 foreach (var lang in asked)
                 {
                     var rows = await ListIntentsAsync(client, lang, listOptions, cancellationToken).ConfigureAwait(false);
-                    listed.Add(new KeyValuePair<string, IReadOnlyList<IntentRegistration>>(lang, rows));
+                    var tag = lang;
+                    if (rows.Count == 0 && options.Nearest)
+                    {
+                        // Listing and asking do not agree about languages. The
+                        // hub matches an utterance to the closest language it
+                        // knows, so a phone set to en-CA is understood by
+                        // skills registered under en-US; the manifest is keyed
+                        // by exact tag, so the same hub lists nothing for
+                        // en-CA and a person is shown an empty hub by the hub
+                        // that is answering them.
+                        //
+                        // Once only, and only on an empty listing: a hub that
+                        // answered is never asked twice, and a language whose
+                        // usual form is itself has nothing to retry with.
+                        var usual = ThalovantContext.UsualForm(lang);
+                        if (usual != null)
+                        {
+                            var retried = await ListIntentsAsync(client, usual, listOptions, cancellationToken).ConfigureAwait(false);
+                            if (retried.Count > 0)
+                            {
+                                rows = retried;
+                                tag = usual;
+                            }
+                        }
+                    }
+                    listed.Add(new KeyValuePair<string, IReadOnlyList<IntentRegistration>>(tag, rows));
                 }
             }
             catch (ThalovantPolicyDeniedException denied)
@@ -1135,7 +1182,9 @@ namespace Thalovant
                 }
                 intents.Add(intent);
             }
-            return await WithFallbacksAsync(client, new HubIntentInventory(asked, Skills(bySkill), HubIntentInventory.SourceIntentManifest), options.Timeout, cancellationToken).ConfigureAwait(false);
+            var listedIn = new List<string>(listed.Count);
+            foreach (var pair in listed) { listedIn.Add(pair.Key); }
+            return await WithFallbacksAsync(client, new HubIntentInventory(asked, Skills(bySkill), HubIntentInventory.SourceIntentManifest, null, null, false, listedIn), options.Timeout, cancellationToken).ConfigureAwait(false);
         }
 
         /// <summary>The names-only inventory the engines' manifests allow, naming the refused query.</summary>

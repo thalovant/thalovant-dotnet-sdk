@@ -55,6 +55,45 @@ namespace Thalovant {
             }
             return result+td;
         }
+        /// <summary>
+        /// The form a language is usually written in, when that differs from
+        /// <paramref name="tag"/>: "en-CA" and "en-AT" both to "en-us",
+        /// "fr-BE" to "fr-fr", "pt-AO" to "pt-br", from CLDR's likely
+        /// subtags. Null when there is nothing different to try, so a caller
+        /// can tell "already the usual form" from "no idea".
+        /// </summary>
+        /// <remarks>
+        /// Listing and asking do not agree about languages. A hub matches an
+        /// utterance to the closest language it knows, so a phone set to
+        /// "en-CA" is understood by skills registered under "en-US"; its
+        /// manifest is keyed by exact tag, so the same hub lists nothing for
+        /// "en-CA". Lower case, because that is how skills register and how
+        /// the manifest is keyed: an exact lookup with BCP47's "en-US" finds
+        /// nothing.
+        /// </remarks>
+        internal static string? Usual(string tag) {
+            if(string.IsNullOrWhiteSpace(tag)) return null;
+            var baseLanguage=Parse(tag).Language;
+            // "und" is the tag for "no idea", and Parse produces it for
+            // anything it cannot read. CLDR's guess for an unknown language
+            // is English, so without this a blank tag lists a hub in a
+            // language nobody asked for.
+            if(baseLanguage.Length==0||baseLanguage=="und") return null;
+            // Maximize does not fail on a language it has never heard of: it
+            // walks its probes down to "und" and takes the root locale's
+            // region, so "zzz" comes back "zzz-us". Round-tripping the tag
+            // does not catch that, because the unknown language is carried
+            // through unchanged. A direct entry in the likely table is what
+            // says CLDR has heard of this language.
+            if(Field("likely",baseLanguage)==null) return null;
+            var likely=Maximize(new Tag{Language=baseLanguage});
+            var usual=(likely.Region.Length==0?likely.Language:likely.Language+"-"+likely.Region).ToLowerInvariant();
+            return SameLanguageTag(usual,tag)?null:usual;
+        }
+
+        private static bool SameLanguageTag(string a,string b)=>
+            a.Trim().Replace('_','-').ToLowerInvariant()==b.Trim().Replace('_','-').ToLowerInvariant();
+
         internal static string? Closest(string target,IEnumerable<string> available) {
             string? best=null;int minimum=int.MaxValue;
             foreach(var candidate in available) {int distance=Distance(target,candidate);if(distance<minimum){minimum=distance;best=candidate;}}
@@ -63,5 +102,8 @@ namespace Thalovant {
     }
     public static partial class ThalovantContext {
         public static string? ClosestLanguage(string target,IEnumerable<string> available)=>LanguageMatching.Closest(target,available);
+
+        /// <summary>The tag to retry a listing with; see <c>LanguageMatching.Usual</c>.</summary>
+        public static string? UsualForm(string tag)=>LanguageMatching.Usual(tag);
     }
 }

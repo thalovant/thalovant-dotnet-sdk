@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.3
+
+- Automated patch release of the unreleased changes on `main` since v0.8.2.
+
 ## 0.8.2 — 2026-09-18
 
 - A refusal ends an `AskAsync` at once instead of letting it run to the deadline. The hub sends `hive.policy.denied` the instant it refuses, with no request id, and the collector's correlation gate dropped it: the ask waited out its whole budget while a caller told somebody their hub "did not answer in time" about a question it had refused and explained. A denial with no request id is taken when it names the type this ask sent and this ask is the only utterance the client has out; a second ask, a query, or a fire-and-forget utterance still inside the shared 10-second grace window makes it ambiguous, so neither takes it.

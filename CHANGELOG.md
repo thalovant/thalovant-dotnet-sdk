@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.4
+
+- Automated patch release of the unreleased changes on `main` since v0.8.3.
+
 ## 0.8.3
 
 - Automated patch release of the unreleased changes on `main` since v0.8.2.

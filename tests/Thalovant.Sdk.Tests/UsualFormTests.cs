@@ -23,10 +23,17 @@ public class UsualFormTests
 
     // Null rather than the same tag, so a hub that answered is never asked
     // twice.
+    // Only byte-for-byte the usual form. The capital spelling is a different
+    // string to a manifest keyed "en-us", and suppressing its retry was the bug.
     [Theory]
-    [InlineData("en-US")]
+    [InlineData("en-US", "en-us")]
+    [InlineData("fr-FR", "fr-fr")]
+    public void TheCanonicalSpellingStillGetsARetry(string tag, string expected)
+        => Assert.Equal(expected, ThalovantContext.UsualForm(tag));
+
+    [Theory]
     [InlineData("en-us")]
-    [InlineData("fr-FR")]
+    [InlineData("fr-fr")]
     public void ATagAlreadyUsualHasNothingToRetryWith(string tag)
         => Assert.Null(ThalovantContext.UsualForm(tag));
 

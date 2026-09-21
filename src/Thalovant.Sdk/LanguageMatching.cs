@@ -88,7 +88,8 @@ namespace Thalovant {
             if(Field("likely",baseLanguage)==null) return null;
             var likely=Maximize(new Tag{Language=baseLanguage});
             var usual=(likely.Region.Length==0?likely.Language:likely.Language+"-"+likely.Region).ToLowerInvariant();
-            return SameLanguageTag(usual,tag)?null:usual;
+            // Byte comparison, NOT sameLanguage. They are not the same test, and the difference is the whole point: the canonical spelling is en-US, the manifest is keyed en-us, and sameLanguage calls those equal -- so the retry that exists for exactly this case suppressed itself.
+            return usual==tag.Trim()?null:usual;
         }
 
         private static bool SameLanguageTag(string a,string b)=>

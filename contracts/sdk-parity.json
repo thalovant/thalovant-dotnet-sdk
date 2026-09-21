@@ -81,7 +81,7 @@
     },
     "listing": {
       "implementation": {
-        "src/Thalovant.Sdk/Intents.cs": "2ed8eb073a031bf4dce4e94a88d35d4ad0677cd92d948af7e6ddf20ccfe2fd61",
+        "src/Thalovant.Sdk/Intents.cs": "9735856abfbd9862b9fa52e4c3ed18e06f71c7b9277d271df16bd631816c5919",
         "src/Thalovant.Sdk/Listing.cs": "a1617d3e3d749abb5472f45101c3eadab8f783c67b4f298a68c7c0591be4dacd"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
@@ -163,7 +163,8 @@
     "1e8b76b34b755207bb754e5f4c7364334f14476dee70fce1d2687bfdc1545f30",
     "f6a74ead44d53658228da3f4457334f3e922b67dd1e33b43c3ba8b6f7c066bf9",
     "6f5f697b07eb86da6877faf8aa27138430f886495ac965d08a28fba780e411cd",
-    "2377330566e575bb3fda77998d943667bf0795940f9d569a5b8bc7f4f0e5e486"
+    "2377330566e575bb3fda77998d943667bf0795940f9d569a5b8bc7f4f0e5e486",
+    "76bc1eb9957da5a6fdf03e89f3905f8d37d3ef2fe7c841ba751718105ca30a45"
   ],
   "schema_version": 1
 }

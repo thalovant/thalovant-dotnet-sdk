@@ -168,13 +168,24 @@ namespace Thalovant
     /// <see cref="Images"/> switches to <c>custom</c> mode unless <see cref="Mode"/>
     /// says otherwise.
     /// </summary>
+    /// <remarks>
+    /// Unless the caller is a platform administrator, <see cref="Images"/> may
+    /// name only platform images: a catalog, current or recommended image, or any
+    /// tag or digest of the platform's own repository for that key
+    /// (<c>ghcr.io/thalovant/ovos-core</c> for a runtime group's <c>core</c>,
+    /// <c>ghcr.io/thalovant/hivemind-listener</c> for a hub's <c>listener</c>).
+    /// The API refuses anything else with HTTP 403 <c>platform_image_required</c>.
+    /// </remarks>
     public sealed class ReleaseOptions
     {
         public string? Channel { get; set; }
         public string? Mode { get; set; }
         public string? Version { get; set; }
 
-        /// <summary>Component-to-image-reference overrides, sent as <c>images</c>.</summary>
+        /// <summary>
+        /// Component-to-image-reference pins, sent as <c>images</c>. Platform images only,
+        /// unless the caller is a platform administrator.
+        /// </summary>
         public IReadOnlyDictionary<string, string>? Images { get; set; }
 
         public string? Reason { get; set; }

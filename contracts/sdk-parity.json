@@ -1,5 +1,21 @@
 {
   "capabilities": {
+    "api-errors": {
+      "implementation": {
+        "src/Thalovant.Sdk/ControlPlane.cs": "cea66f04df0081c6173f352b30b16188ae1b91fbfe59d32cf8fb35abd90cecc8",
+        "src/Thalovant.Sdk/Errors.cs": "2aa4fb3cbf5acf80a9c78471384712752c239a0c10c1ae9f5dbf1b30b7c12034"
+      },
+      "reason": "ThalovantApiException.Detail and Problem, and ErrorCode under the shared rule, filled by ThalovantControlPlane.ApiError: the one place a non-2xx response becomes an exception, which reads the body as UTF-8, parses it once and keeps the message as it was. Run against the shared api-error vectors on net8.0 and net9.0, each response served with its exact status, Content-Type and bytes through an injected HttpMessageHandler and read back through GetHubAsync.",
+      "status": "required",
+      "tests": {
+        "tests/Thalovant.Sdk.Tests/ApiErrorVectorTests.cs": "6c040e43be02cedcc7e7122d0d4907fa95603ad9486eb1af919917668234b1f9",
+        "tests/Thalovant.Sdk.Tests/ConformanceRecord.cs": "63897e752ba8662dd89d4d90eb20b3208b6ff6d16e94c9965858a76593114d73",
+        "tests/Thalovant.Sdk.Tests/Fixtures/api-error-vectors.json": "f0d2d8e6e153811f071dac6e0611f00f3c32ed772b751ccccb31904d7dc936ec"
+      },
+      "vectors": {
+        "api-error-vectors.json": "tests/Thalovant.Sdk.Tests/Fixtures/api-error-vectors.json"
+      }
+    },
     "binary": {
       "implementation": {
         "src/Thalovant.Sdk/Client.cs": "1ca310fc1223847c07eba17cac3c0111e7b7030f0cb7698b1cef430b3cbc322b",
@@ -24,7 +40,7 @@
     },
     "control": {
       "implementation": {
-        "src/Thalovant.Sdk/ControlPlane.cs": "2b217d298e9ce93da77bdcc1c568db667d7bcdcf2db278cb6ca038486bce10b2",
+        "src/Thalovant.Sdk/ControlPlane.cs": "cea66f04df0081c6173f352b30b16188ae1b91fbfe59d32cf8fb35abd90cecc8",
         "src/Thalovant.Sdk/HubSkills.cs": "500577bd675f2c7c7a1bb111400d9253363037fa9d532ba4702ed43823b2e51d",
         "src/Thalovant.Sdk/Hubs.cs": "cdf29ca7c2e9be4bf9c25fcc7532cd878c79bab56d3976f107d3f77b05813cb6",
         "src/Thalovant.Sdk/NativeSignIn.cs": "f0a21354c36c52f800fe0b9b9c809239bb1ed3f3004ba4761c3cbb97f4fbac68"
@@ -112,7 +128,7 @@
     "refusal": {
       "implementation": {
         "src/Thalovant.Sdk/Client.cs": "1ca310fc1223847c07eba17cac3c0111e7b7030f0cb7698b1cef430b3cbc322b",
-        "src/Thalovant.Sdk/Errors.cs": "fa686499401002b7754478d8f1023ed9dd6adc41e9f572267de900e4d1b5abfc",
+        "src/Thalovant.Sdk/Errors.cs": "2aa4fb3cbf5acf80a9c78471384712752c239a0c10c1ae9f5dbf1b30b7c12034",
         "src/Thalovant.Sdk/Refusal.cs": "dff4e8b79ceb6816b1386c9079f648e057647f472ae65aaaf5c5a74484d6a8f8"
       },
       "reason": "Refusal.BelongsToAsk() and Refusal.ErrorFor() in src/Thalovant.Sdk/Refusal.cs, applied by AskState.Process() and AskAsync() in Client.cs, which counts asks, queries and fire-and-forget utterances inside the shared grace window -- recorded once connected and immediately before the publish, and kept when that publish throws. ThalovantPolicyDeniedException carries Quota -- read from every numeric shape a JsonValue holds -- and ThalovantUnansweredException is new; both remain ThalovantRuntimeException. Run against the shared refusal vectors plus collector-level cases.",
@@ -165,7 +181,8 @@
     "6f5f697b07eb86da6877faf8aa27138430f886495ac965d08a28fba780e411cd",
     "2377330566e575bb3fda77998d943667bf0795940f9d569a5b8bc7f4f0e5e486",
     "76bc1eb9957da5a6fdf03e89f3905f8d37d3ef2fe7c841ba751718105ca30a45",
-    "34a21f2ad875b220a571613e25b6a6e5f3d8de1a776f4949a7ab63ba93e07b16"
+    "34a21f2ad875b220a571613e25b6a6e5f3d8de1a776f4949a7ab63ba93e07b16",
+    "f79d99e9acd2fe299e3b313102541e47b366751defe5fa0dcfa44053aa7f007d"
   ],
   "schema_version": 1
 }

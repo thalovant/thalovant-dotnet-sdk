@@ -143,7 +143,8 @@ routes need a **paid plan** and a token with the **`hubs:write`** scope ("Create
 and update your hubs" on the dashboard's API Tokens page). A missing scope fails
 first with HTTP 403 `Insufficient scopes`; a free-plan token with the right scope
 fails with HTTP 402 `API access requires a paid plan.` Both surface as
-`ThalovantApiException` with the status code on `StatusCode`.
+`ThalovantApiException` with the status code on `StatusCode` (and `ErrorCode`,
+`Detail` and `Problem`; see [Reading An API Error](#reading-an-api-error)).
 
 ```csharp
 using Thalovant;
@@ -593,7 +594,9 @@ var selected = HubEndpoints.SelectDataPlaneEndpoint(
 ## Errors
 
 - `ThalovantApiException` — control API failures, with `StatusCode`, raw
-  `Body`, and the decoded `ErrorCode` where the API provides one.
+  `Body`, the decoded `ErrorCode`, the API's whole `Detail` sentence, and the
+  error body as a `JsonObject` in `Problem`; see
+  [Reading An API Error](#reading-an-api-error).
 - `ThalovantConnectionException` / `ThalovantTimeoutException` /
   `ThalovantRuntimeException` — data-plane connection, deadline, and hub
   failures.
@@ -617,9 +620,52 @@ and a matching `retry_after_seconds` in the body:
   `used`. Retry after the next UTC day or month starts.
 
 The SDK does not retry automatically. `ThalovantApiException` carries the
-status code, the raw `Body`, and the decoded `ErrorCode` — not response
-headers — so read `retry_after_seconds` out of the body to decide when to
-resend rather than reaching for the `Retry-After` header.
+status code, the raw `Body`, the decoded `ErrorCode`, `Detail` and `Problem` —
+not response headers — so read `retry_after_seconds` out of `Problem` to
+decide when to resend rather than reaching for the `Retry-After` header.
+
+## Reading An API Error
+
+A refused control-plane request throws `ThalovantApiException`. Its message is
+one line for display and can be shortened, so read what the API said from the
+exception itself:
+
+- `StatusCode`: the HTTP status.
+- `ErrorCode`: the machine-readable code, such as `platform_image_required` or
+  `plan_limit`, or `null`.
+- `Detail`: the API's whole sentence, exactly as sent, or `null`.
+- `Problem`: the whole error body as a `JsonObject` when it is a JSON object,
+  or `null`. Every structured field the API sends is here, including ones added
+  after this SDK was released. Each read returns a new copy, so keep it in a
+  local rather than reading the property once per field.
+
+```csharp
+using System.Collections.Generic;
+using Thalovant;
+
+try
+{
+    await api.ReleaseRuntimeGroupAsync(groupId, new ReleaseOptions
+    {
+        Images = new Dictionary<string, string> { ["core"] = "docker.io/me/ovos-core:dev" },
+    });
+}
+catch (ThalovantApiException error) when (error.ErrorCode == "platform_image_required")
+{
+    var problem = error.Problem!;
+    Console.WriteLine(error.Detail);
+    Console.WriteLine(problem["allowed_images"]);        // per image key
+    Console.WriteLine(problem["allowed_repositories"]);  // any tag or digest of these
+}
+catch (ThalovantApiException error) when (error.ErrorCode == "plan_limit")
+{
+    var problem = error.Problem!;
+    Console.WriteLine($"{problem["resource"]}: {problem["used"]} of {problem["limit"]}");
+}
+```
+
+A value the body echoes back from your request (a validation error repeats
+what it was sent) is only ever in `Problem` and `Body`, never in the message.
 
 ## Development
 

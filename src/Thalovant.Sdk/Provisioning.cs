@@ -169,12 +169,17 @@ namespace Thalovant
     /// says otherwise.
     /// </summary>
     /// <remarks>
-    /// Unless the caller is a platform administrator, <see cref="Images"/> may
-    /// name only platform images: a catalog, current or recommended image, or any
-    /// tag or digest of the platform's own repository for that key
-    /// (<c>ghcr.io/thalovant/ovos-core</c> for a runtime group's <c>core</c>,
-    /// <c>ghcr.io/thalovant/hivemind-listener</c> for a hub's <c>listener</c>).
-    /// The API refuses anything else with HTTP 403 <c>platform_image_required</c>.
+    /// Unless the caller is a platform administrator, each image in
+    /// <see cref="Images"/> must be one the platform releases for its key: a catalog
+    /// pin of the stable or alpha channel, the resource's current, recommended or
+    /// release-policy image, or the platform's default image. A runtime group's
+    /// <c>core</c> and a hub's <c>listener</c> also accept any tag or digest of the
+    /// platform's own repository (<c>ghcr.io/thalovant/ovos-core</c>,
+    /// <c>ghcr.io/thalovant/hivemind-listener</c>); <c>bus</c> and
+    /// <c>preview_bridge</c> take only the listed images. The API refuses anything else
+    /// with HTTP 403 <c>platform_image_required</c>, whose
+    /// <see cref="ThalovantApiException.Problem"/> names what each refused key may be
+    /// instead.
     /// </remarks>
     public sealed class ReleaseOptions
     {
@@ -183,8 +188,9 @@ namespace Thalovant
         public string? Version { get; set; }
 
         /// <summary>
-        /// Component-to-image-reference pins, sent as <c>images</c>. Platform images only,
-        /// unless the caller is a platform administrator.
+        /// Component-to-image-reference pins, sent as <c>images</c>: images the platform
+        /// releases for each key (see the remarks above), unless the caller is a platform
+        /// administrator.
         /// </summary>
         public IReadOnlyDictionary<string, string>? Images { get; set; }
 

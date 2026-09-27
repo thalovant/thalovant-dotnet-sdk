@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.6 — 2026-09-26
+
+- `ThalovantApiException` carries what the API said, not only the line built from it. `Problem` is the whole error body parsed, as a `JsonObject`, when it is a JSON object; `ErrorCode` is its machine-readable code; the new `Detail` is its sentence whole, exactly as sent. The message was the only place the sentence reached a caller, and it is cut at 200 characters: a `platform_image_required` refusal names every image each refused key may be instead, which is longer than that, so the list a caller needed was the part cut off -- and `refused_images`, `allowed_images` and `allowed_repositories` reached nobody who did not parse `Body` by hand. The same held for every structured refusal, `plan_limit`'s `resource`, `limit` and `used` included. The message itself is unchanged, and still never repeats a value the body echoed back from the request. Each read of `Problem` returns a new copy, so one caller cannot change what the next one reads.
+- `ErrorCode` follows the rule every SDK now shares: a `code` that is not a string, is empty or is only whitespace is no code, and the code inside a `detail` that is itself an object is read instead. It used to return an empty top-level `code` as the code. `Detail` is read the same way. The constructor is unchanged, and an error code passed to it still wins.
+- Response bodies are read as UTF-8 whatever the Content-Type says. The API labels its errors `application/problem+json` with no charset, and a charset added on the way would have re-decoded an accented sentence as something else. An error body that repeats a name keeps its last value, as the other SDKs' decoders do, instead of throwing `ArgumentException` out of the call.
+- Declares the parity contract's new `api-errors` capability, run against the Python reference's `api-error-vectors.json`: thirteen responses served through the control plane's own request path and read back through `GetHubAsync`, with the results recorded in `contracts/conformance-results.json`.
+
 ## 0.8.5
 
 - Automated patch release of the unreleased changes on `main` since v0.8.4.

@@ -440,15 +440,7 @@ namespace Thalovant
                 cancellationToken.ThrowIfCancellationRequested();
                 var (statusCode, text) = await SendRawAsync("POST", "/v1/auth/device/token", body, auth: false, cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
-                JsonObject? parsed;
-                try
-                {
-                    parsed = string.IsNullOrWhiteSpace(text) ? null : JsonUtil.ParseObject(text);
-                }
-                catch (Exception)
-                {
-                    parsed = null;
-                }
+                var parsed = ThalovantApiException.ParseProblem(text);
                 if (statusCode >= 200 && statusCode < 300)
                 {
                     if (parsed is null)
@@ -473,10 +465,7 @@ namespace Thalovant
                             "The device sign-in code expired before it was approved. "
                             + "Call LoginWithBrowserAsync() again to request a new code.");
                     default:
-                        throw new ThalovantApiException(
-                            FormatRequestFailed(statusCode, text),
-                            statusCode,
-                            text);
+                        throw ApiError(statusCode, text, parsed);
                 }
                 var remaining = deadline - clock();
                 if (remaining <= TimeSpan.Zero)
@@ -1282,11 +1271,25 @@ namespace Thalovant
             }
             using (response)
             {
-                var text = response.Content is null
-                    ? ""
-                    : await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-                return ((int)response.StatusCode, text);
+                var bytes = response.Content is null
+                    ? Array.Empty<byte>()
+                    : await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+                return ((int)response.StatusCode, DecodeBody(bytes));
             }
+        }
+
+        /// <summary>
+        /// A response body as text: UTF-8 whatever the Content-Type says, without
+        /// a byte-order mark. JSON is UTF-8 (RFC 8259), and the API labels its
+        /// error bodies <c>application/problem+json</c> with no charset;
+        /// <c>ReadAsStringAsync</c> would instead decode the bytes as whatever
+        /// charset a response names, so a proxy's label could turn an accented
+        /// sentence into mojibake.
+        /// </summary>
+        internal static string DecodeBody(byte[] bytes)
+        {
+            var start = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF ? 3 : 0;
+            return Encoding.UTF8.GetString(bytes, start, bytes.Length - start);
         }
 
         internal async Task<string> RequestDataAsync(
@@ -1301,10 +1304,7 @@ namespace Thalovant
                 .ConfigureAwait(false);
             if (statusCode < 200 || statusCode >= 300)
             {
-                throw new ThalovantApiException(
-                    FormatRequestFailed(statusCode, text),
-                    statusCode,
-                    text);
+                throw ApiError(statusCode, text);
             }
             return text;
         }
@@ -1357,6 +1357,24 @@ namespace Thalovant
         internal const int MaxServerDetailLength = 200;
 
         /// <summary>
+        /// The error for a response the API answered with a failure status: the
+        /// one place a non-2xx control-plane response becomes an exception.
+        /// </summary>
+        /// <remarks>
+        /// The body is parsed once. When it is a JSON object it rides on the
+        /// error whole, as <see cref="ThalovantApiException.Problem"/>, with its
+        /// <see cref="ThalovantApiException.ErrorCode"/> and its unshortened
+        /// <see cref="ThalovantApiException.Detail"/> read out of it; the
+        /// message stays the bounded line <see cref="FormatRequestFailed"/>
+        /// always built.
+        /// </remarks>
+        internal static ThalovantApiException ApiError(int statusCode, string body) =>
+            ApiError(statusCode, body, ThalovantApiException.ParseProblem(body));
+
+        private static ThalovantApiException ApiError(int statusCode, string body, JsonObject? problem) =>
+            ThalovantApiException.FromResponse(FailureMessage(statusCode, problem), statusCode, body, problem);
+
+        /// <summary>
         /// Builds the message for a failed control-plane request: the HTTP status
         /// plus, only when present, a known human-readable field of a JSON error
         /// envelope. Arbitrary response-body text is never echoed — so a 4xx that
@@ -1364,11 +1382,16 @@ namespace Thalovant
         /// POST /v1/clients <c>apiKey</c>, <c>password</c>, or <c>cryptoKey</c> the
         /// SDK generated) cannot launder those secrets into the message. The full
         /// body stays available on <see cref="ThalovantApiException.Body"/> and
-        /// still feeds <see cref="ThalovantApiException.ErrorCode"/>.
+        /// <see cref="ThalovantApiException.Problem"/>, and still feeds
+        /// <see cref="ThalovantApiException.ErrorCode"/> and
+        /// <see cref="ThalovantApiException.Detail"/>.
         /// </summary>
-        internal static string FormatRequestFailed(int statusCode, string? body)
+        internal static string FormatRequestFailed(int statusCode, string? body) =>
+            FailureMessage(statusCode, ThalovantApiException.ParseProblem(body));
+
+        private static string FailureMessage(int statusCode, JsonObject? problem)
         {
-            var detail = SummarizeServerDetail(body);
+            var detail = SummarizeProblem(problem);
             return detail.Length == 0
                 ? $"Thalovant API request failed with HTTP {statusCode}."
                 : $"Thalovant API request failed with HTTP {statusCode}: {detail}";
@@ -1390,28 +1413,17 @@ namespace Thalovant
         /// not a JSON object — or carries no known field — yields an empty string,
         /// so no raw or reflected body text ever reaches the message.
         /// </summary>
-        internal static string SummarizeServerDetail(string? body)
+        internal static string SummarizeServerDetail(string? body) =>
+            SummarizeProblem(ThalovantApiException.ParseProblem(body));
+
+        private static string SummarizeProblem(JsonObject? envelope)
         {
-            if (string.IsNullOrWhiteSpace(body))
-            {
-                return "";
-            }
-            var detail = ExtractKnownDetail(body!);
+            var detail = envelope is null ? null : ExtractKnownDetail(envelope);
             return detail is null ? "" : CollapseWhitespace(detail, MaxServerDetailLength);
         }
 
-        private static string? ExtractKnownDetail(string body)
+        private static string? ExtractKnownDetail(JsonObject envelope)
         {
-            JsonObject envelope;
-            try
-            {
-                envelope = JsonUtil.ParseObject(body);
-            }
-            catch (Exception)
-            {
-                return null;
-            }
-
             // `detail` is the primary FastAPI error field. Its shape varies:
             var detail = envelope["detail"];
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace Thalovant
@@ -17,8 +18,32 @@ namespace Thalovant
     }
 
     /// <summary>The Thalovant control API rejected a request or returned an unusable response.</summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="Exception.Message"/> is one bounded line for display. It can
+    /// be shortened, so it is never where to read what the API said: read
+    /// <see cref="ErrorCode"/>, <see cref="Detail"/> and <see cref="Problem"/>
+    /// instead. A value the body echoed back from the request (a validation
+    /// error repeats what it was sent) never reaches the message, only
+    /// <see cref="Problem"/> and <see cref="Body"/>.
+    /// </para>
+    /// <para>
+    /// A refused image, for example, answers HTTP 403 with
+    /// <c>platform_image_required</c>, a sentence longer than the message keeps,
+    /// and <c>refused_images</c>, <c>allowed_images</c> and
+    /// <c>allowed_repositories</c>; a plan limit answers <c>plan_limit</c> with
+    /// <c>resource</c>, <c>limit</c>, <c>used</c> and <c>plan</c>. All of them
+    /// are on <see cref="Problem"/>.
+    /// </para>
+    /// </remarks>
     public sealed class ThalovantApiException : ThalovantException
     {
+        /// <summary>
+        /// The body parsed once, kept private: <see cref="Problem"/> hands out
+        /// copies of it, so no caller can change what the next one reads.
+        /// </summary>
+        private readonly JsonObject? _problem;
+
         /// <summary>HTTP status code, when the server produced a response.</summary>
         public int? StatusCode { get; }
 
@@ -26,49 +51,142 @@ namespace Thalovant
         public string? Body { get; }
 
         /// <summary>
-        /// Machine-readable error code decoded from the body, when present
-        /// (top-level <c>code</c>, or <c>detail.code</c> for FastAPI error envelopes).
+        /// The body's machine-readable code, such as <c>platform_image_required</c>
+        /// or <c>plan_limit</c>, or null. It is the body's <c>code</c> when that is
+        /// a string with a non-whitespace character; otherwise, when the body's
+        /// <c>detail</c> is itself an object (FastAPI's own envelope, for example
+        /// <c>mfa_required</c>), that object's <c>code</c> under the same rule.
+        /// Returned exactly as sent. A code passed to the constructor wins.
         /// </summary>
         public string? ErrorCode { get; }
 
+        /// <summary>
+        /// The API's own sentence, whole and exactly as sent -- never trimmed,
+        /// collapsed or shortened, unlike the message -- or null. It is the
+        /// body's <c>detail</c> when that is a string with a non-whitespace
+        /// character; otherwise, when <c>detail</c> is itself an object, that
+        /// object's <c>detail</c> under the same rule.
+        /// </summary>
+        public string? Detail { get; }
+
+        /// <summary>
+        /// The whole error body parsed, exactly when it is a JSON object (the
+        /// Problem+JSON document every Thalovant API refusal is), or null for a
+        /// body that is empty, not JSON, or JSON that is not an object. Every
+        /// structured field the API sends is here, including ones added after
+        /// this SDK was released. The body is read as UTF-8 whatever the
+        /// response's Content-Type says, and a name the body repeats keeps its
+        /// last value.
+        /// </summary>
+        /// <remarks>
+        /// Each read returns a new copy, so changing what one read returned
+        /// never changes what the next read, or another caller, sees. Keep the
+        /// copy in a local when reading several fields.
+        /// </remarks>
+        public JsonObject? Problem => _problem is null ? null : (JsonObject)_problem.DeepClone();
+
         public ThalovantApiException(string message, int? statusCode = null, string? body = null, string? errorCode = null)
+            : this(message, statusCode, body, errorCode, ParseProblem(body))
+        {
+        }
+
+        private ThalovantApiException(string message, int? statusCode, string? body, string? errorCode, JsonObject? problem)
             : base(message)
         {
             StatusCode = statusCode;
             Body = body;
-            ErrorCode = errorCode ?? DecodeErrorCode(body);
+            _problem = problem;
+            ErrorCode = errorCode ?? ProblemText(problem, "code");
+            Detail = ProblemText(problem, "detail");
         }
 
-        internal static string? DecodeErrorCode(string? body)
+        /// <summary>
+        /// The error for a response the API answered with a failure status,
+        /// from the body the caller already parsed with <see cref="ParseProblem"/>
+        /// so that it is parsed once.
+        /// </summary>
+        internal static ThalovantApiException FromResponse(string message, int statusCode, string body, JsonObject? problem) =>
+            new ThalovantApiException(message, statusCode, body, null, problem);
+
+        /// <summary>
+        /// A member of an error body that is a string with a non-whitespace
+        /// character, exactly as sent; otherwise the same member of a
+        /// <c>detail</c> that is itself an object; otherwise null.
+        /// </summary>
+        internal static string? ProblemText(JsonObject? problem, string member)
         {
-            if (string.IsNullOrEmpty(body))
+            if (problem is null)
             {
                 return null;
             }
-            JsonObject? parsed;
+            return Text(problem[member]) ?? Text((problem["detail"] as JsonObject)?[member]);
+        }
+
+        private static string? Text(JsonNode? node) =>
+            node is JsonValue value && value.TryGetValue<string>(out var text) && !string.IsNullOrWhiteSpace(text)
+                ? text
+                : null;
+
+        /// <summary>
+        /// An error body parsed, exactly when it is a JSON object; null for a
+        /// body that is empty, is not JSON, or is JSON that is not an object.
+        /// </summary>
+        /// <remarks>
+        /// Built node by node from a <see cref="JsonDocument"/> rather than by
+        /// <c>JsonNode.Parse</c>, whose objects are filled lazily: a name
+        /// repeated in the body then throws <see cref="ArgumentException"/> on
+        /// first access, out of whatever was reading it -- a property getter,
+        /// or the constructor of this exception. Here a repeated name keeps its
+        /// last value, as the other SDKs' decoders do, and the whole tree is
+        /// built before it is returned.
+        /// </remarks>
+        internal static JsonObject? ParseProblem(string? body)
+        {
+            if (string.IsNullOrWhiteSpace(body))
+            {
+                return null;
+            }
             try
             {
-                parsed = JsonNode.Parse(body) as JsonObject;
+                using var document = JsonDocument.Parse(body!);
+                return document.RootElement.ValueKind == JsonValueKind.Object
+                    ? (JsonObject?)Materialize(document.RootElement)
+                    : null;
             }
-            catch (Exception)
+            catch (JsonException)
             {
                 return null;
             }
-            if (parsed is null)
+        }
+
+        private static JsonNode? Materialize(JsonElement element)
+        {
+            switch (element.ValueKind)
             {
-                return null;
+                case JsonValueKind.Object:
+                    var map = new JsonObject();
+                    foreach (var property in element.EnumerateObject())
+                    {
+                        // The indexer replaces: a repeated name keeps its last value.
+                        map[property.Name] = Materialize(property.Value);
+                    }
+                    return map;
+                case JsonValueKind.Array:
+                    var list = new JsonArray();
+                    foreach (var item in element.EnumerateArray())
+                    {
+                        list.Add(Materialize(item));
+                    }
+                    return list;
+                case JsonValueKind.Null:
+                    return null;
+                default:
+                    // A string, number or boolean, backed by its element as
+                    // JsonNode.Parse would leave it, so a number stays exactly
+                    // as written; cloned, because the document it came from is
+                    // disposed on return.
+                    return JsonValue.Create(element.Clone());
             }
-            if (parsed["code"] is JsonValue topLevel && topLevel.TryGetValue<string>(out var code))
-            {
-                return code;
-            }
-            if (parsed["detail"] is JsonObject detail
-                && detail["code"] is JsonValue nested
-                && nested.TryGetValue<string>(out var detailCode))
-            {
-                return detailCode;
-            }
-            return null;
         }
     }
 

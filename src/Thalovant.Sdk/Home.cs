@@ -462,6 +462,11 @@ namespace Thalovant
         {
             HomeAnswer? answer;
             var handlerToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            // Owned here until a handler that outlives its bound takes it with it.
+            // A linked source holds a registration on the subscription's token,
+            // so one left undisposed per failing request grows for as long as a
+            // link stays up.
+            var handedOff = false;
             // Started on its own: a handler that blocks before its first await,
             // or ignores its token, must not hold the answer back.
             var work = Task.Run(() => handler(request, handlerToken.Token).AsTask(), CancellationToken.None);
@@ -475,12 +480,12 @@ namespace Thalovant
                 if (first == work)
                 {
                     answer = await work.ConfigureAwait(false);
-                    handlerToken.Dispose();
                 }
                 else
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     handlerToken.Cancel();
+                    handedOff = true;
                     // Whatever it does after this is nobody's answer, and a fault
                     // it raises later must not surface as unobserved.
                     _ = work.ContinueWith(
@@ -502,6 +507,10 @@ namespace Thalovant
             catch (Exception)
             {
                 answer = HomeAnswer.Error(HomeErrorCodes.FailedToHandle);
+            }
+            finally
+            {
+                if (!handedOff) handlerToken.Dispose();
             }
             return Response(request, answer);
         }

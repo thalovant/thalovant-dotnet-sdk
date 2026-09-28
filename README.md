@@ -762,10 +762,12 @@ and a matching `retry_after_seconds` in the body:
   The body names which in `quota` (`daily` or `monthly`) alongside `limit` and
   `used`. Retry after the next UTC day or month starts.
 
-The SDK does not retry automatically. `ThalovantApiException` carries the
-status code, the raw `Body`, the decoded `ErrorCode`, `Detail` and `Problem` —
-not response headers — so read `retry_after_seconds` out of `Problem` to
-decide when to resend rather than reaching for the `Retry-After` header.
+The SDK does not retry automatically, except inside `WaitForAdmissionAsync`.
+To decide when to resend, read `RetryAfter` on the exception. It is the body's
+`retry_after_seconds` when the body names one (inside `detail` or at the top),
+else the `Retry-After` header in seconds, else `RateLimit-Reset`. The last is
+all the API's own rate limiter sends with its plain-text 429, which has no body
+and so no `Problem`.
 
 ## Reading An API Error
 

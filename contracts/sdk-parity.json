@@ -130,7 +130,7 @@
     "home-link": {
       "implementation": {
         "src/Thalovant.Sdk/Client.cs": "1d01d56f7f085013c2b59a984553411ba646850a32a1a2b78addcceeee2619fb",
-        "src/Thalovant.Sdk/Home.cs": "34c83e33f8272090f25f8db703473bad3f204fef5c69903f037c1661fa7ffacc",
+        "src/Thalovant.Sdk/Home.cs": "0cb391345c2acfb27084342f292910d78e0780f1cfd90269e738855ffb7c4f31",
         "src/Thalovant.Sdk/Noise.cs": "b6511a953c5af1167a364938f0adcbe434590bc7879f46d0ef42184052e70284",
         "src/Thalovant.Sdk/Session.cs": "46a1f53da2c8a59908c09b5205f4cf9bac4ee45842ee7997bd055a2ddf10f5a7",
         "src/Thalovant.Sdk/Transport.cs": "fa13082e00c863300fe099800086b2330603d15a100c77578f76eb5c9e258918"

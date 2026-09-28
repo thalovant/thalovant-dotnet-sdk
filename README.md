@@ -133,7 +133,9 @@ nor the token ever appears in an exception message.
 
 `RevokeApiTokenAsync()` revokes the token this client signed in with (a token
 may always revoke itself) and forgets it locally; pass a token id to revoke
-another one.
+another one. Revoking the token in use is idempotent: one already revoked
+cannot authenticate its own revoke, so the API's 401 counts as revoked, and
+revoking again sends nothing until the next sign-in.
 
 ## Use a Pre-Provisioned API Token (CI)
 
@@ -661,8 +663,10 @@ sends it `thalovant.home.request`, and it answers every one with
    A failed operation throws `ThalovantAdmissionFailedException` with its
    `ErrorCode`. Running out of time throws `ThalovantAdmissionTimeoutException`,
    which is both a connection error and a timeout, because the connection may
-   still be admitted later. A 5xx while polling is ridden out, and an operation
-   link to another origin is never followed.
+   still be admitted later. A 5xx while polling is ridden out, and so is a 429
+   (your plan's rate limit): the next poll waits the `retry_after_seconds` the
+   API names, and when that is longer than the time left the wait ends at once
+   as a timeout. An operation link to another origin is never followed.
 4. **Answer requests** on a link that stays up:
 
    ```csharp

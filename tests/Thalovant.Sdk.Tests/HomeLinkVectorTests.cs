@@ -208,6 +208,8 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
                 Assert.Null(plane.AccessToken);
                 Assert.Null(plane.TokenId);
                 produced = new JsonArray { new JsonObject { ["outcome"] = "revoked" } };
+                // Idempotent: revoking again sends nothing and succeeds.
+                await plane.RevokeApiTokenAsync();
             }
         }
         ConformanceRecord.Record("device-login-vectors.json", name, produced.DeepClone());
@@ -257,6 +259,46 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
             }
             return produced;
         }
+    }
+
+    [Fact]
+    public async Task RevokingAnotherTokenByIdStillThrowsWhatTheApiSaid()
+    {
+        using var api = new ScriptedApi(new JsonArray(new JsonObject
+        {
+            ["request"] = new JsonObject { ["method"] = "DELETE", ["path"] = "/v1/auth/api-tokens/someone-else" },
+            ["response"] = new JsonObject { ["status"] = 401, ["content_type"] = "application/problem+json", ["body"] = """{"detail":"Could not validate credentials"}""" },
+        }));
+        var plane = Plane(api, "synthetic-token");
+        plane.TokenId = "mine";
+        var error = await Assert.ThrowsAsync<ThalovantAuthenticationException>(() => plane.RevokeApiTokenAsync("someone-else"));
+        Assert.Equal(401, error.StatusCode);
+        // Not this client's token: nothing here is forgotten.
+        Assert.Equal("synthetic-token", plane.AccessToken);
+        Assert.Equal("mine", plane.TokenId);
+        Assert.Empty(api.Mismatches);
+    }
+
+    [Fact]
+    public async Task APasswordSignInTakesTheDeviceTokensPlaceAndItsId()
+    {
+        var approved = Case(Device, "approved, with the token's scopes and id")["exchanges"]!.AsArray()[0]!.DeepClone();
+        using var api = new ScriptedApi(new JsonArray(approved, new JsonObject
+        {
+            ["request"] = new JsonObject { ["method"] = "POST", ["path"] = "/v1/auth/token" },
+            ["response"] = new JsonObject { ["status"] = 200, ["content_type"] = "application/json", ["body"] = """{"access_token":"session-token","token_type":"bearer"}""" },
+        }));
+        var plane = Plane(api);
+        await plane.PollDeviceLoginAsync(new DeviceAuthorization("dc-5f0c2d4e8a614c1f9d2b3e7a9c0b1f24", "", "https://x", null, 900, TimeSpan.FromSeconds(5), new JsonObject()));
+        Assert.Equal("7b0e1c52-9a0d-4f64-9d0e-3f1a2b4c5d6e", plane.TokenId);
+        await plane.LoginAsync("dev@example.com", "secret");
+        Assert.Equal("session-token", plane.AccessToken);
+        // The device token's id went with it: a default revoke has nothing to
+        // reach for, rather than revoking a token this client no longer holds.
+        Assert.Null(plane.TokenId);
+        await Assert.ThrowsAsync<ThalovantApiException>(() => plane.RevokeApiTokenAsync());
+        Assert.Equal(2, api.Sent.Count);
+        Assert.Empty(api.Mismatches);
     }
 
     // -- connection kinds -----------------------------------------------------
@@ -391,13 +433,15 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
         using var api = new ScriptedApi(vector["exchanges"]!.AsArray());
         var plane = Plane(api, "synthetic-token");
         var operation = call["operation"] is JsonObject raw ? JsonSerializer.Deserialize<OperationResource>(raw.ToJsonString()) : null;
+        var expect = vector["expect"]!.AsObject();
         JsonObject produced;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             await plane.WaitForAdmissionAsync(
                 operation,
-                TimeSpan.FromSeconds(call["timeout_seconds"]!.GetValue<double>()),
-                TimeSpan.FromSeconds(call["poll_interval_seconds"]!.GetValue<double>()));
+                TimeSpan.FromMilliseconds(call["timeout_ms"]!.GetValue<long>()),
+                TimeSpan.FromMilliseconds(call["poll_interval_ms"]!.GetValue<long>()));
             produced = new JsonObject { ["outcome"] = "admitted", ["polls"] = api.Sent.Count };
         }
         catch (ThalovantAdmissionTimeoutException error)
@@ -406,6 +450,7 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
             Assert.IsAssignableFrom<ThalovantConnectionException>(error);
             Assert.IsAssignableFrom<IThalovantTimeout>(error);
             produced = new JsonObject { ["outcome"] = "timeout" };
+            if (expect.ContainsKey("polls")) produced["polls"] = api.Sent.Count;
         }
         catch (ThalovantAdmissionFailedException error)
         {
@@ -414,6 +459,13 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
         catch (ThalovantApiException)
         {
             produced = new JsonObject { ["outcome"] = "error", ["polls"] = api.Sent.Count };
+        }
+        if (expect["waited_at_least_ms"] is JsonNode least)
+        {
+            // Recorded as the bound it met, so every SDK records the same value.
+            var bound = least.GetValue<long>();
+            var waited = (long)clock.Elapsed.TotalMilliseconds;
+            produced["waited_at_least_ms"] = waited >= bound ? bound : waited;
         }
         ConformanceRecord.Record("connection-admission-vectors.json", name, produced.DeepClone());
         Assert.Empty(api.Mismatches);
@@ -425,7 +477,7 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
     private static HomeRequestHandler Handler(JsonObject spec) => async (request, cancellationToken) =>
     {
         if (spec["raises"]?.GetValue<bool>() == true) throw new InvalidOperationException("the conversation agent is gone");
-        if (spec["sleep_seconds"] is JsonNode sleep) await Task.Delay(TimeSpan.FromSeconds(sleep.GetValue<double>()), cancellationToken);
+        if (spec["sleep_ms"] is JsonNode sleep) await Task.Delay(TimeSpan.FromMilliseconds(sleep.GetValue<long>()), cancellationToken);
         return new HomeAnswer(
             (string?)spec["speech"] ?? "",
             (string?)spec["response_type"] ?? HomeResponseTypes.ActionDone,
@@ -456,7 +508,7 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
         }
         else
         {
-            var timeout = vector["timeout_seconds"] is JsonNode seconds ? TimeSpan.FromSeconds(seconds.GetValue<double>()) : (TimeSpan?)null;
+            var timeout = vector["timeout_ms"] is JsonNode milliseconds ? TimeSpan.FromMilliseconds(milliseconds.GetValue<long>()) : (TimeSpan?)null;
             using var answering = client.AnswerHomeRequests(Handler(vector["handler"]!.AsObject()), timeout);
             peer.SendBus(ThalovantHome.RequestEvent, vector["request"]!.DeepClone().AsObject(), new JsonObject
             {
@@ -483,8 +535,8 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
         Assert.Equal(Home["error_codes"]!.AsArray().Select(item => (string)item!), HomeErrorCodes.All);
         Assert.Equal(ThalovantHome.RequestEvent, (string)Home["request_type"]!);
         Assert.Equal(ThalovantHome.ResponseEvent, (string)Home["response_type"]!);
-        Assert.Equal(TimeSpan.FromSeconds(Home["reply_timeout_seconds"]!.GetValue<double>()), ThalovantHome.HubTimeout);
-        Assert.True(ThalovantHome.DefaultHandlerTimeout < ThalovantHome.HubTimeout);
+        Assert.Equal(TimeSpan.FromMilliseconds(Home["reply_timeout_ms"]!.GetValue<long>()), ThalovantHome.HubTimeout);
+        Assert.Equal(TimeSpan.FromMilliseconds(9000), ThalovantHome.DefaultHandlerTimeout);
         Assert.Equal(Device["home_assistant_scopes"]!.AsArray().Select(item => (string)item!), ThalovantHome.HomeAssistantScopes);
     }
 }

@@ -296,6 +296,7 @@ namespace Thalovant
             // earlier device login would have RevokeApiTokenAsync() revoke
             // that token and then forget this one.
             TokenId = TokenIdOf(token);
+            _revokedOwn = false;
             return token;
         }
 
@@ -342,6 +343,7 @@ namespace Thalovant
             // earlier device login would have RevokeApiTokenAsync() revoke
             // that token and then forget this one.
             TokenId = TokenIdOf(token);
+            _revokedOwn = false;
             return token;
         }
 
@@ -501,26 +503,52 @@ namespace Thalovant
         /// (<see cref="TokenId"/>). <c>DELETE /v1/auth/api-tokens/{token_id}</c>.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// A token may always revoke itself, whatever its scopes. Revoking the
         /// token in use forgets it here too, so a later call fails locally rather
         /// than with a 401.
+        /// </para>
+        /// <para>
+        /// Revoking the token in use is idempotent. A token already revoked, or
+        /// expired, cannot authenticate its own revoke, so the API answers 401;
+        /// the token is dead either way, so that counts as revoked and the token
+        /// is forgotten, and revoking again sends nothing until the next sign-in.
+        /// Revoking another token by id is not: the API's answer -- 404 for one it
+        /// does not know -- is thrown as usual.
+        /// </para>
         /// </remarks>
         public async Task RevokeApiTokenAsync(string? tokenId = null, CancellationToken cancellationToken = default)
         {
             var target = string.IsNullOrEmpty(tokenId) ? TokenId : tokenId;
             if (string.IsNullOrEmpty(target))
             {
+                if (_revokedOwn && AccessToken is null)
+                {
+                    return; // Already revoked and forgotten: revoking again changes nothing.
+                }
                 throw new ThalovantApiException(
                     "No API token id to revoke: pass tokenId, or sign in with a device login first.");
             }
-            await RequestDataAsync("DELETE", "/v1/auth/api-tokens/" + Uri.EscapeDataString(target!), cancellationToken: cancellationToken)
-                .ConfigureAwait(false);
-            if (target == TokenId)
+            var own = target == TokenId;
+            try
+            {
+                await RequestDataAsync("DELETE", "/v1/auth/api-tokens/" + Uri.EscapeDataString(target!), cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (ThalovantAuthenticationException error) when (own && error.StatusCode == 401)
+            {
+                // It cannot authenticate its own revoke: it is dead already.
+            }
+            if (own)
             {
                 AccessToken = null;
                 TokenId = null;
+                _revokedOwn = true;
             }
         }
+
+        /// <summary>Whether the token this client signed in with was revoked and forgotten, so revoking again is a no-op.</summary>
+        private bool _revokedOwn;
 
         /// <summary><c>POST /v1/auth/device/authorize</c>, and the grant read out of it.</summary>
         private async Task<DeviceAuthorization> AuthorizeDeviceAsync(
@@ -607,6 +635,7 @@ namespace Thalovant
             }
             AccessToken = accessToken;
             TokenId = TokenIdOf(token);
+            _revokedOwn = false;
             return DeviceLoginResult.FromToken(token, accessToken!);
         }
 
@@ -1438,10 +1467,11 @@ namespace Thalovant
         /// <summary>A 422 whose problem is about <c>connection_type</c>.</summary>
         /// <remarks>
         /// Only the parts of the problem that name what is wrong are read: its
-        /// <c>detail</c> and <c>code</c>, and each validation entry's <c>loc</c>
-        /// and <c>msg</c>. Never an entry's <c>input</c>: that echoes what was
-        /// sent, and a spec that failed validation for any other reason still
-        /// carries the <c>connection_type</c> the SDK put in it.
+        /// <c>detail</c> and <c>code</c>, and the <c>loc</c> and <c>msg</c> of each
+        /// validation error, under <c>errors</c> or under a <c>detail</c> that is a
+        /// list. Never an entry's <c>input</c>: that echoes what was sent, and a
+        /// spec that failed validation for any other reason still carries the
+        /// <c>connection_type</c> the SDK put in it.
         /// </remarks>
         private static bool RefusesConnectionType(ThalovantApiException error)
         {
@@ -1453,12 +1483,17 @@ namespace Thalovant
             {
                 return true;
             }
-            if (error.Problem?["detail"] is JsonArray entries)
+            var problem = error.Problem;
+            foreach (var key in new[] { "errors", "detail" })
             {
+                if (problem?[key] is not JsonArray entries)
+                {
+                    continue;
+                }
                 foreach (var entry in entries)
                 {
                     if (entry is JsonObject item
-                        && (NamesConnectionType(JsonUtil.GetString(item["msg"])) || NamesConnectionType(item["loc"]?.ToJsonString())))
+                        && (NamesConnectionType(JsonUtil.GetString(item["msg"])) || NamesConnectionType(Location(item["loc"]))))
                     {
                         return true;
                     }
@@ -1466,6 +1501,14 @@ namespace Thalovant
             }
             return false;
         }
+
+        /// <summary>A validation error's <c>loc</c> as one dotted path, such as <c>body.spec.connection_type</c>.</summary>
+        private static string? Location(JsonNode? loc) => loc switch
+        {
+            JsonArray parts => string.Join(".", parts.Select(part => part is JsonValue value && value.TryGetValue<string>(out var name) ? name : part?.ToJsonString() ?? "None")),
+            JsonValue value when value.TryGetValue<string>(out var path) => path,
+            _ => null,
+        };
 
         private static bool NamesConnectionType(string? text) =>
             text is not null
@@ -1582,9 +1625,12 @@ namespace Thalovant
         /// Returns at once when there is nothing to wait on: no operation, or one
         /// the API no longer tracks (HTTP 404). <c>ready</c> is admitted;
         /// <c>requested</c>, <c>committed</c> and <c>applied</c> keep polling, and
-        /// a 5xx is ridden out, as is a 429 -- waiting the
-        /// <c>retry_after_seconds</c> it names when that is longer than
-        /// <paramref name="pollInterval"/>. Throws <see cref="ThalovantAdmissionFailedException"/>
+        /// a 5xx is ridden out. So is a 429, the token's rate limit, which this
+        /// wait shares with every other call: the next poll waits the
+        /// <c>retry_after_seconds</c> it names (inside the problem's
+        /// <c>detail</c> object, where the API puts it, or at the top) when that
+        /// is longer than <paramref name="pollInterval"/>, and when it is longer
+        /// than the time left the wait ends at once as a timeout. Throws <see cref="ThalovantAdmissionFailedException"/>
         /// when the operation failed or timed out on the platform, and
         /// <see cref="ThalovantAdmissionTimeoutException"/> -- a
         /// <see cref="ThalovantConnectionException"/> that is also an
@@ -1627,7 +1673,8 @@ namespace Thalovant
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 OperationResource? current = null;
-                var pause = every;
+                var pause = every.TotalSeconds;
+                var rateLimited = false;
                 try
                 {
                     current = await GetOperationAsync(operationId, cancellationToken).ConfigureAwait(false);
@@ -1645,7 +1692,8 @@ namespace Thalovant
                 {
                     // The token's rate limit, which this wait shares with the
                     // caller's other calls: the connection is still on its way.
-                    if (RetryAfter(error) is TimeSpan asked && asked > pause) pause = asked;
+                    rateLimited = true;
+                    if (RetryAfterSeconds(error.Problem) is double asked && asked > pause) pause = asked;
                 }
                 catch (ThalovantApiException error)
                 {
@@ -1667,23 +1715,43 @@ namespace Thalovant
                     }
                 }
                 var remaining = budget - clock.Elapsed;
-                if (remaining <= TimeSpan.Zero)
+                if (remaining <= TimeSpan.Zero || (rateLimited && pause > remaining.TotalSeconds))
                 {
+                    // Asked to wait longer than is left, waiting it out would end
+                    // in the same timeout, only later.
                     throw new ThalovantAdmissionTimeoutException(
-                        $"The hub did not admit the connection within {budget.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture)}s; it may still.",
+                        $"The hub did not admit the connection within {budget.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture)}s; it may still."
+                        + (rateLimited ? " The API asked to slow down." : ""),
                         budget);
                 }
-                await Task.Delay(pause < remaining ? pause : remaining, cancellationToken).ConfigureAwait(false);
+                var next = TimeSpan.FromSeconds(pause);
+                await Task.Delay(next < remaining ? next : remaining, cancellationToken).ConfigureAwait(false);
             }
         }
 
-        /// <summary>The wait a rate-limit refusal names in <c>retry_after_seconds</c>, when it names a sensible one.</summary>
-        private static TimeSpan? RetryAfter(ThalovantApiException error) =>
-            error.Problem?["retry_after_seconds"] is JsonValue value
-                && value.TryGetValue<double>(out var seconds)
-                && seconds > 0 && seconds * 1000 < int.MaxValue
-                ? TimeSpan.FromSeconds(seconds)
-                : (TimeSpan?)null;
+        /// <summary>
+        /// The <c>retry_after_seconds</c> of a 429, at the top of the problem or
+        /// inside a <c>detail</c> object, where the API puts it (its 429s are
+        /// FastAPI's envelope around a structured refusal); null when it names none.
+        /// </summary>
+        private static double? RetryAfterSeconds(JsonObject? problem)
+        {
+            if (problem is null)
+            {
+                return null;
+            }
+            foreach (var source in new[] { problem, problem["detail"] as JsonObject })
+            {
+                if (source?["retry_after_seconds"] is JsonValue value
+                    && value.GetValueKind() == JsonValueKind.Number
+                    && value.TryGetValue<double>(out var seconds)
+                    && seconds >= 0 && !double.IsInfinity(seconds))
+                {
+                    return seconds;
+                }
+            }
+            return null;
+        }
 
         /// <summary>The id to poll: the operation's own, else the tail of its <c>links.self</c>.</summary>
         private static string OperationId(OperationResource operation)

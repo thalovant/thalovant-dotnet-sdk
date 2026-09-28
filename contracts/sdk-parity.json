@@ -2,7 +2,7 @@
   "capabilities": {
     "api-errors": {
       "implementation": {
-        "src/Thalovant.Sdk/ControlPlane.cs": "573662e8f8f17758f3300c5e4b8eeda7c5d32a6e47f7ebbb8c1586455b765bd9",
+        "src/Thalovant.Sdk/ControlPlane.cs": "f0d14c136e8bb671422b9a363ecb0fa5798973f9a44b0463008f767f45ba18fb",
         "src/Thalovant.Sdk/Errors.cs": "3786931fe5aee7f5a980c3bd9102f008c456647ccb4ecc2bd38db37cf1e7a419"
       },
       "reason": "ThalovantApiException.Detail and Problem, and ErrorCode under the shared rule, filled by ThalovantControlPlane.ApiError: the one place a non-2xx response becomes an exception, which reads the body as UTF-8, parses it once and keeps the message as it was. Run against the shared api-error vectors on net8.0 and net9.0, each response served with its exact status, Content-Type and bytes through an injected HttpMessageHandler and read back through GetHubAsync.",
@@ -40,7 +40,7 @@
     },
     "connection-admission": {
       "implementation": {
-        "src/Thalovant.Sdk/ControlPlane.cs": "573662e8f8f17758f3300c5e4b8eeda7c5d32a6e47f7ebbb8c1586455b765bd9",
+        "src/Thalovant.Sdk/ControlPlane.cs": "f0d14c136e8bb671422b9a363ecb0fa5798973f9a44b0463008f767f45ba18fb",
         "src/Thalovant.Sdk/Errors.cs": "3786931fe5aee7f5a980c3bd9102f008c456647ccb4ecc2bd38db37cf1e7a419",
         "src/Thalovant.Sdk/Operations.cs": "44a568b2e2c32d75057e9f960129f10241e0103642aeb4726151dd0dd0d7d298"
       },
@@ -58,7 +58,7 @@
     },
     "connection-kinds": {
       "implementation": {
-        "src/Thalovant.Sdk/ControlPlane.cs": "573662e8f8f17758f3300c5e4b8eeda7c5d32a6e47f7ebbb8c1586455b765bd9",
+        "src/Thalovant.Sdk/ControlPlane.cs": "f0d14c136e8bb671422b9a363ecb0fa5798973f9a44b0463008f767f45ba18fb",
         "src/Thalovant.Sdk/Errors.cs": "3786931fe5aee7f5a980c3bd9102f008c456647ccb4ecc2bd38db37cf1e7a419"
       },
       "reason": "CreateClientIdentityOptions.ConnectionType is sent as spec.connection_type; a kind the answer does not echo deletes the client with If-Match and throws ThalovantUnsupportedConnectionTypeException, as a 422 does when its detail or code, or a validation error's loc or msg, names connection_type -- never an echoed input. ThalovantApiException.FromResponse, the one place a failed response becomes an exception, classifies every refusal: ThalovantAuthenticationException (401, 423, 403 Insufficient scopes), ThalovantPlanException (402, 403 plan_limit), ThalovantAlreadyLinkedException with ClientId (409 home_assistant_already_linked), each keeping the api-errors fields. DeleteClientAsync reads the etag when none is given, retries once on 412, and counts 404 as deleted. Run against the shared connection-kinds vectors through a loopback API over the SDK's own HttpClient, recording the requests sent.",
@@ -75,7 +75,7 @@
     },
     "control": {
       "implementation": {
-        "src/Thalovant.Sdk/ControlPlane.cs": "573662e8f8f17758f3300c5e4b8eeda7c5d32a6e47f7ebbb8c1586455b765bd9",
+        "src/Thalovant.Sdk/ControlPlane.cs": "f0d14c136e8bb671422b9a363ecb0fa5798973f9a44b0463008f767f45ba18fb",
         "src/Thalovant.Sdk/DeviceLogin.cs": "550642d8b01cd40d24802a5a495258ab4a9261cf26d844a3e6bacf0b617f8f51",
         "src/Thalovant.Sdk/HubSkills.cs": "500577bd675f2c7c7a1bb111400d9253363037fa9d532ba4702ed43823b2e51d",
         "src/Thalovant.Sdk/Hubs.cs": "cdf29ca7c2e9be4bf9c25fcc7532cd878c79bab56d3976f107d3f77b05813cb6",
@@ -111,7 +111,7 @@
     },
     "device-login": {
       "implementation": {
-        "src/Thalovant.Sdk/ControlPlane.cs": "573662e8f8f17758f3300c5e4b8eeda7c5d32a6e47f7ebbb8c1586455b765bd9",
+        "src/Thalovant.Sdk/ControlPlane.cs": "f0d14c136e8bb671422b9a363ecb0fa5798973f9a44b0463008f767f45ba18fb",
         "src/Thalovant.Sdk/DeviceLogin.cs": "550642d8b01cd40d24802a5a495258ab4a9261cf26d844a3e6bacf0b617f8f51",
         "src/Thalovant.Sdk/Errors.cs": "3786931fe5aee7f5a980c3bd9102f008c456647ccb4ecc2bd38db37cf1e7a419"
       },

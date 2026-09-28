@@ -291,12 +291,10 @@ namespace Thalovant
             {
                 throw new ThalovantApiException("Thalovant API token response did not include access_token.");
             }
-            AccessToken = accessToken;
             // The id goes with the token it names: one left over from an
             // earlier device login would have RevokeApiTokenAsync() revoke
             // that token and then forget this one.
-            TokenId = TokenIdOf(token);
-            _revokedOwn = false;
+            KeepToken(accessToken!, TokenIdOf(token));
             return token;
         }
 
@@ -338,12 +336,10 @@ namespace Thalovant
             {
                 throw new ThalovantApiException("Thalovant API token response did not include access_token.");
             }
-            AccessToken = accessToken;
             // The id goes with the token it names: one left over from an
             // earlier device login would have RevokeApiTokenAsync() revoke
             // that token and then forget this one.
-            TokenId = TokenIdOf(token);
-            _revokedOwn = false;
+            KeepToken(accessToken!, TokenIdOf(token));
             return token;
         }
 
@@ -519,17 +515,22 @@ namespace Thalovant
         /// </remarks>
         public async Task RevokeApiTokenAsync(string? tokenId = null, CancellationToken cancellationToken = default)
         {
-            var target = string.IsNullOrEmpty(tokenId) ? TokenId : tokenId;
-            if (string.IsNullOrEmpty(target))
+            string? target;
+            bool own;
+            lock (_credentials)
             {
-                if (_revokedOwn && AccessToken is null)
+                target = string.IsNullOrEmpty(tokenId) ? TokenId : tokenId;
+                if (string.IsNullOrEmpty(target))
                 {
-                    return; // Already revoked and forgotten: revoking again changes nothing.
+                    if (_revokedOwn && AccessToken is null)
+                    {
+                        return; // Already revoked and forgotten: revoking again changes nothing.
+                    }
+                    throw new ThalovantApiException(
+                        "No API token id to revoke: pass tokenId, or sign in with a device login first.");
                 }
-                throw new ThalovantApiException(
-                    "No API token id to revoke: pass tokenId, or sign in with a device login first.");
+                own = target == TokenId;
             }
-            var own = target == TokenId;
             try
             {
                 await RequestDataAsync("DELETE", "/v1/auth/api-tokens/" + Uri.EscapeDataString(target!), cancellationToken: cancellationToken)
@@ -541,17 +542,42 @@ namespace Thalovant
             }
             // Forget the token only if it is still the one revoked: a sign-in that
             // finished while the revoke was on its way installed another, and that
-            // one is alive.
-            if (own && TokenId == target)
+            // one is alive. Checked and cleared under the lock every sign-in takes
+            // to install a token and its id, so a sign-in on another thread can
+            // never be caught half done.
+            if (own)
             {
-                AccessToken = null;
-                TokenId = null;
-                _revokedOwn = true;
+                lock (_credentials)
+                {
+                    if (TokenId == target)
+                    {
+                        AccessToken = null;
+                        TokenId = null;
+                        _revokedOwn = true;
+                    }
+                }
             }
         }
 
         /// <summary>Whether the token this client signed in with was revoked and forgotten, so revoking again is a no-op.</summary>
         private bool _revokedOwn;
+
+        /// <summary>
+        /// Held while a sign-in installs a token and its id, and while a revoke
+        /// checks and clears them -- never across a request.
+        /// </summary>
+        private readonly object _credentials = new object();
+
+        /// <summary>Installs a sign-in's token and the id it came with (or none), as one step.</summary>
+        private void KeepToken(string accessToken, string? tokenId)
+        {
+            lock (_credentials)
+            {
+                AccessToken = accessToken;
+                TokenId = tokenId;
+                _revokedOwn = false;
+            }
+        }
 
         /// <summary><c>POST /v1/auth/device/authorize</c>, and the grant read out of it.</summary>
         private async Task<DeviceAuthorization> AuthorizeDeviceAsync(
@@ -639,9 +665,7 @@ namespace Thalovant
             {
                 throw new ThalovantApiException("Thalovant API token response did not include access_token.");
             }
-            AccessToken = accessToken;
-            TokenId = TokenIdOf(token);
-            _revokedOwn = false;
+            KeepToken(accessToken!, TokenIdOf(token));
             return DeviceLoginResult.FromToken(token, accessToken!);
         }
 

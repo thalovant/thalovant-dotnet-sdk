@@ -164,6 +164,31 @@ public sealed class BinaryFrameTests {
         Assert.Throws<ThalovantConnectionException>(() => HiveWire.DecodeBinaryFrame(frame));
     }
 
+    [Theory]
+    [InlineData(4)] // the checksum gone
+    [InlineData(-1)] // the checksum corrupt
+    public void CompressedMetadataThatWillNotInflateRefusesTheFrame(int damage)
+    {
+        // As the reference does: it read as absent here before 0.9.1, which
+        // delivered a clip with no language and no name instead of refusing it.
+        var metadata = Zlib(System.Text.Encoding.UTF8.GetBytes("{\"lang\":\"en-US\"}"));
+        metadata = damage > 0 ? metadata.Take(metadata.Length - damage).ToArray() : metadata;
+        if (damage < 0) metadata[^1] ^= 1;
+        // The marker bit, no version, type 12 (bin), compressed; the metadata; then kind 0 and a clip.
+        var frame = new byte[] { 0x80 | (12 << 1) | 1, (byte)metadata.Length }.Concat(metadata).Concat(new byte[] { 0x0F, 0xF0 }).ToArray();
+        var error = Assert.Throws<ThalovantConnectionException>(() => HiveWire.DecodeBinaryFrame(frame));
+        Assert.Contains("metadata could not be decompressed", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CompressedMetadataThatInflatesIsRead()
+    {
+        var metadata = Zlib(System.Text.Encoding.UTF8.GetBytes("{\"lang\":\"en-US\"}"));
+        var frame = new byte[] { 0x80 | (12 << 1) | 1, (byte)metadata.Length }.Concat(metadata).Concat(new byte[] { 0x0F, 0xF0 }).ToArray();
+        var message = HiveWire.DecodeBinaryFrame(frame);
+        Assert.Equal("en-US", (string?)message.Metadata["lang"]);
+    }
+
     [Fact]
     public void ACorruptChecksumIsRefused()
     {

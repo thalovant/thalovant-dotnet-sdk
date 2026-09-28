@@ -19,14 +19,14 @@
     "binary": {
       "implementation": {
         "src/Thalovant.Sdk/Client.cs": "a95e9311b87731bf2424b8027cb8fd96bbf7e812cd57eb16d013032f27fce17f",
-        "src/Thalovant.Sdk/HiveBinary.cs": "1e15da2a7c2cf4bd48eb805800cd58a63b179d7f2cb67e1dcb225f3c6f26f306",
+        "src/Thalovant.Sdk/HiveBinary.cs": "3bb5b15b0300fc12c32196d7afdc53ab88c8f445ca1203fbbff53d3c16e72467",
         "src/Thalovant.Sdk/Transport.cs": "d56c7265ae249ac4d2e22fd94111b77492064bc300693f089fa4ec9657d6f277",
         "src/Thalovant.Sdk/Wire.cs": "be690ab4aa60c7d546f15e98199739bc4f672225d35c0f185751352513d86061"
       },
-      "reason": "HiveWire.DecodeBinaryFrame reads WIRE-1: four bits of payload type, then the clip itself, which is never inflated whatever the flag says. A compressed part inflates to at most 32 MiB (HiveWire.MaxInflated, what a reassembled Noise message may hold), and HiveWire.Inflate checks the zlib header and the Adler-32 trailer, because .NET's inflaters return what they have from a truncated stream and read one with its checksum cut off as whole. A payload that would inflate further, is truncated or fails its checksum refuses the frame; unreadable compressed metadata reads as absent, as it did before. The Noise framing marks each frame JSON or not, and OnBinary delivers the binary ones. Run against the shared binary vectors and against binary-frames.json, which is hivemind-bus-client's own encoder output rather than frames this SDK built for itself, plus inflation cases in BinaryFrameTests.",
+      "reason": "HiveWire.DecodeBinaryFrame reads WIRE-1: four bits of payload type, then the clip itself, which is never inflated whatever the flag says. A compressed part inflates to at most 32 MiB (HiveWire.MaxInflated, what a reassembled Noise message may hold), and HiveWire.Inflate checks the zlib header and the Adler-32 trailer, because .NET's inflaters return what they have from a truncated stream and read one with its checksum cut off as whole. A payload or a metadata block that would inflate further, is truncated or fails its checksum refuses the frame, as in the reference. The Noise framing marks each frame JSON or not, and OnBinary delivers the binary ones. Run against the shared binary vectors and against binary-frames.json, which is hivemind-bus-client's own encoder output rather than frames this SDK built for itself, plus inflation cases in BinaryFrameTests.",
       "status": "required",
       "tests": {
-        "tests/Thalovant.Sdk.Tests/BinaryFrameTests.cs": "d6009f42a70bd5b9472e219462ba2ee409159d9b2f5807fd1448f75e3b2a3bd9",
+        "tests/Thalovant.Sdk.Tests/BinaryFrameTests.cs": "80e12fd5f87699a848418590bead37cf3fc2a3fb28be6af83c55a033f20ab7b7",
         "tests/Thalovant.Sdk.Tests/ConformanceRecord.cs": "1b478cc4d8a1eca5ce5776acdf09e3f095e346011a7c8e0f1dc764bd3aa4cdbb"
       },
       "vectors": {
@@ -211,7 +211,7 @@
       "reason": "OnHive over the five hive kinds, and PropagateAsync/EscalateAsync/BroadcastAsync. Run against the shared mesh vectors.",
       "status": "required",
       "tests": {
-        "tests/Thalovant.Sdk.Tests/BinaryFrameTests.cs": "d6009f42a70bd5b9472e219462ba2ee409159d9b2f5807fd1448f75e3b2a3bd9",
+        "tests/Thalovant.Sdk.Tests/BinaryFrameTests.cs": "80e12fd5f87699a848418590bead37cf3fc2a3fb28be6af83c55a033f20ab7b7",
         "tests/Thalovant.Sdk.Tests/ConformanceRecord.cs": "1b478cc4d8a1eca5ce5776acdf09e3f095e346011a7c8e0f1dc764bd3aa4cdbb"
       },
       "vectors": {

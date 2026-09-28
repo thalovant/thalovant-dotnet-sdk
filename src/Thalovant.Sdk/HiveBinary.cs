@@ -158,7 +158,8 @@ namespace Thalovant
             var compressed = reader.ReadBit() == 1;
             var metadataBytes = reader.ReadBytes(reader.ReadUInt(8));
             var msgType = TypeCodes.TryGetValue(typeCode, out var named) ? named : "3rdparty";
-            // Metadata is optional, so an unreadable block reads as absent.
+            // Metadata is optional, so an empty block reads as absent; one that
+            // is compressed and will not inflate refuses the frame, as a payload does.
             var metadata = DecodeWireObject(metadataBytes, compressed, required: false);
             if (msgType == "bin") {
                 var kind = reader.ReadUInt(4);
@@ -263,11 +264,11 @@ namespace Thalovant
         /// <summary>
         /// A frame's metadata or payload, inflated first when the frame says so.
         /// The encoder chooses per frame whichever of the two is shorter, so a hub
-        /// really does send both. A payload that does not inflate -- past
-        /// <see cref="MaxInflated"/>, truncated or corrupt -- refuses the frame;
-        /// metadata that does not reads as absent, as unreadable metadata always
-        /// has here. The clip of a BINARY frame is never compressed, whatever the
-        /// flag says.
+        /// really does send both. A compressed part that does not inflate -- past
+        /// its limit, truncated or corrupt -- refuses the frame, metadata and
+        /// payload alike, as the reference does; before 0.9.1 such metadata read
+        /// as absent. The clip of a BINARY frame is never compressed, whatever
+        /// the flag says.
         /// </summary>
         private static JsonObject DecodeWireObject(byte[] bytes, bool compressed, bool required)
         {
@@ -285,8 +286,8 @@ namespace Thalovant
                 }
                 catch (InvalidDataException error)
                 {
-                    if (required) throw new ThalovantConnectionException($"HiveMind binary payload could not be decompressed: {error.Message}.");
-                    return new JsonObject();
+                    throw new ThalovantConnectionException(
+                        $"HiveMind binary {(required ? "payload" : "metadata")} could not be decompressed: {error.Message}.");
                 }
             }
             try {

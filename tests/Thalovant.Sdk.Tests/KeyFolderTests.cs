@@ -147,6 +147,31 @@ public sealed class KeyFolderTests : IDisposable
     }
 
     [Fact]
+    public void AnOldFolderThatCannotBeListedStillGivesThisHubItsKey()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var legacy = Path.Combine(_root, "legacy");
+        var old = new HiveMindFileNoiseStore(legacy);
+        var key = old.LoadOrCreateStaticKey();
+        var pin = Noise.RandomKey();
+        old.VerifyOrPin(Hub, pin);
+        File.SetUnixFileMode(legacy, UnixFileMode.UserExecute);
+        try
+        {
+            try { Directory.GetFiles(legacy); return; } // running as root: every folder can be listed
+            catch (UnauthorizedAccessException) { }
+
+            var store = HiveMindFileNoiseStore.ForIdentity(IdentityIn(Path.Combine(_root, "config")), legacy);
+            Assert.Equal(pin, store.LoadPin(Hub));
+            Assert.Equal(key, store.LoadOrCreateStaticKey());
+        }
+        finally
+        {
+            File.SetUnixFileMode(legacy, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
+    [Fact]
     public void AKeyThatNeverMetThisHubIsNotCopied()
     {
         var legacy = Path.Combine(_root, "legacy");

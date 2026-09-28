@@ -270,7 +270,11 @@ namespace Thalovant
                 var ownName = PinName(nodeId);
                 var own = ReadKey(legacyPin);
                 var pins = new System.Collections.Generic.List<(string Name, byte[] Key)> { (ownName, own) };
-                foreach (var pin in Directory.GetFiles(legacy, "noise-pin-*.key"))
+                string[] others;
+                // Best effort, the listing too: this hub's pin is already in hand.
+                try { others = Directory.GetFiles(legacy, "noise-pin-*.key"); }
+                catch (Exception error) when (error is IOException || error is UnauthorizedAccessException) { others = Array.Empty<string>(); }
+                foreach (var pin in others)
                 {
                     if (string.Equals(Path.GetFileName(pin), ownName, StringComparison.Ordinal)) continue;
                     // Another hub's pin that cannot be read is not carried over,

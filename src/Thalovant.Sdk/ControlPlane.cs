@@ -1725,7 +1725,23 @@ namespace Thalovant
                         budget);
                 }
                 var next = TimeSpan.FromSeconds(pause);
-                await Task.Delay(next < remaining ? next : remaining, cancellationToken).ConfigureAwait(false);
+                await DelayAtLeastAsync(next < remaining ? next : remaining, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        /// <summary>
+        /// Waits at least <paramref name="wait"/> by the monotonic clock. A timer
+        /// can wake a little early -- Windows' did, by a millisecond, on a wait of
+        /// a second -- and a wait the API asked for (<c>retry_after_seconds</c>)
+        /// that ends early is a request sent before the API said it may be.
+        /// </summary>
+        private static async Task DelayAtLeastAsync(TimeSpan wait, CancellationToken cancellationToken)
+        {
+            var clock = Stopwatch.StartNew();
+            await Task.Delay(wait, cancellationToken).ConfigureAwait(false);
+            for (var left = wait - clock.Elapsed; left > TimeSpan.Zero; left = wait - clock.Elapsed)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(Math.Max(1, Math.Ceiling(left.TotalMilliseconds))), cancellationToken).ConfigureAwait(false);
             }
         }
 

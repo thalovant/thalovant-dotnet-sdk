@@ -1436,16 +1436,41 @@ namespace Thalovant
         }
 
         /// <summary>A 422 whose problem is about <c>connection_type</c>.</summary>
+        /// <remarks>
+        /// Only the parts of the problem that name what is wrong are read: its
+        /// <c>detail</c> and <c>code</c>, and each validation entry's <c>loc</c>
+        /// and <c>msg</c>. Never an entry's <c>input</c>: that echoes what was
+        /// sent, and a spec that failed validation for any other reason still
+        /// carries the <c>connection_type</c> the SDK put in it.
+        /// </remarks>
         private static bool RefusesConnectionType(ThalovantApiException error)
         {
             if (error.StatusCode != 422)
             {
                 return false;
             }
-            var text = error.Problem?.ToJsonString() ?? error.Message;
-            return text.IndexOf("connection_type", StringComparison.Ordinal) >= 0
-                || text.IndexOf("connectionType", StringComparison.Ordinal) >= 0;
+            if (NamesConnectionType(error.Detail) || NamesConnectionType(error.ErrorCode))
+            {
+                return true;
+            }
+            if (error.Problem?["detail"] is JsonArray entries)
+            {
+                foreach (var entry in entries)
+                {
+                    if (entry is JsonObject item
+                        && (NamesConnectionType(JsonUtil.GetString(item["msg"])) || NamesConnectionType(item["loc"]?.ToJsonString())))
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
         }
+
+        private static bool NamesConnectionType(string? text) =>
+            text is not null
+            && (text.IndexOf("connection_type", StringComparison.Ordinal) >= 0
+                || text.IndexOf("connectionType", StringComparison.Ordinal) >= 0);
 
         /// <summary>Deletes, then refuses, a connection the API did not make of the kind asked.</summary>
         private async Task RequireConnectionTypeAsync(JsonObject client, string connectionType)
@@ -1557,7 +1582,9 @@ namespace Thalovant
         /// Returns at once when there is nothing to wait on: no operation, or one
         /// the API no longer tracks (HTTP 404). <c>ready</c> is admitted;
         /// <c>requested</c>, <c>committed</c> and <c>applied</c> keep polling, and
-        /// a 5xx is ridden out. Throws <see cref="ThalovantAdmissionFailedException"/>
+        /// a 5xx is ridden out, as is a 429 -- waiting the
+        /// <c>retry_after_seconds</c> it names when that is longer than
+        /// <paramref name="pollInterval"/>. Throws <see cref="ThalovantAdmissionFailedException"/>
         /// when the operation failed or timed out on the platform, and
         /// <see cref="ThalovantAdmissionTimeoutException"/> -- a
         /// <see cref="ThalovantConnectionException"/> that is also an
@@ -1600,6 +1627,7 @@ namespace Thalovant
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 OperationResource? current = null;
+                var pause = every;
                 try
                 {
                     current = await GetOperationAsync(operationId, cancellationToken).ConfigureAwait(false);
@@ -1612,6 +1640,12 @@ namespace Thalovant
                 catch (ThalovantApiException error) when (error.StatusCode >= 500)
                 {
                     // Ridden out: the platform is busy, not the operation failed.
+                }
+                catch (ThalovantApiException error) when (error.StatusCode == 429)
+                {
+                    // The token's rate limit, which this wait shares with the
+                    // caller's other calls: the connection is still on its way.
+                    if (RetryAfter(error) is TimeSpan asked && asked > pause) pause = asked;
                 }
                 catch (ThalovantApiException error)
                 {
@@ -1639,9 +1673,17 @@ namespace Thalovant
                         $"The hub did not admit the connection within {budget.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture)}s; it may still.",
                         budget);
                 }
-                await Task.Delay(every < remaining ? every : remaining, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(pause < remaining ? pause : remaining, cancellationToken).ConfigureAwait(false);
             }
         }
+
+        /// <summary>The wait a rate-limit refusal names in <c>retry_after_seconds</c>, when it names a sensible one.</summary>
+        private static TimeSpan? RetryAfter(ThalovantApiException error) =>
+            error.Problem?["retry_after_seconds"] is JsonValue value
+                && value.TryGetValue<double>(out var seconds)
+                && seconds > 0 && seconds * 1000 < int.MaxValue
+                ? TimeSpan.FromSeconds(seconds)
+                : (TimeSpan?)null;
 
         /// <summary>The id to poll: the operation's own, else the tail of its <c>links.self</c>.</summary>
         private static string OperationId(OperationResource operation)

@@ -334,6 +334,52 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
         _ => "error",
     };
 
+    /// <summary>One exchange for a scripted API: what is sent, and what comes back.</summary>
+    private static JsonObject Exchange(string method, string path, int status, string body) => new JsonObject
+    {
+        ["request"] = new JsonObject { ["method"] = method, ["path"] = path },
+        ["response"] = new JsonObject { ["status"] = status, ["content_type"] = "application/json", ["body"] = body },
+    };
+
+    private static readonly JsonObject KitchenHub = new JsonObject
+    {
+        ["id"] = "4a1b2c3d-0000-4000-8000-000000000001",
+        ["domain"] = "kitchen.thalovant.io",
+        ["wss_enabled"] = true,
+    };
+
+    [Theory]
+    // A model validator on the spec: its input echoes the whole spec, connection_type included.
+    [InlineData("""{"detail":[{"type":"value_error","loc":["body","spec"],"msg":"Value error, siteId must be lowercase","input":{"version":"1","connection_type":"home_assistant","siteId":"X"}}]}""", false)]
+    [InlineData("""{"detail":[{"type":"literal_error","loc":["body","spec","connection_type"],"msg":"Input should be 'voice_satellite' or 'web_chat'","input":"home_assistant"}]}""", true)]
+    [InlineData("""{"detail":"Schema validation failed: 'home_assistant' is not one of ['voice_satellite'] at spec.connection_type","code":"schema_validation_failed"}""", true)]
+    public async Task OnlyA422ThatNamesTheKindMakesItUnsupported(string body, bool unsupported)
+    {
+        using var api = new ScriptedApi(new JsonArray(Exchange("POST", "/v1/clients", 422, body)));
+        var plane = Plane(api, "synthetic-token");
+        var options = new CreateClientIdentityOptions("Home Assistant") { ConnectionType = ThalovantConnectionTypes.HomeAssistant };
+        var error = await Assert.ThrowsAnyAsync<ThalovantApiException>(() => plane.CreateClientIdentityAsync((JsonObject)KitchenHub.DeepClone(), options));
+        Assert.Equal(unsupported, error is ThalovantUnsupportedConnectionTypeException);
+        Assert.Equal(422, error.StatusCode);
+    }
+
+    [Fact]
+    public async Task ARateLimitWhileWaitingForAdmissionIsRiddenOut()
+    {
+        const string Ready = """{"id":"op-1","kind":"client.sync","aggregate_type":"client","status":"ready","details":{},"created_at":"2026-09-27T10:00:00Z","updated_at":"2026-09-27T10:00:00Z","links":{"self":"/v1/operations/op-1"}}""";
+        using var api = new ScriptedApi(new JsonArray(
+            Exchange("GET", "/v1/operations/op-1", 429, """{"detail":"Too many requests","code":"token_rate_limited","retry_after_seconds":0.2}"""),
+            Exchange("GET", "/v1/operations/op-1", 200, Ready)));
+        var plane = Plane(api, "synthetic-token");
+        var operation = new OperationResource { Id = "op-1", Links = new Dictionary<string, string?> { ["self"] = "/v1/operations/op-1" } };
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        await plane.WaitForAdmissionAsync(operation, TimeSpan.FromSeconds(10), TimeSpan.FromMilliseconds(10));
+        // Admitted after waiting what the refusal asked for, not the poll interval.
+        Assert.True(clock.Elapsed >= TimeSpan.FromMilliseconds(150), $"waited {clock.Elapsed}");
+        Assert.Equal(2, api.Sent.Count);
+        Assert.Empty(api.Mismatches);
+    }
+
     // -- admission -----------------------------------------------------------
 
     [Theory]

@@ -49,8 +49,8 @@
       "tests": {
         "tests/Thalovant.Sdk.Tests/ConformanceRecord.cs": "c9f2999bd46c809232bbb5bbe88f0f5c69ed1fc41ad830537c8542d6426a8882",
         "tests/Thalovant.Sdk.Tests/Fixtures/connection-admission-vectors.json": "41eb4a83835bd50390d000fa7396b7067dafa24f3023b34985e6b254cf5fc259",
-        "tests/Thalovant.Sdk.Tests/HomeLinkVectorTests.cs": "7515f1aca5052e1a6aad0a74063f39822fab2885eef49fde8457fcb3ffc2665f",
-        "tests/Thalovant.Sdk.Tests/LoopbackApi.cs": "d30a1c237a00b89e4691cf369f968a1891b9fcc7204811aea49ae60be71c567c"
+        "tests/Thalovant.Sdk.Tests/HomeLinkVectorTests.cs": "2b4934f9bda1d7b7af0b57f63e4a0c48b4807413916a5e966cd6ded045e51537",
+        "tests/Thalovant.Sdk.Tests/LoopbackApi.cs": "507fe9bbcba84463a2f801b7ae1fdfae0cc5cf18d601f4ae09eb59e4960323b3"
       },
       "vectors": {
         "connection-admission-vectors.json": "tests/Thalovant.Sdk.Tests/Fixtures/connection-admission-vectors.json"
@@ -66,8 +66,8 @@
       "tests": {
         "tests/Thalovant.Sdk.Tests/ConformanceRecord.cs": "c9f2999bd46c809232bbb5bbe88f0f5c69ed1fc41ad830537c8542d6426a8882",
         "tests/Thalovant.Sdk.Tests/Fixtures/connection-kinds-vectors.json": "2baef508194472279ff2446105a1408e381b2f9e4bfc03e5f96d9c6529ddf604",
-        "tests/Thalovant.Sdk.Tests/HomeLinkVectorTests.cs": "7515f1aca5052e1a6aad0a74063f39822fab2885eef49fde8457fcb3ffc2665f",
-        "tests/Thalovant.Sdk.Tests/LoopbackApi.cs": "d30a1c237a00b89e4691cf369f968a1891b9fcc7204811aea49ae60be71c567c"
+        "tests/Thalovant.Sdk.Tests/HomeLinkVectorTests.cs": "2b4934f9bda1d7b7af0b57f63e4a0c48b4807413916a5e966cd6ded045e51537",
+        "tests/Thalovant.Sdk.Tests/LoopbackApi.cs": "507fe9bbcba84463a2f801b7ae1fdfae0cc5cf18d601f4ae09eb59e4960323b3"
       },
       "vectors": {
         "connection-kinds-vectors.json": "tests/Thalovant.Sdk.Tests/Fixtures/connection-kinds-vectors.json"
@@ -120,8 +120,8 @@
       "tests": {
         "tests/Thalovant.Sdk.Tests/ConformanceRecord.cs": "c9f2999bd46c809232bbb5bbe88f0f5c69ed1fc41ad830537c8542d6426a8882",
         "tests/Thalovant.Sdk.Tests/Fixtures/device-login-vectors.json": "8a2257cd80b5d2dfa9553420b51617c697b1ad4e6af60ba83e980e1731fa7854",
-        "tests/Thalovant.Sdk.Tests/HomeLinkVectorTests.cs": "7515f1aca5052e1a6aad0a74063f39822fab2885eef49fde8457fcb3ffc2665f",
-        "tests/Thalovant.Sdk.Tests/LoopbackApi.cs": "d30a1c237a00b89e4691cf369f968a1891b9fcc7204811aea49ae60be71c567c"
+        "tests/Thalovant.Sdk.Tests/HomeLinkVectorTests.cs": "2b4934f9bda1d7b7af0b57f63e4a0c48b4807413916a5e966cd6ded045e51537",
+        "tests/Thalovant.Sdk.Tests/LoopbackApi.cs": "507fe9bbcba84463a2f801b7ae1fdfae0cc5cf18d601f4ae09eb59e4960323b3"
       },
       "vectors": {
         "device-login-vectors.json": "tests/Thalovant.Sdk.Tests/Fixtures/device-login-vectors.json"
@@ -142,7 +142,7 @@
         "tests/Thalovant.Sdk.Tests/Fixtures/home-link-vectors.json": "3dc3d38020f3d1b7a2df61d0048fb13685a5361d2dff82710c1e1833cccc576f",
         "tests/Thalovant.Sdk.Tests/Fixtures/link-keeping-vectors.json": "b3be27131c051c527d7b917dd6d7d24692920a0f59694b1031f009724e3de4bc",
         "tests/Thalovant.Sdk.Tests/HomeLinkSessionTests.cs": "b7f4411956d8245a89cb5f1b703c90da81ad1a6d4ab86c371455a15de8a46cd0",
-        "tests/Thalovant.Sdk.Tests/HomeLinkVectorTests.cs": "7515f1aca5052e1a6aad0a74063f39822fab2885eef49fde8457fcb3ffc2665f",
+        "tests/Thalovant.Sdk.Tests/HomeLinkVectorTests.cs": "2b4934f9bda1d7b7af0b57f63e4a0c48b4807413916a5e966cd6ded045e51537",
         "tests/Thalovant.Sdk.Tests/HubPeer.cs": "01cf7f797fcde11437d5d098d1eb2b56d6016ed8a2135aecf21548b54326c1f6",
         "tests/Thalovant.Sdk.Tests/LinkKeepingVectorTests.cs": "8cac4956d3cbf9c3885d5c2bf5efb2d05745a0dcb30f42695d58d558344f75f7",
         "tests/Thalovant.Sdk.Tests/LoopbackHub.cs": "4df47ff6f66e12ac1c12da6a99c391473959d656a2c012c8adca16e17c889b21"

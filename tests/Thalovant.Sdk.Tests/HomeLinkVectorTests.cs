@@ -377,9 +377,11 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
         var vector = Case(Admission, name);
         var call = vector["call"]!.AsObject();
         using var api = new LoopbackApi(vector["exchanges"]!.AsArray());
-        // An API out of reach is a port nothing listens on.
-        var plane = (string?)call["api"] == "unreachable"
-            ? new ThalovantControlPlane(apiUrl: $"http://127.0.0.1:{LoopbackApi.ClosedPort()}", accessToken: "synthetic-token")
+        // An API out of reach: a port nothing answers on.
+        var (unreachable, keeping) = (string?)call["api"] == "unreachable" ? LoopbackApi.Unreachable() : (null, null);
+        using var kept = keeping;
+        var plane = unreachable is not null
+            ? new ThalovantControlPlane(apiUrl: unreachable, accessToken: "synthetic-token")
             : Plane(api, "synthetic-token");
         var operation = call["operation"] is JsonObject raw
             ? JsonSerializer.Deserialize<OperationResource>(Placed(raw, api).ToJsonString())

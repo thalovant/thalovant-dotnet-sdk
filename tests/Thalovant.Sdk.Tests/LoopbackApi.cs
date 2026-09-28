@@ -62,6 +62,61 @@ internal sealed class LoopbackApi : IDisposable
         return port;
     }
 
+    /// <summary>
+    /// An API that cannot be reached, and whatever keeps it so. On Linux and
+    /// macOS that is a port nothing listens on, which refuses a connect at once.
+    /// Windows retries a refused loopback connect for about two seconds -- the
+    /// whole budget of the unreachable case -- so there a listener that resets
+    /// every connection it accepts stands in: no answer from the API either way,
+    /// and the SDK's deadline is not what the case ends up measuring.
+    /// </summary>
+    internal static (string Url, IDisposable? Owner) Unreachable()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return ($"http://127.0.0.1:{ClosedPort()}", null);
+        }
+        var resetting = new Resetting();
+        return ($"http://127.0.0.1:{resetting.Port}", resetting);
+    }
+
+    /// <summary>Accepts every connection and resets it at once (a zero linger), before any answer.</summary>
+    private sealed class Resetting : IDisposable
+    {
+        private readonly TcpListener _listener = new TcpListener(IPAddress.Loopback, 0);
+        private readonly CancellationTokenSource _stop = new CancellationTokenSource();
+
+        internal int Port { get; }
+
+        internal Resetting()
+        {
+            _listener.Start();
+            Port = ((IPEndPoint)_listener.LocalEndpoint).Port;
+            _ = Task.Run(async () =>
+            {
+                while (!_stop.IsCancellationRequested)
+                {
+                    try
+                    {
+                        var client = await _listener.AcceptTcpClientAsync(_stop.Token);
+                        client.Client.LingerState = new LingerOption(true, 0);
+                        client.Close();
+                    }
+                    catch (Exception)
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+
+        public void Dispose()
+        {
+            _stop.Cancel();
+            _listener.Stop();
+        }
+    }
+
     private async Task AcceptAsync()
     {
         while (!_stop.IsCancellationRequested)

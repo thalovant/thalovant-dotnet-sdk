@@ -158,14 +158,14 @@
     "identity": {
       "implementation": {
         "src/Thalovant.Sdk/Identity.cs": "c433f7eb0d918a09aeb3012ffb4cdadcc958a998260cd38878cb740fe42b50c1",
-        "src/Thalovant.Sdk/NoiseStore.cs": "76b0d495c4bee8309af286c883fb1e48dbb571a313bcedfcb01f21c803d023eb",
+        "src/Thalovant.Sdk/NoiseStore.cs": "5536559ee6148e63b7cdb2a13307fcddb61d0ba188f9d27348d6f16180745296",
         "src/Thalovant.Sdk/Protocols.cs": "2c951c8d24b2600433c069dcb5248c4b6a1cf1089a982e7f2f20720522c6265d",
         "src/Thalovant.Sdk/Transport.cs": "d56c7265ae249ac4d2e22fd94111b77492064bc300693f089fa4ec9657d6f277"
       },
       "reason": "ThalovantIdentity (Identity.cs) parses and validates identity documents, and FromFile records the file on SourcePath. On .NET 8, a transport given no Noise store uses HiveMindFileNoiseStore.ForIdentity (NoiseStore.cs, Transport.cs): the identity's key lives in a noise folder beside its file, so every program reading one identity presents one key. The first time that folder is used it copies the key and hub pins from the old shared default (LocalApplicationData/Thalovant/noise) when that key has a pin for the hub being dialled, never moving them. An identity from anywhere else, or in a folder the user cannot write to, keeps the shared default; netstandard2.1 is unchanged. KeyFolderTests covers the folder, the copy, the refusal to copy a key that never met the hub, a folder that already has a key, and the fallback.",
       "status": "required",
       "tests": {
-        "tests/Thalovant.Sdk.Tests/KeyFolderTests.cs": "3c833b4d92c2e46dd6daab67f08f47f229c6c601fe4af56d8dd808688c666e30",
+        "tests/Thalovant.Sdk.Tests/KeyFolderTests.cs": "4d51efcd0107a017a0f558bfeebf4f91aa094e5db1521034037cd20571890257",
         "tests/Thalovant.Sdk.Tests/ModelRoundTripTests.cs": "e95c35c9b6957626925426889a521060185eef9059bc4e5e53f4828b187408c4",
         "tests/Thalovant.Sdk.Tests/ProtocolSelectionTests.cs": "0aa0aa5cddb07743f9363ea71f88c6ea1c76affb305665ce2d93cfafb7654bd3"
       }

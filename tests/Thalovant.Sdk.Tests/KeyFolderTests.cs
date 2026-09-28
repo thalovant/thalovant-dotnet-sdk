@@ -102,6 +102,51 @@ public sealed class KeyFolderTests : IDisposable
     }
 
     [Fact]
+    public void AKeyWhosePinForThisHubCannotBeReadIsNotCopied()
+    {
+        var legacy = Path.Combine(_root, "legacy");
+        var old = new HiveMindFileNoiseStore(legacy);
+        var key = old.LoadOrCreateStaticKey();
+        old.VerifyOrPin(Hub, Noise.RandomKey());
+        var ownPin = Directory.GetFiles(legacy, "noise-pin-*.key").Single();
+        File.WriteAllText(ownPin, "not a key");
+
+        var store = HiveMindFileNoiseStore.ForIdentity(IdentityIn(Path.Combine(_root, "config")), legacy);
+        // Never the old key without the pin that checks this hub.
+        Assert.Null(store.LoadPin(Hub));
+        Assert.NotEqual(key, store.LoadOrCreateStaticKey());
+    }
+
+    [Fact]
+    public void AnotherHubsUnreadablePinDoesNotStopThisHubsCopy()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var legacy = Path.Combine(_root, "legacy");
+        var old = new HiveMindFileNoiseStore(legacy);
+        var key = old.LoadOrCreateStaticKey();
+        var pin = Noise.RandomKey();
+        old.VerifyOrPin(Hub, pin);
+        var otherPin = Noise.RandomKey();
+        old.VerifyOrPin("another-hub", otherPin);
+        var other = Directory.GetFiles(legacy, "noise-pin-*.key").Single(file => File.ReadAllText(file) == Noise.Hex(otherPin));
+        File.SetUnixFileMode(other, UnixFileMode.None);
+        try
+        {
+            try { File.ReadAllText(other); return; } // running as root: nothing is unreadable
+            catch (UnauthorizedAccessException) { }
+
+            var store = HiveMindFileNoiseStore.ForIdentity(IdentityIn(Path.Combine(_root, "config")), legacy);
+            Assert.Equal(pin, store.LoadPin(Hub));
+            Assert.Equal(key, store.LoadOrCreateStaticKey());
+            Assert.Null(store.LoadPin("another-hub"));
+        }
+        finally
+        {
+            File.SetUnixFileMode(other, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+    }
+
+    [Fact]
     public void AKeyThatNeverMetThisHubIsNotCopied()
     {
         var legacy = Path.Combine(_root, "legacy");

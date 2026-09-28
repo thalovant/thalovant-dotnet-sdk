@@ -264,11 +264,19 @@ namespace Thalovant
                 // for this identity, so there is nothing to keep.
                 if (!File.Exists(legacyKey) || !File.Exists(legacyPin)) return;
                 var key = ReadKey(legacyKey);
-                var pins = new System.Collections.Generic.List<(string Name, byte[] Key)>();
+                // This hub's pin must come across: the old key without it would
+                // let the next XX handshake pin whatever answers. When it cannot
+                // be read, nothing is copied and this folder starts afresh.
+                var ownName = PinName(nodeId);
+                var own = ReadKey(legacyPin);
+                var pins = new System.Collections.Generic.List<(string Name, byte[] Key)> { (ownName, own) };
                 foreach (var pin in Directory.GetFiles(legacy, "noise-pin-*.key"))
                 {
+                    if (string.Equals(Path.GetFileName(pin), ownName, StringComparison.Ordinal)) continue;
+                    // Another hub's pin that cannot be read is not carried over,
+                    // and does not cost this hub the key it already trusts.
                     try { pins.Add((Path.GetFileName(pin), ReadKey(pin))); }
-                    catch (ThalovantConnectionException) { /* An unreadable pin is not carried over. */ }
+                    catch (Exception error) when (error is ThalovantConnectionException || error is IOException || error is UnauthorizedAccessException) { }
                 }
                 foreach (var (name, value) in pins) WriteNew(Path.Combine(_directory, name), value);
                 // The key last: a folder with a key is one adoption never looks at again.

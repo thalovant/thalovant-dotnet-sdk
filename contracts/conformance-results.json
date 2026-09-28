@@ -1,8 +1,6 @@
 {
-  "schema_version": 1,
   "results": {
     "api-error-vectors.json": {
-      "digest": "0a7d093430093467db8c54cd746687b694c916fea798404633bd756e19aaa809",
       "cases": {
         "FastAPI's own envelope: a structured detail the API did not lift still gives its code and sentence": "e37b5e6c4bdb1197e4467ca91430f143999ff673cbda5f672853af1780aad2af",
         "FastAPI's validation list is not a sentence, and the message never repeats what was sent": "f84c10a63ddfba59a5d49aa3603091ebd6890c033edb939951ca40d2860af247",
@@ -17,19 +15,19 @@
         "a sentence is kept exactly as sent: its line break, its spacing and its accents": "b2a14988c63acf24d5c7d9919e4a61eaf4764b20ac8510c71235c2b7f3663371",
         "a validation failure keeps its errors, and the message never repeats what was sent": "7ca7788739fb0a722fdbd480b4b59cdf6025108ef7cd4a373af8fcfe8e6aad09",
         "an empty body has no problem": "0228b34361be5e56ea04e11ced54ea93919129b95d8ad85a9be0ba09f6a67f88"
-      }
+      },
+      "digest": "0a7d093430093467db8c54cd746687b694c916fea798404633bd756e19aaa809"
     },
     "binary-vectors.json": {
-      "digest": "0660c8c368f192764fa761a1b5b787536e81793664c75ba3b1ff8ffe800a74fc",
       "cases": {
         "a file carries only its name": "4728cbc8f472ff4bacd059a87d75fb365d84049b39b449ea9b0a075122c5d01d",
         "a payload type nobody named arrives under its number": "dce277a50a116aa322ab975fc627afe86161a8efe0f10e344c819847c5f5e254",
         "an empty name is no name": "f106c67ffbe7b900d91deeb19c8be963c09c0ce6bbdb73787bbe39aedde4dac8",
         "rendered speech carries what was said": "3240db248ac2a93410a4eb04b060bb9e87bfc188a4f00f03df7a55f0e44ba076"
-      }
+      },
+      "digest": "0660c8c368f192764fa761a1b5b787536e81793664c75ba3b1ff8ffe800a74fc"
     },
     "connection-admission-vectors.json": {
-      "digest": "a190ebe48fd28d0dc0db0927418ee8d4d2e1a0845580d91c81ed52c75568eec4",
       "cases": {
         "a 429 asking for longer than is left is a timeout at once": "b18c45b67b05aa5575266285018e95cfe34fe6e0d610649ca92eafc003afc313",
         "a 429 waits the time the API names, then polls again": "075e46531162438388caa086b320657ecbb1439fc8519fe5cf7ef330a98f690f",
@@ -49,10 +47,10 @@
         "the same host on another port is another origin": "3f5d92d01b014155dae5857b5a80892fe32a362403a3b8aef8cb45fb6c1389bd",
         "the same host over another scheme is another origin": "3f5d92d01b014155dae5857b5a80892fe32a362403a3b8aef8cb45fb6c1389bd",
         "through every stage to ready": "342ebb4f6d3f360bd92475922463421e82f72cda2eab2165de61db1230ab6734"
-      }
+      },
+      "digest": "a190ebe48fd28d0dc0db0927418ee8d4d2e1a0845580d91c81ed52c75568eec4"
     },
     "connection-kinds-vectors.json": {
-      "digest": "87a0b76dbfd8b45e43b0e1685fb8271517cb1c6c0e0ea6b589f30406d4ca86a4",
       "cases": {
         "a changed client is read again, once": "b4b58309652c76343df9407cb6aa466ab9d443cc1e9c2d6fc0242d74c3aaa8ee",
         "a client already gone is deleted": "712f8489b5110eb94d6f1ff66b39c269e6160bb5eb0b4aa19bfdedc8e39f3a26",
@@ -69,10 +67,10 @@
         "delete with the etag in hand": "eac59ece0b85d53166029f6898207e28d9aa2d71ca4abd357e07d510f82b4eae",
         "the hub already has its Home Assistant link": "11208a518770da934d26df9c948d2e2519170ea238b7722cdf33131e4a0981f0",
         "the kind comes back as asked": "b62ce7b65992735d2aa8989e16acf9b90668cc7252fe4ad0212035e3f974e1e0"
-      }
+      },
+      "digest": "87a0b76dbfd8b45e43b0e1685fb8271517cb1c6c0e0ea6b589f30406d4ca86a4"
     },
     "conversation-vectors.json": {
-      "digest": "e162defefc9955cc2f3ac2eb3a86afd12fa89ee732299403942eb0280d3e06c3",
       "cases": {
         "a turn that clears the conversation is not refilled from the last one": "38337c3956a365682f04f1d4df2f969695a84ba30895baccaf129f63ab48590a",
         "live device state is not replayed": "8d6a15dd88cd64046882fd82a92e936780e48b6ad6fb5cda7cb8a4b18a7d181b",
@@ -80,10 +78,10 @@
         "the next turn carries what the last one activated": "87ad2d37147d80808f7d8b3ef671b56d0fdf06f9d0398d49bbcc00f1882a552c",
         "this turn keeps its own value": "d005ca7b828035f2c33398d19e26c1958c24bdd2a0dd8453bb5bafa2b434fb63",
         "this turn's language outranks the last one's": "126f8af320b43021d1ff01d3eabf4d1048b4a79ccb4a87dc657e29756a6d873d"
-      }
+      },
+      "digest": "e162defefc9955cc2f3ac2eb3a86afd12fa89ee732299403942eb0280d3e06c3"
     },
     "device-login-vectors.json": {
-      "digest": "489348f8493d492e3673d45f6f5e3f102b8a0c9dd94297e8d00b0d226bc685a9",
       "cases": {
         "a grant without the complete URL still starts": "bcf54e9daee0cf76f71900b36e7f26cfe3c2aba7125920f6ba76c109eb51b787",
         "a person who said no": "88ee570f52a525076ee2eaaf7aac720f700a2163d50c070940993a946f4ccf19",
@@ -98,10 +96,10 @@
         "pending while nobody has approved": "c7edcd3b878b536127bf74f3c074f3ed1ffbbd62e81b82c07ea3dccb79e8d589",
         "slow_down adds five seconds, and they stay added": "ac965a8b0a252683c9431a65111f17bebec267abd6aa59d7e0e651def2bc2c55",
         "the token signed in with revokes itself": "d75c96a38d84f0667274a1f099f8be2179523066395e05871db595e2e31bf4c7"
-      }
+      },
+      "digest": "489348f8493d492e3673d45f6f5e3f102b8a0c9dd94297e8d00b0d226bc685a9"
     },
     "home-link-vectors.json": {
-      "digest": "523ab03e1d73a47a2f7ad3d53bd7c5b405789a0cf24f0890af12de9758a1ae3f",
       "cases": {
         "Assist's own error speech goes through": "14cc161857d4323df4831dc4d29c336dd04fdc8e7e28e2abdb45a4f5d8c966fd",
         "SSML tags go, their text stays": "368079aec1bc4cbb48cd76805518362cc6d4ab7c699c4a3612d35e78e7953c6d",
@@ -133,10 +131,10 @@
         "references to no character are left as written": "5f7707178b8a6920a72a3a97f754eb38f178c5b832c445cd686f94d49ffc5531",
         "the five XML entities": "3e07dcbba147904d2e48501b8f61e53058994913d9ece2464ea50d279c049a2e",
         "the route turns round": "f8d9c463a5203918af7b56b6b60d5c3f358998ef0bd215464cd1ffd2f9c249a0"
-      }
+      },
+      "digest": "523ab03e1d73a47a2f7ad3d53bd7c5b405789a0cf24f0890af12de9758a1ae3f"
     },
     "link-keeping-vectors.json": {
-      "digest": "1a0e7986bdb9288c329161d6c909856618245e7310d0bb7c935d2fd005c33e0a",
       "cases": {
         "1000 during the handshake is a refusal": "dad9044d4c206437ff827003f9c445cbe1d348c4c66ad21128316845f0469def",
         "1001 during the handshake is a hub going away": "f4561a56c653f954444184efd002b7d1f689117d8b99bea3a2ddd5970322e0e5",
@@ -167,7 +165,9 @@
         "the grace ends exactly at refusal_grace_ms": "3c687271c3feb711b3f55c17f6ced1e39abf23eaf65f3fc092c37866614003a0",
         "the ladder doubles to its ceiling": "ed05e19c02597a8209bb4bbece8d76a459cab4632f7047b46a4eee82d12e3471",
         "the settle window's last moment still counts": "dad9044d4c206437ff827003f9c445cbe1d348c4c66ad21128316845f0469def"
-      }
+      },
+      "digest": "1a0e7986bdb9288c329161d6c909856618245e7310d0bb7c935d2fd005c33e0a"
     }
-  }
+  },
+  "schema_version": 1
 }

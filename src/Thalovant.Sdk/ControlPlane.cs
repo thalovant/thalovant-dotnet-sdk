@@ -539,7 +539,10 @@ namespace Thalovant
             {
                 // It cannot authenticate its own revoke: it is dead already.
             }
-            if (own)
+            // Forget the token only if it is still the one revoked: a sign-in that
+            // finished while the revoke was on its way installed another, and that
+            // one is alive.
+            if (own && TokenId == target)
             {
                 AccessToken = null;
                 TokenId = null;

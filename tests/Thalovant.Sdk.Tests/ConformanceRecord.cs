@@ -62,7 +62,7 @@ internal static class ConformanceRecord {
             case JsonObject map: {
                 into.Append('{');
                 var first = true;
-                foreach (var key in map.Select(pair => pair.Key).OrderBy(key => key, StringComparer.Ordinal)) {
+                foreach (var key in map.Select(pair => pair.Key).OrderBy(key => key, CodePointOrder.Instance)) {
                     if (!first) into.Append(',');
                     first = false;
                     into.Append(QuoteString(key)).Append(':');
@@ -81,6 +81,30 @@ internal static class ConformanceRecord {
                     into.Append(WholeNumber(value.ToJsonString(), verbatimFractions));
                 }
                 break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Keys in Unicode code point order, as Python's <c>sort_keys</c> sorts them.
+    /// Ordinal comparison orders UTF-16 code units, which puts a character above
+    /// U+FFFF (a surrogate pair, D800-DFFF) before U+E000-U+FFFF.
+    /// </summary>
+    private sealed class CodePointOrder : IComparer<string> {
+        internal static readonly CodePointOrder Instance = new();
+
+        public int Compare(string? left, string? right) {
+            if (ReferenceEquals(left, right)) return 0;
+            if (left is null) return -1;
+            if (right is null) return 1;
+            var a = left.EnumerateRunes().GetEnumerator();
+            var b = right.EnumerateRunes().GetEnumerator();
+            while (true) {
+                var more = a.MoveNext();
+                var others = b.MoveNext();
+                if (!more || !others) return more.CompareTo(others);
+                var order = a.Current.Value.CompareTo(b.Current.Value);
+                if (order != 0) return order;
             }
         }
     }
@@ -200,10 +224,53 @@ internal static class ConformanceRecord {
             var document = new JsonObject { ["schema_version"] = 1, ["results"] = results };
             var directory = Path.GetDirectoryName(Path.GetFullPath(Target));
             if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
-            File.WriteAllText(Target, document.ToJsonString(new JsonSerializerOptions {
-                WriteIndented = true,
-                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-            }) + "\n");
+            var text = new StringBuilder();
+            Pretty(document, text, 0);
+            File.WriteAllText(Target, text.Append('\n').ToString());
         }
+    }
+
+    /// <summary>
+    /// The results file as the reference writes it --
+    /// <c>json.dumps(..., indent=2, sort_keys=True)</c> and a final newline -- so
+    /// that a diff between the two reads as a diff of results. Only the digests
+    /// inside are compared; keys go in code point order, non-ASCII is escaped as
+    /// Python's default <c>ensure_ascii</c> escapes it.
+    /// </summary>
+    private static void Pretty(JsonNode? node, StringBuilder into, int depth) {
+        switch (node) {
+            case JsonObject map when map.Count > 0: {
+                into.Append("{\n");
+                var first = true;
+                foreach (var key in map.Select(pair => pair.Key).OrderBy(key => key, CodePointOrder.Instance)) {
+                    if (!first) into.Append(",\n");
+                    first = false;
+                    into.Append(' ', 2 * (depth + 1)).Append(AsciiString(key)).Append(": ");
+                    Pretty(map[key], into, depth + 1);
+                }
+                into.Append('\n').Append(' ', 2 * depth).Append('}');
+                break;
+            }
+            case JsonObject:
+                into.Append("{}");
+                break;
+            case JsonValue value when value.TryGetValue<string>(out var text):
+                into.Append(AsciiString(text));
+                break;
+            default:
+                into.Append(node?.ToJsonString() ?? "null");
+                break;
+        }
+    }
+
+    /// <summary>A string as Python's <c>json.dumps</c> writes it by default: every character from U+007F up escaped as <c>\uxxxx</c>.</summary>
+    private static string AsciiString(string value) {
+        var quoted = QuoteString(value);
+        var into = new StringBuilder(quoted.Length);
+        foreach (var character in quoted) {
+            if (character < 0x7F) into.Append(character);
+            else into.Append("\\u").Append(((int)character).ToString("x4", System.Globalization.CultureInfo.InvariantCulture));
+        }
+        return into.ToString();
     }
 }

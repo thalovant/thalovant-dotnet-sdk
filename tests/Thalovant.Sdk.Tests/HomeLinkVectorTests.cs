@@ -225,6 +225,22 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
         Assert.Empty(api.Mismatches);
     }
 
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("\"token\"")]
+    [InlineData("")]
+    public async Task ADeviceTokenAnswerThatIsNotAnObjectHasNoStatus(string body)
+    {
+        // The API did not refuse; the SDK could not use its answer -- the same as a
+        // 2xx with no token, which device-login-vectors.json records with status null.
+        using var api = new LoopbackApi(new JsonArray(Exchange("POST", "/v1/auth/device/token", 200, body)));
+        var plane = Plane(api);
+        var error = await Assert.ThrowsAsync<ThalovantApiException>(() => plane.PollDeviceLoginAsync(
+            new DeviceAuthorization("dc-1", "", "https://x", null, 900, TimeSpan.FromSeconds(5), new JsonObject())));
+        Assert.Null(error.StatusCode);
+        Assert.Null(plane.AccessToken);
+    }
+
     [Fact]
     public async Task APasswordSignInTakesTheDeviceTokensPlaceAndItsId()
     {

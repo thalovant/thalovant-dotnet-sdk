@@ -234,25 +234,126 @@ namespace Thalovant
         public static IReadOnlyList<string> HomeAssistantScopes { get; } = new[] { "hubs:read", "clients:read", "clients:write" };
 
         /// <summary>
-        /// White space inside a tag, as the reference's regular expressions read it
-        /// (Python's <c>\s</c>, which is not .NET's).
+        /// Removes markup: a tag -- <c>&lt;</c> or <c>&lt;/</c> immediately followed
+        /// by an ASCII letter, then everything up to the next <c>&gt;</c> that is not
+        /// inside a quoted attribute value -- a comment (<c>&lt;!--</c> to
+        /// <c>--&gt;</c>) or a processing instruction (<c>&lt;?</c> to <c>?&gt;</c>).
+        /// Any other <c>&lt;</c> is text, so "5 &lt; 6 and 7 &gt; 3" survives whole,
+        /// and so does an unclosed tag.
         /// </summary>
-        private const string TagSpace = @"[\t\n\v\f\r \x1C-\x1F\x85\xA0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]";
+        /// <remarks>
+        /// Linear in the length of the text, whatever it holds: the text comes off
+        /// the network, and a regular expression for the same rule backtracked (the
+        /// reference's took six seconds on an unclosed tag and 1,600 spaces). Where
+        /// a tag scanned from each position would end is computed once, from the
+        /// end; a comment or instruction whose closer is missing is not searched
+        /// for again.
+        /// </remarks>
+        internal static string StripMarkup(string text)
+        {
+            if (text.IndexOf('<') < 0)
+            {
+                return text;
+            }
+            var size = text.Length;
+            int[]? ends = null;
+            // Once a closer is missing from some point on, it is missing from
+            // every later point.
+            var commentMissingFrom = size + 1;
+            var instructionMissingFrom = size + 1;
+            var output = new StringBuilder(size);
+            var index = 0;
+            while (index < size)
+            {
+                if (text[index] != '<')
+                {
+                    var next = text.IndexOf('<', index);
+                    if (next < 0) next = size;
+                    output.Append(text, index, next - index);
+                    index = next;
+                    continue;
+                }
+                var comment = string.CompareOrdinal(text, index, "<!--", 0, 4) == 0;
+                if (comment || string.CompareOrdinal(text, index, "<?", 0, 2) == 0)
+                {
+                    var closer = comment ? "-->" : "?>";
+                    var begin = index + (comment ? 4 : 2);
+                    var found = -1;
+                    if (begin < (comment ? commentMissingFrom : instructionMissingFrom))
+                    {
+                        found = text.IndexOf(closer, begin, StringComparison.Ordinal);
+                        if (found < 0)
+                        {
+                            if (comment) commentMissingFrom = begin;
+                            else instructionMissingFrom = begin;
+                        }
+                    }
+                    if (found >= 0)
+                    {
+                        index = found + closer.Length;
+                        continue;
+                    }
+                }
+                else
+                {
+                    var name = index + 1 < size && text[index + 1] == '/' ? index + 2 : index + 1;
+                    if (name < size && IsAsciiLetter(text[name]))
+                    {
+                        ends ??= TagEnds(text);
+                        var end = ends[name + 1];
+                        if (end >= 0)
+                        {
+                            index = end + 1;
+                            continue;
+                        }
+                    }
+                }
+                output.Append('<');
+                index++;
+            }
+            return output.ToString();
+        }
 
         /// <summary>
-        /// A markup construct: a tag -- <c>&lt;</c> or <c>&lt;/</c> immediately
-        /// followed by a name that starts with an ASCII letter, then attributes
-        /// (whose quoted values may hold <c>&gt;</c>), then <c>&gt;</c> or
-        /// <c>/&gt;</c> -- a comment, or a processing instruction. Any other
-        /// <c>&lt;</c> is text: "5 &lt; 6 and 7 &gt; 3" is a sentence. The attribute
-        /// run is atomic, so an unclosed tag costs one pass rather than a
-        /// backtrack per character.
+        /// For every position, where a tag's <c>&gt;</c> is when scanning from there,
+        /// or -1: a <c>&gt;</c> ends the scan, a quote skips to its partner (and a
+        /// quote with none ends it with no tag), anything else moves on. The answer
+        /// from one position is the answer from the next, or from just past the
+        /// partner quote, so one pass from the end computes them all.
         /// </summary>
-        private static readonly Regex Markup = new Regex(
-            "<!--.*?-->"
-            + @"|<\?.*?\?>"
-            + "|</?[A-Za-z][A-Za-z0-9._:-]*(?:" + TagSpace + "+(?>(?:[^<>\"']|\"[^\"]*\"|'[^']*')*))?" + TagSpace + "*/?>",
-            RegexOptions.Singleline | RegexOptions.CultureInvariant);
+        private static int[] TagEnds(string text)
+        {
+            var size = text.Length;
+            var ends = new int[size + 1];
+            ends[size] = -1;
+            int nextDouble = -1, nextSingle = -1;
+            for (var index = size - 1; index >= 0; index--)
+            {
+                var character = text[index];
+                if (character == '>')
+                {
+                    ends[index] = index;
+                }
+                else if (character == '"')
+                {
+                    ends[index] = nextDouble < 0 ? -1 : ends[nextDouble + 1];
+                    nextDouble = index;
+                }
+                else if (character == '\'')
+                {
+                    ends[index] = nextSingle < 0 ? -1 : ends[nextSingle + 1];
+                    nextSingle = index;
+                }
+                else
+                {
+                    ends[index] = ends[index + 1];
+                }
+            }
+            return ends;
+        }
+
+        private static bool IsAsciiLetter(char character) =>
+            (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z');
 
         /// <summary>
         /// The one small set of references every SDK decodes: numeric (decimal and
@@ -283,7 +384,7 @@ namespace Thalovant
             {
                 return "";
             }
-            var decoded = Reference.Replace(Markup.Replace(text, ""), DecodeReference);
+            var decoded = Reference.Replace(StripMarkup(text), DecodeReference);
             var plain = new StringBuilder(decoded.Length);
             var pendingSpace = false;
             foreach (var character in decoded)

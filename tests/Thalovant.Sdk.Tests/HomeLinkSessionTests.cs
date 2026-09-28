@@ -206,6 +206,68 @@ public sealed class HomeLinkSessionTests
     }
 
     [Fact]
+    public async Task AReplyWithdrawnWhileQueuedIsNeitherSentNorAFailureOfTheLink()
+    {
+        var peer = new HubPeer();
+        using var client = HubPeer.ClientFor(peer);
+        await client.ConnectAsync(TimeSpan.FromSeconds(10));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        peer.HoldNextFrame = async () => { entered.TrySetResult(); await release.Task; };
+        // Another frame is being written: the reply has to queue behind it.
+        var writing = client.EmitAsync("test.first");
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var request = HomeRequest.FromEvent(new ThalovantEvent(ThalovantHome.RequestEvent,
+            new JsonObject { ["request_id"] = "w1", ["utterance"] = "x" }, new JsonObject { ["source"] = "skill" }));
+        var sent = await ThalovantHome.AnswerAsync(
+            request,
+            (_, _) => new ValueTask<HomeAnswer>(HomeAnswer.ActionDone("Done.")),
+            (payload, token) => client.ReplyAsync(request.Event!, ThalovantHome.ResponseEvent, payload, cancellationToken: token),
+            TimeSpan.FromMilliseconds(100),
+            TimeSpan.FromMilliseconds(300));
+        Assert.Null(sent); // withdrawn at the hub's bound
+        release.SetResult();
+        await writing.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal("test.first", (string?)(await peer.NextAsync(TimeSpan.FromSeconds(5)))["type"]);
+        await Task.Delay(200);
+        // Never sent once the lock came free, and the link is as it was.
+        Assert.False(peer.Received.Reader.TryRead(out _));
+        Assert.True(client.LinkUp);
+        Assert.Null(client.Transport!.LastError);
+        await client.EmitAsync("test.after");
+        Assert.Equal("test.after", (string?)(await peer.NextAsync(TimeSpan.FromSeconds(5)))["type"]);
+    }
+
+    [Theory]
+    [InlineData("<b\"x\">bold</b>", "bold")]
+    [InlineData("<a <b>c", "c")]
+    [InlineData("<!-- unclosed comment", "<!-- unclosed comment")]
+    [InlineData("<?unclosed <b>x</b>", "<?unclosed x")]
+    [InlineData("<a title='5 > 3'>x</a>", "x")]
+    [InlineData("<a title='unclosed>x", "<a title='unclosed>x")]
+    public void ATagRunsFromALetterToTheNextUnquotedGreaterThan(string text, string plain)
+    {
+        Assert.Equal(plain, ThalovantHome.PlainSpeech(text));
+    }
+
+    [Fact]
+    public void MarkupIsRemovedInLinearTime()
+    {
+        // Each of these made a backtracking expression quadratic or worse.
+        var inputs = new[]
+        {
+            "<a" + new string(' ', 200_000),
+            string.Concat(Enumerable.Repeat("<a '", 50_000)),
+            string.Concat(Enumerable.Repeat("<!--", 50_000)),
+            string.Concat(Enumerable.Repeat("<?", 100_000)),
+            string.Concat(Enumerable.Repeat("<a \"", 50_000)) + ">",
+        };
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        foreach (var input in inputs) ThalovantHome.PlainSpeech(input);
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(2), $"took {clock.Elapsed}");
+    }
+
+    [Fact]
     public void TheHandlerTimeoutMustBePositive()
     {
         var client = HubPeer.ClientFor(new HubPeer());

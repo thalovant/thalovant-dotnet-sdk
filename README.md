@@ -693,8 +693,10 @@ destination and no source is answered with no destination at all, rather than
 back to itself. `response_type` is `action_done`, `query_answer` or `error`, and
 an error names one of `HomeErrorCodes`.
 
-Speech is sent as plain text. Real tags, comments and processing instructions
-are removed, so "5 < 6 and 7 > 3" survives whole. Numeric character references,
+Speech is sent as plain text, in linear time whatever the text holds. A tag (`<`
+or `</` and an ASCII letter, up to the next `>` outside a quoted value), a
+comment and a processing instruction are removed; any other `<` is text, so
+"5 < 6 and 7 > 3" and an unclosed tag survive whole. Numeric character references,
 the five XML entities and `&nbsp;` are decoded, and nothing else (`&eacute;`
 stays as written). Every run of Unicode White_Space becomes one space.
 

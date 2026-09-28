@@ -61,6 +61,13 @@ internal sealed class HubPeer : WebSocket
     /// <summary>When set, the hub closes with this status the moment the handshake completes.</summary>
     internal bool CloseAfterHandshake { get; init; }
 
+    /// <summary>
+    /// When set, the next encrypted frame the client writes waits on this before
+    /// it lands: a frame still being written, which is what makes the next one
+    /// queue behind it.
+    /// </summary>
+    internal Func<Task>? HoldNextFrame { get; set; }
+
     internal WebSocketCloseStatus? CloseAfterHandshakeWith { get; init; }
 
     internal HubPeer(Opening opening = Opening.Admit)
@@ -110,10 +117,20 @@ internal sealed class HubPeer : WebSocket
     private void QueueText(string text) =>
         _incoming.Writer.TryWrite(new Frame(Encoding.UTF8.GetBytes(text), WebSocketMessageType.Text, null));
 
-    public override Task SendAsync(ArraySegment<byte> buffer, WebSocketMessageType type, bool endOfMessage, CancellationToken token)
+    public override async Task SendAsync(ArraySegment<byte> buffer, WebSocketMessageType type, bool endOfMessage, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         var bytes = buffer.ToArray();
+        if (type == WebSocketMessageType.Binary && HoldNextFrame is Func<Task> hold)
+        {
+            HoldNextFrame = null;
+            await hold();
+        }
+        Receive(bytes, type);
+    }
+
+    private void Receive(byte[] bytes, WebSocketMessageType type)
+    {
         lock (_gate)
         {
             if (type == WebSocketMessageType.Text)
@@ -135,12 +152,12 @@ internal sealed class HubPeer : WebSocket
                 {
                     _session = _exchange.Session();
                 }
-                return Task.CompletedTask;
+                return;
             }
             var plain = _session!.Decrypt(bytes);
             if (!plain.HasValue)
             {
-                return Task.CompletedTask; // A chunked message is delivered only after its final frame.
+                return; // A chunked message is delivered only after its final frame.
             }
             var message = HiveWire.Decode(Encoding.UTF8.GetString(plain.Value.Data));
             if (message.MsgType == "hello")
@@ -156,7 +173,6 @@ internal sealed class HubPeer : WebSocket
                 Received.Writer.TryWrite(message.Payload);
             }
         }
-        return Task.CompletedTask;
     }
 
     public override async Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer, CancellationToken token)

@@ -228,10 +228,19 @@ namespace Thalovant
 
         /// <summary>
         /// The scopes a Home Assistant link signs in with
-        /// (<see cref="ThalovantControlPlane.BeginDeviceLoginAsync"/>), and all a
+        /// (<see cref="ThalovantControlPlane.BeginDeviceLoginAsync(IEnumerable{string}?, string?, System.Threading.CancellationToken)"/>), and all a
         /// Free plan can approve.
         /// </summary>
         public static IReadOnlyList<string> HomeAssistantScopes { get; } = new[] { "hubs:read", "clients:read", "clients:write" };
+
+        /// <summary>
+        /// The registered app id Home Assistant signs in as: the <c>clientId</c>
+        /// of <see cref="ThalovantControlPlane.BeginDeviceLoginAsync(IEnumerable{string}?, string?, string?, System.Threading.CancellationToken)"/>.
+        /// The approval page then shows the platform's own name for it as
+        /// verified, and approving it again replaces the token the last approval
+        /// gave it instead of counting a second against the plan.
+        /// </summary>
+        public const string HomeAssistantClientId = "thalovant-home-assistant";
 
         /// <summary>
         /// Removes markup: a tag -- <c>&lt;</c> or <c>&lt;/</c> immediately followed

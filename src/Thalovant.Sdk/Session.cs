@@ -63,6 +63,9 @@ namespace Thalovant
 
         /// <summary>The hub's Noise key is not the pinned one.</summary>
         KeyChanged,
+
+        /// <summary>The hub pinned another key for this client, and refused this one as an XX handshake ended.</summary>
+        ClientKeyRejected,
     }
 
     internal enum LinkAction
@@ -117,6 +120,9 @@ namespace Thalovant
                     return new LinkDecision(LinkAction.Retry, TimeSpan.Zero);
                 case LinkOutcome.KeyChanged:
                     return new LinkDecision(LinkAction.GiveUp, reason: "key_changed");
+                case LinkOutcome.ClientKeyRejected:
+                    // No handshake can change which key the hub pinned.
+                    return new LinkDecision(LinkAction.GiveUp, reason: "client_key_rejected");
                 case LinkOutcome.Refused:
                     _refusedSince ??= now;
                     if (now - _refusedSince.Value >= _policy.RefusalGraceSeconds)
@@ -224,7 +230,9 @@ namespace Thalovant
         /// <summary>
         /// How long a new link must stay up before <see cref="ConnectAsync"/>
         /// counts it: a hub that does not know the client's static key says so
-        /// only by closing right after the handshake. 0.75 seconds by default;
+        /// only by closing right after the handshake. Such a close counts only
+        /// while the hub has sent nothing that decrypts under the new session's
+        /// keys; after a frame from the hub it is a drop. 0.75 seconds by default;
         /// zero turns the check off.
         /// </summary>
         public TimeSpan SettleWindow
@@ -308,7 +316,7 @@ namespace Thalovant
             cancellationToken.ThrowIfCancellationRequested();
             if (first != stopped) return;
             if (client.LinkRefused)
-                throw new ThalovantHubRefusedException("The hub closed the link right after the handshake: it does not accept these credentials, or not yet.");
+                throw client.LinkRefusal();
             throw new ThalovantConnectionException("The hub closed the link right after the handshake.");
         }
 
@@ -334,7 +342,10 @@ namespace Thalovant
         /// <remarks>
         /// Throws <see cref="ThalovantHubRefusedException"/> when the hub turns the
         /// credentials away -- including by closing inside <see cref="SettleWindow"/>
-        /// right after the handshake -- and <see cref="ThalovantConnectionException"/>
+        /// right after the handshake, before it has sent anything -- and
+        /// <see cref="ThalovantClientKeyRejectedException"/>, one kind of refusal,
+        /// when that close came as an XX handshake ended: the hub pinned another
+        /// key for this client. <see cref="ThalovantConnectionException"/>
         /// or <see cref="ThalovantTimeoutException"/> for everything else. A failed
         /// attempt moves the retry ladder on.
         /// </remarks>
@@ -367,7 +378,8 @@ namespace Thalovant
         /// same way until they have lasted <see cref="HubSessionPolicy.RefusalGraceSeconds"/>,
         /// then this throws <see cref="ThalovantHubRefusedException"/>; and a
         /// changed hub key throws <see cref="ThalovantHubKeyChangedException"/> at
-        /// once, since retrying cannot change it. A fault that will not fix itself
+        /// once, since retrying cannot change it, as does a hub that refuses this
+        /// client's own key (<see cref="ThalovantClientKeyRejectedException"/>). A fault that will not fix itself
         /// -- a factory that cannot build a client -- is thrown at once too.
         /// </remarks>
         public async Task RunAsync(CancellationToken cancellationToken = default)
@@ -412,6 +424,11 @@ namespace Thalovant
                 catch (ThalovantHubKeyChangedException error)
                 {
                     outcome = LinkOutcome.KeyChanged;
+                    failure = error;
+                }
+                catch (ThalovantClientKeyRejectedException error)
+                {
+                    outcome = LinkOutcome.ClientKeyRejected;
                     failure = error;
                 }
                 catch (ThalovantHubRefusedException error)

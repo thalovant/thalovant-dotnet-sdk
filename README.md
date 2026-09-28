@@ -106,7 +106,8 @@ A caller that runs its own loop, such as a setup screen that shows the code and
 polls on its own schedule, takes the flow in steps:
 
 ```csharp
-var grant = await api.BeginDeviceLoginAsync(ThalovantHome.HomeAssistantScopes, clientName: "Home Assistant");
+var grant = await api.BeginDeviceLoginAsync(
+    ThalovantHome.HomeAssistantScopes, "Home Assistant (kitchen)", ThalovantHome.HomeAssistantClientId);
 Show(grant.VerificationUriComplete ?? grant.VerificationUri, grant.UserCode);
 
 while (true)
@@ -132,6 +133,20 @@ the API asks for at least one and answers `[]` with a 422. A verification URL
 that is not http(s), has no host, or carries credentials is refused before you
 could open it, and neither the device code nor the token ever appears in an
 exception message.
+
+The `clientId` overload signs in as a registered app. With
+`ThalovantHome.HomeAssistantClientId` (`thalovant-home-assistant`), the approval
+page shows the platform's own name for the app as verified, with the client name
+as the device's label beside it, and approving the app again replaces the token
+it already holds instead of counting a second one against the plan. An id the
+API does not know is refused with a 400 `unknown_client`. `DeviceLoginOptions.ClientId`
+does the same for `LoginWithBrowserAsync`; without one, nothing is sent.
+
+An app that approves codes reads one first, signed in as the person approving
+it: `DescribeDeviceLoginAsync(userCode)` returns the `Scopes`, `ClientName`,
+`ClientId`, `DeviceName` and `ClientVerified`, which is true only when a
+registered app asked. Otherwise the client name is whatever the device claimed.
+A code that is unknown, expired or already answered is a 404.
 
 `RevokeApiTokenAsync()` revokes the token this client signed in with (a token
 may always revoke itself) and forgets it locally; pass a token id to revoke
@@ -542,11 +557,23 @@ Standalone legacy wire helpers remain available, but WSS no longer uses them.
 Reconnects preserve static identity and pins while clearing ephemeral keys,
 transcript, reassembly and cipher counters.
 
-On .NET 8, the default persistent state is under the current user's local
-application data directory (`Thalovant/noise`). POSIX directories require 0700
-and files 0600; Windows relies on the user's profile ACLs. Never share or
+A hub pins the first static key a connection shows it, so every program that
+uses one identity must present the same key. On .NET 8, a client given no store
+keeps the key of an identity read from a file (`ThalovantIdentity.FromFile`,
+which sets `SourcePath`) in a `noise` folder beside that file, so two programs
+reading the same file share it. The first time that folder is used, the key and
+hub pins the identity had in the shared default folder are copied into it --
+never moved -- when that key has already met this identity's hub. Any other
+identity, or one in a folder the user cannot write to, keeps its state under the
+current user's local application data directory (`Thalovant/noise`), as before
+0.9.1. POSIX directories require 0700 and files 0600; Windows relies on the
+user's profile ACLs. Never share or
 check in this state. A changed hub key fails authentication; verify intentional
-key rotation before replacing its saved pin.
+key rotation before replacing its saved pin. A hub that pinned another key for
+this client throws `ThalovantClientKeyRejectedException`, naming the folder this
+client's key is in (`KeyFolder`) and the likely other one (`OtherKeyFolder`):
+pair again, or give every program that uses the identity the folder holding the
+key the hub trusts.
 
 Unity/netstandard2.1 lacks portable permission APIs, so it must supply an
 **existing app-private directory**, or an `IHiveMindNoiseStore` implementation
@@ -748,7 +775,9 @@ around a transport of your own.
   on `ApiError`) and `ThalovantAdmissionTimeoutException` — all
   `ThalovantConnectionException`. In order: the hub turned the credentials away;
   its Noise key is not the one pinned for it; the platform could not admit a new
-  connection; or it has not admitted it yet. The admission timeout is also an
+  connection; or it has not admitted it yet. `ThalovantClientKeyRejectedException`
+  (with `KeyFolder` and `OtherKeyFolder`) is the refusal of this client's own
+  Noise key, and a `ThalovantHubRefusedException`. The admission timeout is also an
   `IThalovantTimeout`, like `ThalovantTimeoutException`.
 - `ThalovantIdentityException` — malformed or insecure identity documents.
 - `ThalovantUnsupportedProtocolException` — the protocol is disabled, missing
@@ -971,16 +1000,21 @@ attempt, and `RunAsync` keeps the link until the session closes:
 - It looks at a held link every probe interval, and the moment it drops.
 
 A close with code 1000, 1005 or 1008 is a refusal rather than a drop when it
-comes during the handshake, or within `SettleWindow` (0.75 seconds) after it.
-That is how a hub says it does not know the connection's key. So are a Noise
+comes during the handshake, or within `SettleWindow` (0.75 seconds) after it
+while the hub has sent nothing that decrypts under the new session's keys. That
+is how a hub says it does not know the connection's key; a hub that has spoken
+has accepted it, so a close after its first frame is a drop. So are a Noise
 answer that does not authenticate (a wrong password) and a 401 or 403 on the
-WebSocket upgrade.
+WebSocket upgrade. A refusal that comes as an XX handshake ends is the hub
+refusing this client's own key -- it pinned another one for the connection --
+and throws `ThalovantClientKeyRejectedException`; after KK the same close is a
+plain refusal.
 
 A pinned KK handshake that fails is followed at once by one XX attempt, inside
 the same connect. Only XX tells a changed password from a changed hub key, and
 it is not a downgrade: the pin is still checked. A hub whose key is not the
 pinned one throws `ThalovantHubKeyChangedException`, and `RunAsync` stops at
-once, since retrying cannot change it. Because a new connection is refused until
+once, since retrying cannot change it; so does a refused client key. Because a new connection is refused until
 its hub admits it, `RunAsync` retries refusals for `RefusalGraceSeconds` (600 by
 default, set through the five-argument `HubSessionPolicy` constructor) before it
 throws `ThalovantHubRefusedException`.

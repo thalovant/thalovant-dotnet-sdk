@@ -141,6 +141,51 @@ namespace Thalovant.Sdk.Tests
         }
 
         [Fact]
+        public async Task LoginWithBrowserSignsInAsTheRegisteredApp()
+        {
+            _handler.Enqueue(body: Fixtures.DeviceGrant);
+            _handler.Enqueue(body: Fixtures.DeviceToken);
+
+            await _api.LoginWithBrowserAsync(new DeviceLoginOptions
+            {
+                ClientId = ThalovantHome.HomeAssistantClientId,
+                ClientName = "Home Assistant (kitchen)",
+                OpenBrowser = false,
+                Prompt = _ => { },
+            });
+
+            var authorize = _handler.Requests[0].BodyObject()!;
+            Assert.Equal("thalovant-home-assistant", (string?)authorize["client_id"]);
+            Assert.Equal("Home Assistant (kitchen)", (string?)authorize["client_name"]);
+        }
+
+        [Fact]
+        public async Task AnEmptyClientIdIsSentForTheApiToRefuse()
+        {
+            // Better a 422 than signing in unverified in silence.
+            _handler.Enqueue(body: Fixtures.DeviceGrant);
+            await _api.BeginDeviceLoginAsync(null, null, "");
+            Assert.Equal("", (string?)_handler.Requests[0].BodyObject()!["client_id"]);
+        }
+
+        [Fact]
+        public async Task DescribingACodeEscapesItAndReadsOnlyWhatTheApiVouchesFor()
+        {
+            var api = new ThalovantControlPlane(_handler, apiUrl: "https://api.example.com/v1", accessToken: "approver-token");
+            // A true with no app named says nothing about who asked.
+            _handler.Enqueue(body: """{"scopes":["hubs:read",7],"client_name":"","client_verified":true,"device_name":"kitchen"}""");
+            var request = await api.DescribeDeviceLoginAsync("WDJB/MJHT?");
+            Assert.Equal("https://api.example.com/v1/auth/device/codes/WDJB%2FMJHT%3F", _handler.Requests[0].Url.AbsoluteUri);
+            Assert.Equal("Bearer approver-token", _handler.Requests[0].Header("Authorization"));
+            Assert.Equal(new[] { "hubs:read" }, request.Scopes);
+            Assert.Null(request.ClientName);
+            Assert.Null(request.ClientId);
+            Assert.False(request.ClientVerified);
+            Assert.Equal("kitchen", request.DeviceName);
+            Assert.Null(request.ExpiresAt);
+        }
+
+        [Fact]
         public async Task DevicePollSlowDownGrowsInterval()
         {
             _handler.Enqueue(400, Pending);

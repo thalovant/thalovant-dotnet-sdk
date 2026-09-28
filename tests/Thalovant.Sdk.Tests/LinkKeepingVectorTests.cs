@@ -16,9 +16,9 @@ namespace Thalovant.Sdk.Tests;
 /// </summary>
 /// <remarks>
 /// <c>close</c> cases hold the transport's reading of a close to the vectors;
-/// <c>handshake</c> cases run one real connect -- a WebSocket upgrade and a Noise
-/// handshake -- against a loopback hub in the case's situation and list the
-/// patterns the hub saw; <c>supervise</c> cases drive the supervisor
+/// <c>handshake</c> cases run one real connect as a kept link makes it -- a
+/// WebSocket upgrade, a Noise handshake, then the settle window -- against a
+/// loopback hub in the case's situation and list the patterns the hub saw; <c>supervise</c> cases drive the supervisor
 /// <see cref="HubSession.RunAsync"/> asks after every attempt.
 /// </remarks>
 [Collection("Runtime deadlines")]
@@ -73,13 +73,15 @@ public sealed class LinkKeepingVectorTests
         var vector = Case(name);
         var after = (string)vector["when"]! == "after_handshake" ? vector["after_ms"]!.GetValue<long>() : (long?)null;
         var refused = HiveMindWssTransport.CloseRefuses(
-            vector["code"]?.GetValue<int>(), after, vector["code_late_ms"]?.GetValue<long>() ?? 0);
+            vector["code"]?.GetValue<int>(), after, vector["code_late_ms"]?.GetValue<long>() ?? 0,
+            vector["after_authenticated_frame"]?.GetValue<bool>() ?? false);
         Record(name, new JsonObject { ["outcome"] = refused ? "refused" : "dropped" }, vector);
     }
 
     private static string Outcome(ThalovantConnectionException? error) => error switch
     {
         null => "connected",
+        ThalovantClientKeyRejectedException => "client_key_rejected",
         ThalovantHubRefusedException => "refused",
         ThalovantHubKeyChangedException => "key_changed",
         _ => "failed",
@@ -93,7 +95,8 @@ public sealed class LinkKeepingVectorTests
         using var hub = new LoopbackHub();
         var store = new HubPeer.Store();
         var situation = (string)vector["situation"]!;
-        if (situation is "pinned" or "password_changed_since_pinning" or "hub_key_changed")
+        if (situation is "pinned" or "password_changed_since_pinning" or "hub_key_changed"
+            or "client_key_changed" or "client_key_changed_pinned_here")
         {
             Assert.Null(await hub.AttemptAsync(store)); // first contact pins both ways
         }
@@ -113,11 +116,54 @@ public sealed class LinkKeepingVectorTests
             case "upgrade_status":
                 hub.UpgradeStatus = vector["status"]!.GetValue<int>();
                 break;
+            case "client_key_changed":
+                store = new HubPeer.Store(); // another program: its own folder, its own key
+                break;
+            case "client_key_changed_pinned_here":
+                store.ReplaceKey(); // a new key, the hub pins kept
+                break;
+            case "closed_after_first_frame":
+                hub.CloseAfterHandshake = true;
+                hub.CloseAfterHandshakeSpeaks = true;
+                break;
         }
         var before = hub.Patterns.Count;
-        var outcome = Outcome(await hub.AttemptAsync(store, password));
+        var outcome = Outcome(await SettledAttemptAsync(hub, store, password));
         var patterns = hub.Patterns.Skip(before).Select(pattern => (JsonNode?)JsonValue.Create(pattern.Substring(0, 2))).ToArray();
         Record(name, new JsonObject { ["outcome"] = outcome, ["patterns"] = new JsonArray(patterns) }, vector);
+    }
+
+    /// <summary>
+    /// One connect as a kept link makes it -- the handshake, then the settle
+    /// window -- and what it came to: a close that lands just after the
+    /// handshake would otherwise race the connect returning.
+    /// </summary>
+    private static async Task<ThalovantConnectionException?> SettledAttemptAsync(LoopbackHub hub, IHiveMindNoiseStore store, string password)
+    {
+        await using var session = new HubSession(async cancellationToken =>
+        {
+            var client = hub.Client(store, password);
+            try
+            {
+                await client.ConnectAsync(TimeSpan.FromSeconds(15), cancellationToken);
+                return client;
+            }
+            catch
+            {
+                await client.CloseAsync();
+                throw;
+            }
+        }, warm: false);
+        session.SettleWindow = TimeSpan.FromMilliseconds(Policy["settle_ms"]!.GetValue<long>());
+        try
+        {
+            await session.ConnectAsync().WaitAsync(TimeSpan.FromSeconds(30));
+            return null;
+        }
+        catch (ThalovantConnectionException error)
+        {
+            return error;
+        }
     }
 
     [Theory]
@@ -141,6 +187,7 @@ public sealed class LinkKeepingVectorTests
                 "failed" => LinkOutcome.Failed,
                 "refused" => LinkOutcome.Refused,
                 "key_changed" => LinkOutcome.KeyChanged,
+                "client_key_rejected" => LinkOutcome.ClientKeyRejected,
                 var other => throw new InvalidDataException(other),
             };
             var decision = supervisor.After(outcome, item["at_ms"]!.GetValue<long>() / 1000.0);
@@ -199,6 +246,56 @@ public sealed class LinkKeepingVectorTests
         await Assert.ThrowsAsync<ThalovantHubKeyChangedException>(() => session.RunAsync().WaitAsync(TimeSpan.FromSeconds(20)));
         Assert.Equal(new[] { "KKpsk0", "XXpsk2" }, hub.Patterns.TakeLast(2));
         Assert.Equal(3, hub.Attempts); // the pinning connect, then KK and XX
+    }
+
+    [Fact]
+    public async Task AKeyTheHubDidNotPinNamesBothFolders()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "thalovant-key-rejected-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var hub = new LoopbackHub();
+            var first = Path.Combine(root, "satellite");
+            var second = Path.Combine(root, "cli");
+            Assert.Null(await hub.AttemptAsync(new HiveMindFileNoiseStore(first))); // the hub pins this key
+            var error = await SettledAttemptAsync(hub, new HiveMindFileNoiseStore(second), "test-password");
+            var rejected = Assert.IsType<ThalovantClientKeyRejectedException>(error);
+            Assert.IsAssignableFrom<ThalovantHubRefusedException>(rejected); // caught where any refusal is
+            Assert.Equal(Path.GetFullPath(second), rejected.KeyFolder);
+            Assert.Equal(Path.GetFullPath(HiveMindFileNoiseStore.DefaultDirectory), rejected.OtherKeyFolder);
+            Assert.Contains(Path.GetFullPath(second), rejected.Message, StringComparison.Ordinal);
+            Assert.Contains("Re-pair, or share the key folder", rejected.Message, StringComparison.Ordinal);
+            Assert.Equal(new[] { "XXpsk2", "XXpsk2" }, hub.Patterns);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AfterKKTheSameCloseIsAPlainRefusal()
+    {
+        using var hub = new LoopbackHub();
+        var store = new HubPeer.Store();
+        Assert.Null(await hub.AttemptAsync(store));
+        // The hub could only complete KK with the key it pinned: this close says
+        // nothing about the client's key.
+        hub.CloseAfterHandshake = true;
+        var error = await SettledAttemptAsync(hub, store, "test-password");
+        Assert.IsType<ThalovantHubRefusedException>(error);
+        Assert.Equal("KKpsk0", hub.Patterns[^1]);
+    }
+
+    [Fact]
+    public async Task RunStopsAtOnceWhenTheHubRefusesTheClientsKey()
+    {
+        using var hub = new LoopbackHub();
+        Assert.Null(await hub.AttemptAsync(new HubPeer.Store()));
+        await using var session = Session(hub, new HubPeer.Store(), new HubSessionPolicy(0.05, 0.1, 0.05, 0.05, refusalGraceSeconds: 30));
+        // A refusal would be retried for 30 seconds; this one ends RunAsync on the first.
+        await Assert.ThrowsAsync<ThalovantClientKeyRejectedException>(() => session.RunAsync().WaitAsync(TimeSpan.FromSeconds(20)));
+        Assert.Equal(2, hub.Attempts); // the pinning connect, then the one refused
     }
 
     [Theory]

@@ -116,15 +116,39 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
         var vector = Case(Device, name);
         var call = vector["call"]!.AsObject();
         using var api = new LoopbackApi(vector["exchanges"]!.AsArray());
-        var plane = Plane(api);
+        // Only the approver's read is signed in; a device signing in has no token yet.
+        var plane = (string)call["op"]! == "describe" ? Plane(api, "synthetic-token") : Plane(api);
         var produced = new JsonArray();
-        if ((string)call["op"]! == "begin")
+        if ((string)call["op"]! == "describe")
         {
             try
             {
-                var grant = await plane.BeginDeviceLoginAsync(
-                    call["scopes"]?.AsArray().Select(scope => (string)scope!).ToArray(),
-                    (string?)call["client_name"]);
+                var request = await plane.DescribeDeviceLoginAsync((string)call["user_code"]!);
+                produced.Add(new JsonObject
+                {
+                    ["outcome"] = "described",
+                    ["scopes"] = new JsonArray(request.Scopes.Select(scope => (JsonNode?)JsonValue.Create(scope)).ToArray()),
+                    ["client_name"] = request.ClientName,
+                    ["client_id"] = request.ClientId,
+                    ["client_verified"] = request.ClientVerified,
+                    ["device_name"] = request.DeviceName,
+                });
+            }
+            catch (ThalovantApiException error)
+            {
+                Excluded(error, Device);
+                produced.Add(DeviceError(error));
+            }
+        }
+        else if ((string)call["op"]! == "begin")
+        {
+            try
+            {
+                var scopes = call["scopes"]?.AsArray().Select(scope => (string)scope!).ToArray();
+                // Without a client_id in the case, the overload every caller had before it.
+                var grant = call.ContainsKey("client_id")
+                    ? await plane.BeginDeviceLoginAsync(scopes, (string?)call["client_name"], (string?)call["client_id"])
+                    : await plane.BeginDeviceLoginAsync(scopes, (string?)call["client_name"]);
                 produced.Add(new JsonObject
                 {
                     ["outcome"] = "started",
@@ -138,7 +162,7 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
             catch (ThalovantApiException error)
             {
                 Excluded(error, Device);
-                produced.Add(new JsonObject { ["outcome"] = "error", ["status"] = error.StatusCode });
+                produced.Add(DeviceError(error));
             }
         }
         else
@@ -197,14 +221,20 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
         catch (ThalovantApiException error)
         {
             Excluded(error, Device);
-            var produced = new JsonObject { ["outcome"] = "error", ["status"] = error.StatusCode };
-            if (error.StatusCode is not null)
-            {
-                produced["code"] = error.ErrorCode;
-                produced["detail"] = error.Detail;
-            }
-            return produced;
+            return DeviceError(error);
         }
+    }
+
+    /// <summary>A failure, with the api-errors fields when the API answered one.</summary>
+    private static JsonObject DeviceError(ThalovantApiException error)
+    {
+        var produced = new JsonObject { ["outcome"] = "error", ["status"] = error.StatusCode };
+        if (error.StatusCode is not null)
+        {
+            produced["code"] = error.ErrorCode;
+            produced["detail"] = error.Detail;
+        }
+        return produced;
     }
 
     [Fact]
@@ -498,6 +528,10 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
         {
             produced = await Deadline(vector);
         }
+        else if (kind == "queued")
+        {
+            produced = await Queued(vector);
+        }
         else if (kind == "reply_context")
         {
             var context = vector["context"]!.AsObject();
@@ -568,6 +602,53 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
         return produced;
     }
 
+    /// <summary>
+    /// A reply that waits behind another frame, over a link of its own: that
+    /// frame holds the send path for the case's <c>busy_ms</c>, the reply is
+    /// withdrawn at the hub's bound or goes out after it, and the same link
+    /// then carries another message.
+    /// </summary>
+    private static async Task<JsonObject> Queued(JsonObject vector)
+    {
+        var peer = new HubPeer();
+        using var client = HubPeer.ClientFor(peer);
+        await client.ConnectAsync(TimeSpan.FromSeconds(10));
+        var busy = TimeSpan.FromMilliseconds(vector["busy_ms"]!.GetValue<long>());
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        peer.HoldNextFrame = async () => { entered.TrySetResult(); await Task.Delay(busy); };
+        // Another frame is being written, for busy_ms ...
+        var writing = client.EmitAsync("test.busy");
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var request = HomeRequest.FromEvent(new ThalovantEvent(ThalovantHome.RequestEvent, vector["request"]!.DeepClone().AsObject(),
+            new JsonObject { ["source"] = "skill", ["destination"] = "ha" }));
+        // ... and the reply queues behind it, through the SDK's own send path.
+        var sent = await ThalovantHome.AnswerAsync(
+            request,
+            Handler(vector["handler"]!.AsObject()),
+            (payload, token) => client.ReplyAsync(request.Event!, ThalovantHome.ResponseEvent, payload, cancellationToken: token),
+            ThalovantHome.DefaultHandlerTimeout,
+            TimeSpan.FromMilliseconds(vector["hub_timeout_ms"]!.GetValue<long>()));
+        await writing.WaitAsync(TimeSpan.FromSeconds(10));
+        await Task.Delay(200); // time enough for a withdrawn reply to go out late, if it would
+        var responses = new List<JsonObject>();
+        while (peer.Received.Reader.TryRead(out var message))
+        {
+            if ((string?)message["type"] == ThalovantHome.ResponseEvent) responses.Add(message["data"]!.AsObject());
+        }
+        // Never sent late, never twice.
+        Assert.Equal(sent is null ? 0 : 1, responses.Count);
+        if (sent is not null) Assert.True(JsonNode.DeepEquals(sent, responses[0]));
+        await client.EmitAsync("test.after");
+        var after = await peer.NextAsync(TimeSpan.FromSeconds(5));
+        var produced = new JsonObject
+        {
+            ["replied"] = sent is not null,
+            ["link_kept"] = (string?)after["type"] == "test.after" && client.LinkUp && client.Transport!.LastError is null,
+        };
+        if (sent is not null) produced["response"] = sent.DeepClone();
+        return produced;
+    }
+
     [Fact]
     public async Task AHandlerThatIgnoresCancellationDoesNotHoldTheAnswerBack()
     {
@@ -596,5 +677,6 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
         Assert.Equal(TimeSpan.FromMilliseconds(Home["reply_timeout_ms"]!.GetValue<long>()), ThalovantHome.HubTimeout);
         Assert.Equal(TimeSpan.FromMilliseconds(9000), ThalovantHome.DefaultHandlerTimeout);
         Assert.Equal(Device["home_assistant_scopes"]!.AsArray().Select(item => (string)item!), ThalovantHome.HomeAssistantScopes);
+        Assert.Equal(ThalovantHome.HomeAssistantClientId, (string)Device["home_assistant_client_id"]!);
     }
 }

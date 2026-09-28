@@ -140,6 +140,16 @@ namespace Thalovant
         /// <summary>Whether the hub closed the last link the way it refuses credentials.</summary>
         private bool _closedRefused;
 
+        /// <summary>Whether that refusal came right as an XX handshake ended: the hub refusing this client's own key.</summary>
+        private bool _closedKeyRejected;
+
+        /// <summary>
+        /// Whether the hub has sent anything that decrypted under the current
+        /// session's keys: once it has, it accepted the credentials, and no close
+        /// after that is a refusal.
+        /// </summary>
+        private bool _heardFromHub;
+
         private static TaskCompletionSource<bool> Ended()
         {
             var ended = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -181,6 +191,61 @@ namespace Thalovant
             }
         }
 
+        /// <summary>
+        /// Whether the last link's refusal came right as an XX handshake ended,
+        /// with nothing from the hub in between: the hub pinned another key for
+        /// this client. After KK the same close is a plain refusal, since the hub
+        /// could only complete KK with the key it pinned.
+        /// </summary>
+        internal bool ClosedKeyRejected
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    return _closedKeyRejected;
+                }
+            }
+        }
+
+        /// <summary>
+        /// What a hub that closed the link right after the handshake meant by it:
+        /// <see cref="ThalovantClientKeyRejectedException"/> when it refused this
+        /// client's own key, otherwise a plain refusal.
+        /// </summary>
+        internal ThalovantHubRefusedException RefusalAfterHandshake()
+        {
+            if (!ClosedKeyRejected)
+            {
+                return new ThalovantHubRefusedException(
+                    "The hub closed the link right after the handshake: it does not accept these credentials, or not yet.");
+            }
+            var (used, other) = KeyFolders();
+            var where = used is null ? " This client's key is kept by its IHiveMindNoiseStore." : $" This client's key is in {used}.";
+            var elsewhere = other is null
+                ? ""
+                : $" Another program that reads the same identity may keep its key in {other}, and the hub may have pinned that one.";
+            return new ThalovantClientKeyRejectedException(
+                "The hub refused this client's Noise key: it pinned a different key for this connection when it first connected."
+                + where + elsewhere
+                + " A new handshake cannot fix this. Re-pair, or share the key folder: give every program that uses this identity"
+                + " the folder holding the key the hub trusts (the HiveMindFileNoiseStore directory).",
+                used,
+                other);
+        }
+
+        /// <summary>The folder this transport's key is in, and the other likely one for the same identity.</summary>
+        internal (string? Used, string? Other) KeyFolders()
+        {
+            if (_noiseStore is not HiveMindFileNoiseStore files) return (null, null);
+            var used = files.DirectoryPath;
+            foreach (var candidate in new[] { HiveMindFileNoiseStore.BesideIdentity(Identity), HiveMindFileNoiseStore.DefaultDirectory })
+            {
+                if (candidate != null && !HiveMindFileNoiseStore.SamePath(candidate, used)) return (used, Path.GetFullPath(candidate));
+            }
+            return (used, null);
+        }
+
         private CancellationTokenSource? _receiveCancellation;
         private bool _connected;
         private bool _handshakeComplete;
@@ -192,7 +257,9 @@ namespace Thalovant
         public HiveMindWssTransport(ThalovantIdentity identity, string? userAgent = null, IHiveMindNoiseStore? noiseStore = null)
         {
             Identity = identity;
-            _noiseStore = noiseStore ?? new HiveMindFileNoiseStore();
+            // With no store, the key lives beside the identity's file when it
+            // came from one, so every program reading that file shares it.
+            _noiseStore = noiseStore ?? HiveMindFileNoiseStore.ForIdentity(identity);
             // Resolved here rather than as a parameter default so that the
             // version is never inlined into a caller's assembly at their
             // compile time.
@@ -358,6 +425,8 @@ namespace Thalovant
                 ResetSession();
                 _stopped = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 _closedRefused = false;
+                _closedKeyRejected = false;
+                _heardFromHub = false;
                 _attemptPattern = null;
                 _forceXX = forceXX;
                 _lastError = null;
@@ -458,8 +527,18 @@ namespace Thalovant
         /// the window, not when its code was learnt, and a code learnt more than
         /// <see cref="CloseCodeGraceMs"/> late is no code.
         /// </summary>
-        internal static bool CloseRefuses(int? code, long? closedAfterHandshakeMs, long codeLateMs = 0)
+        internal static bool CloseRefuses(int? code, long? closedAfterHandshakeMs, long codeLateMs = 0) =>
+            CloseRefuses(code, closedAfterHandshakeMs, codeLateMs, afterAuthenticatedFrame: false);
+
+        /// <summary>
+        /// <see cref="CloseRefuses(int?, long?, long)"/>, knowing whether the hub had
+        /// sent a frame that decrypted under the session's keys before it closed:
+        /// then it had accepted the credentials -- a hub refuses a key before it
+        /// sends anything -- and the close is a drop.
+        /// </summary>
+        internal static bool CloseRefuses(int? code, long? closedAfterHandshakeMs, long codeLateMs, bool afterAuthenticatedFrame)
         {
+            if (afterAuthenticatedFrame) return false;
             if (code is not int value || !RefusalCloseCodes.Contains(value) || codeLateMs > CloseCodeGraceMs)
             {
                 return false;
@@ -649,7 +728,11 @@ namespace Thalovant
                         var data = frame.ToArray();
                         if (authenticated) {
                             var state = _noiseSession ?? throw new ThalovantConnectionException("Binary frame received before Noise authentication.");
-                            var decoded = state.Decrypt(data); if (!decoded.HasValue) continue;
+                            var decoded = state.Decrypt(data);
+                            // Any frame that decrypts is the hub speaking under this
+                            // session's keys -- a chunk of a larger message included.
+                            _heardFromHub = true;
+                            if (!decoded.HasValue) continue;
                             // The Noise framing marks each frame JSON or not. One
                             // marked binary is a WIRE-1 frame -- how a hub answers
                             // speak:synth with the rendered audio, and how a file
@@ -692,8 +775,11 @@ namespace Thalovant
                 long? after = complete
                     ? (long)((Stopwatch.GetTimestamp() - _handshakeCompletedAt) * 1000.0 / Stopwatch.Frequency)
                     : (long?)null;
-                var refused = CloseRefuses(status.HasValue ? (int)status.Value : 1005, after);
+                // ClientWebSocket reports a close's code with the close itself,
+                // so the code is never late here.
+                var refused = CloseRefuses(status.HasValue ? (int)status.Value : 1005, after, codeLateMs: 0, afterAuthenticatedFrame: _heardFromHub);
                 _closedRefused = refused;
+                _closedKeyRejected = refused && complete && _attemptPattern == "XXpsk2";
                 ResetSession();
                 if (!complete)
                 {

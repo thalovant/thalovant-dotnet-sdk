@@ -2,15 +2,15 @@
   "capabilities": {
     "api-errors": {
       "implementation": {
-        "src/Thalovant.Sdk/ControlPlane.cs": "f0d14c136e8bb671422b9a363ecb0fa5798973f9a44b0463008f767f45ba18fb",
-        "src/Thalovant.Sdk/Errors.cs": "3786931fe5aee7f5a980c3bd9102f008c456647ccb4ecc2bd38db37cf1e7a419"
+        "src/Thalovant.Sdk/ControlPlane.cs": "1265202b37013e905920bcbfd5ad1e40dc7fb1fdef055f876e64e850c449e0b3",
+        "src/Thalovant.Sdk/Errors.cs": "9e24eb63d7b133743999384a2309006adad3651bda4fcc5923bfc65140591890"
       },
       "reason": "ThalovantApiException.Detail and Problem, and ErrorCode under the shared rule, filled by ThalovantControlPlane.ApiError: the one place a non-2xx response becomes an exception, which reads the body as UTF-8, parses it once and keeps the message as it was. Run against the shared api-error vectors on net8.0 and net9.0, each response served with its exact status, Content-Type and bytes through an injected HttpMessageHandler and read back through GetHubAsync.",
       "status": "required",
       "tests": {
         "tests/Thalovant.Sdk.Tests/ApiErrorVectorTests.cs": "110225515b42762d8fc33a4aca12efa0aa520703770714bfac8fb9fb22f5f0ca",
         "tests/Thalovant.Sdk.Tests/ConformanceRecord.cs": "1b478cc4d8a1eca5ce5776acdf09e3f095e346011a7c8e0f1dc764bd3aa4cdbb",
-        "tests/Thalovant.Sdk.Tests/Fixtures/api-error-vectors.json": "f0d2d8e6e153811f071dac6e0611f00f3c32ed772b751ccccb31904d7dc936ec"
+        "tests/Thalovant.Sdk.Tests/Fixtures/api-error-vectors.json": "66fd70cd853e52cf29b1c2fad0e38f97a1f6c23b3640fca4e4cc02c3c341ca10"
       },
       "vectors": {
         "api-error-vectors.json": "tests/Thalovant.Sdk.Tests/Fixtures/api-error-vectors.json"
@@ -18,15 +18,15 @@
     },
     "binary": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "1d01d56f7f085013c2b59a984553411ba646850a32a1a2b78addcceeee2619fb",
-        "src/Thalovant.Sdk/HiveBinary.cs": "696849f0bf3ec67946cf994f029efbfbc657832f145131eba7bbac151fc281eb",
-        "src/Thalovant.Sdk/Transport.cs": "fa13082e00c863300fe099800086b2330603d15a100c77578f76eb5c9e258918",
+        "src/Thalovant.Sdk/Client.cs": "a95e9311b87731bf2424b8027cb8fd96bbf7e812cd57eb16d013032f27fce17f",
+        "src/Thalovant.Sdk/HiveBinary.cs": "1e15da2a7c2cf4bd48eb805800cd58a63b179d7f2cb67e1dcb225f3c6f26f306",
+        "src/Thalovant.Sdk/Transport.cs": "d56c7265ae249ac4d2e22fd94111b77492064bc300693f089fa4ec9657d6f277",
         "src/Thalovant.Sdk/Wire.cs": "be690ab4aa60c7d546f15e98199739bc4f672225d35c0f185751352513d86061"
       },
-      "reason": "HiveWire.DecodeBinaryFrame reads WIRE-1: four bits of payload type, then the clip itself, never parsed or inflated. The Noise framing marks each frame JSON or not and a binary one was refused outright, so every such frame was unreachable; OnBinary delivers it now. Run against the shared binary vectors and against binary-frames.json, which is hivemind-bus-client's own encoder output rather than frames this SDK built for itself.",
+      "reason": "HiveWire.DecodeBinaryFrame reads WIRE-1: four bits of payload type, then the clip itself, which is never inflated whatever the flag says. A compressed part inflates to at most 32 MiB (HiveWire.MaxInflated, what a reassembled Noise message may hold), and HiveWire.Inflate checks the zlib header and the Adler-32 trailer, because .NET's inflaters return what they have from a truncated stream and read one with its checksum cut off as whole. A payload that would inflate further, is truncated or fails its checksum refuses the frame; unreadable compressed metadata reads as absent, as it did before. The Noise framing marks each frame JSON or not, and OnBinary delivers the binary ones. Run against the shared binary vectors and against binary-frames.json, which is hivemind-bus-client's own encoder output rather than frames this SDK built for itself, plus inflation cases in BinaryFrameTests.",
       "status": "required",
       "tests": {
-        "tests/Thalovant.Sdk.Tests/BinaryFrameTests.cs": "640901bd992d26a378f0134104fc83f852035f4ad587fba195edd2c87310d51c",
+        "tests/Thalovant.Sdk.Tests/BinaryFrameTests.cs": "d6009f42a70bd5b9472e219462ba2ee409159d9b2f5807fd1448f75e3b2a3bd9",
         "tests/Thalovant.Sdk.Tests/ConformanceRecord.cs": "1b478cc4d8a1eca5ce5776acdf09e3f095e346011a7c8e0f1dc764bd3aa4cdbb"
       },
       "vectors": {
@@ -40,8 +40,8 @@
     },
     "connection-admission": {
       "implementation": {
-        "src/Thalovant.Sdk/ControlPlane.cs": "f0d14c136e8bb671422b9a363ecb0fa5798973f9a44b0463008f767f45ba18fb",
-        "src/Thalovant.Sdk/Errors.cs": "3786931fe5aee7f5a980c3bd9102f008c456647ccb4ecc2bd38db37cf1e7a419",
+        "src/Thalovant.Sdk/ControlPlane.cs": "1265202b37013e905920bcbfd5ad1e40dc7fb1fdef055f876e64e850c449e0b3",
+        "src/Thalovant.Sdk/Errors.cs": "9e24eb63d7b133743999384a2309006adad3651bda4fcc5923bfc65140591890",
         "src/Thalovant.Sdk/Operations.cs": "44a568b2e2c32d75057e9f960129f10241e0103642aeb4726151dd0dd0d7d298"
       },
       "reason": "WaitForAdmissionAsync follows BootstrapIdentityResult.Operation with GET /v1/operations/{id}: ready is admitted; failed and timed_out throw ThalovantAdmissionFailedException with the operation's ErrorCode; a 404 or no operation at all return at once. A 5xx is ridden out, and so is a 429 for ThalovantApiException.RetryAfter -- the body's retry_after_seconds (top level or inside detail), else Retry-After, else RateLimit-Reset -- which is a timeout at once when longer than the time left. A 401 or 403 is thrown as the API's own authentication error, an unreachable API as ThalovantApiUnreachableException, and any other refusal of the wait keeps status, code and detail on ThalovantAdmissionFailedException.ApiError. Every read is bounded by the deadline and every wait is re-waited on a Stopwatch; a links.self on another origin (scheme, host and port) is never fetched. The timeout is ThalovantAdmissionTimeoutException, a ThalovantConnectionException that implements IThalovantTimeout, whose message ends 'it may still admit it later'. Run against the shared admission vectors through a loopback API over the SDK's own HttpClient, with scripted headers, {api_host}/{api_port} links and a closed port for the unreachable case.",
@@ -49,7 +49,7 @@
       "tests": {
         "tests/Thalovant.Sdk.Tests/ConformanceRecord.cs": "1b478cc4d8a1eca5ce5776acdf09e3f095e346011a7c8e0f1dc764bd3aa4cdbb",
         "tests/Thalovant.Sdk.Tests/Fixtures/connection-admission-vectors.json": "41eb4a83835bd50390d000fa7396b7067dafa24f3023b34985e6b254cf5fc259",
-        "tests/Thalovant.Sdk.Tests/HomeLinkVectorTests.cs": "aed8e4c52d96c5697dd3be1071f7f921e49bae202586987bcbe81ec65b48ecbf",
+        "tests/Thalovant.Sdk.Tests/HomeLinkVectorTests.cs": "33e50d9451527d8c6816333f19158aa6556bf098e53aa68d64ec066c6513d6f5",
         "tests/Thalovant.Sdk.Tests/LoopbackApi.cs": "507fe9bbcba84463a2f801b7ae1fdfae0cc5cf18d601f4ae09eb59e4960323b3"
       },
       "vectors": {
@@ -58,15 +58,15 @@
     },
     "connection-kinds": {
       "implementation": {
-        "src/Thalovant.Sdk/ControlPlane.cs": "f0d14c136e8bb671422b9a363ecb0fa5798973f9a44b0463008f767f45ba18fb",
-        "src/Thalovant.Sdk/Errors.cs": "3786931fe5aee7f5a980c3bd9102f008c456647ccb4ecc2bd38db37cf1e7a419"
+        "src/Thalovant.Sdk/ControlPlane.cs": "1265202b37013e905920bcbfd5ad1e40dc7fb1fdef055f876e64e850c449e0b3",
+        "src/Thalovant.Sdk/Errors.cs": "9e24eb63d7b133743999384a2309006adad3651bda4fcc5923bfc65140591890"
       },
       "reason": "CreateClientIdentityOptions.ConnectionType is sent as spec.connection_type; a kind the answer does not echo deletes the client with If-Match and throws ThalovantUnsupportedConnectionTypeException, as a 422 does when its detail or code, or a validation error's loc or msg, names connection_type -- never an echoed input. ThalovantApiException.FromResponse, the one place a failed response becomes an exception, classifies every refusal: ThalovantAuthenticationException (401, 423, 403 Insufficient scopes), ThalovantPlanException (402, 403 plan_limit), ThalovantAlreadyLinkedException with ClientId (409 home_assistant_already_linked), each keeping the api-errors fields. DeleteClientAsync reads the etag when none is given, retries once on 412, and counts 404 as deleted. Run against the shared connection-kinds vectors through a loopback API over the SDK's own HttpClient, recording the requests sent.",
       "status": "required",
       "tests": {
         "tests/Thalovant.Sdk.Tests/ConformanceRecord.cs": "1b478cc4d8a1eca5ce5776acdf09e3f095e346011a7c8e0f1dc764bd3aa4cdbb",
         "tests/Thalovant.Sdk.Tests/Fixtures/connection-kinds-vectors.json": "2baef508194472279ff2446105a1408e381b2f9e4bfc03e5f96d9c6529ddf604",
-        "tests/Thalovant.Sdk.Tests/HomeLinkVectorTests.cs": "aed8e4c52d96c5697dd3be1071f7f921e49bae202586987bcbe81ec65b48ecbf",
+        "tests/Thalovant.Sdk.Tests/HomeLinkVectorTests.cs": "33e50d9451527d8c6816333f19158aa6556bf098e53aa68d64ec066c6513d6f5",
         "tests/Thalovant.Sdk.Tests/LoopbackApi.cs": "507fe9bbcba84463a2f801b7ae1fdfae0cc5cf18d601f4ae09eb59e4960323b3"
       },
       "vectors": {
@@ -75,8 +75,8 @@
     },
     "control": {
       "implementation": {
-        "src/Thalovant.Sdk/ControlPlane.cs": "f0d14c136e8bb671422b9a363ecb0fa5798973f9a44b0463008f767f45ba18fb",
-        "src/Thalovant.Sdk/DeviceLogin.cs": "550642d8b01cd40d24802a5a495258ab4a9261cf26d844a3e6bacf0b617f8f51",
+        "src/Thalovant.Sdk/ControlPlane.cs": "1265202b37013e905920bcbfd5ad1e40dc7fb1fdef055f876e64e850c449e0b3",
+        "src/Thalovant.Sdk/DeviceLogin.cs": "bb9face9dc6cc3c557ff8e57445ddd46161ac291097da5758a5a28809e7f3c6b",
         "src/Thalovant.Sdk/HubSkills.cs": "500577bd675f2c7c7a1bb111400d9253363037fa9d532ba4702ed43823b2e51d",
         "src/Thalovant.Sdk/Hubs.cs": "cdf29ca7c2e9be4bf9c25fcc7532cd878c79bab56d3976f107d3f77b05813cb6",
         "src/Thalovant.Sdk/NativeSignIn.cs": "f0a21354c36c52f800fe0b9b9c809239bb1ed3f3004ba4761c3cbb97f4fbac68",
@@ -87,7 +87,7 @@
       "status": "required",
       "tests": {
         "tests/Thalovant.Sdk.Tests/ControlPlaneSecurityTests.cs": "d9c778e14a6a513654c6f3207a79158a1202bac1bc205fadf7660514e9f891ca",
-        "tests/Thalovant.Sdk.Tests/DeviceLoginTests.cs": "8b8f9b64d130584d979c060c5cf43fbd6d59d2bbb3bd183007b932592d567d52",
+        "tests/Thalovant.Sdk.Tests/DeviceLoginTests.cs": "8bb864b657530dc3c1d613f5e849909c31b44016fa928081467940dc47459dc8",
         "tests/Thalovant.Sdk.Tests/HubSkillsTests.cs": "b34235e6db87dcdcc6df9afb0bd7327f861d25856880ef16438503e8ac6b6ed6",
         "tests/Thalovant.Sdk.Tests/HubsTests.cs": "591305b6772773de6d3ed7ab15e829a5c1fda887e12305f7e94ff2b92a4baff0",
         "tests/Thalovant.Sdk.Tests/NativeSignInTests.cs": "a08736ab5af19d41d0daf8d9a2b4c68b4f39467e2adf9158dc810dde45ea7eae",
@@ -96,8 +96,8 @@
     },
     "conversation": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "1d01d56f7f085013c2b59a984553411ba646850a32a1a2b78addcceeee2619fb",
-        "src/Thalovant.Sdk/Events.cs": "378a7b68d45c12839032d7e3405b0421fa6553e994e0b0eab82f82badd7b04c9"
+        "src/Thalovant.Sdk/Client.cs": "a95e9311b87731bf2424b8027cb8fd96bbf7e812cd57eb16d013032f27fce17f",
+        "src/Thalovant.Sdk/Events.cs": "dad30615f7ce002a6361edfaeca1c001baf531ec8663352db1806bf708a598ef"
       },
       "reason": "CarryConversation and the client's per-session memory, run against the shared conversation vectors on net8.0 and net9.0.",
       "status": "required",
@@ -111,16 +111,17 @@
     },
     "device-login": {
       "implementation": {
-        "src/Thalovant.Sdk/ControlPlane.cs": "f0d14c136e8bb671422b9a363ecb0fa5798973f9a44b0463008f767f45ba18fb",
-        "src/Thalovant.Sdk/DeviceLogin.cs": "550642d8b01cd40d24802a5a495258ab4a9261cf26d844a3e6bacf0b617f8f51",
-        "src/Thalovant.Sdk/Errors.cs": "3786931fe5aee7f5a980c3bd9102f008c456647ccb4ecc2bd38db37cf1e7a419"
+        "src/Thalovant.Sdk/ControlPlane.cs": "1265202b37013e905920bcbfd5ad1e40dc7fb1fdef055f876e64e850c449e0b3",
+        "src/Thalovant.Sdk/DeviceLogin.cs": "bb9face9dc6cc3c557ff8e57445ddd46161ac291097da5758a5a28809e7f3c6b",
+        "src/Thalovant.Sdk/Errors.cs": "9e24eb63d7b133743999384a2309006adad3651bda4fcc5923bfc65140591890",
+        "src/Thalovant.Sdk/Home.cs": "ec1dd73d13308ecf0fa5b1fd1eedb54a98725b6d7d5aa69482c0b2643f69bb45"
       },
-      "reason": "BeginDeviceLoginAsync, PollDeviceLoginAsync and RevokeApiTokenAsync in ControlPlane.cs, one request each, sharing the grant parsing and the single token poll with LoginWithBrowserAsync; a slow_down lengthens the per-code interval for good. Revoking the token in use is idempotent: a 401 on its own revoke counts as revoked, and a second revoke sends nothing. An empty scope list is left out of the request. ThalovantDeviceLoginPendingException carries Interval, and the denied and expired outcomes are ThalovantApiException with the API's 400 (Errors.cs). DeviceLogin.cs holds DeviceAuthorization and DeviceLoginResult, which sat outside the hashed control evidence until now. Run against the shared device-login vectors on net8.0 and net9.0, each answer served by a loopback API over the SDK's own HttpClient with every request checked against its case.",
+      "reason": "BeginDeviceLoginAsync, PollDeviceLoginAsync and RevokeApiTokenAsync in ControlPlane.cs, one request each, sharing the grant parsing and the single token poll with LoginWithBrowserAsync. A slow_down lengthens the per-code interval for good. Revoking the token in use is idempotent: a 401 on its own revoke counts as revoked, and a second revoke sends nothing. An empty scope list is left out of the request. A new BeginDeviceLoginAsync(scopes, clientName, clientId) overload and DeviceLoginOptions.ClientId send client_id only when given; the existing overload is unchanged, since an optional parameter would have broken compiled callers. ThalovantHome.HomeAssistantClientId (Home.cs) holds the id. DescribeDeviceLoginAsync reads GET /v1/auth/device/codes/{user_code}, signed in, into DeviceLoginRequest (DeviceLogin.cs), with ClientVerified true only when a client_id came with it. ThalovantDeviceLoginPendingException carries Interval, and the denied and expired outcomes are ThalovantApiException with the API's 400 (Errors.cs). Run against the shared device-login vectors on net8.0 and net9.0, each answer served by a loopback API over the SDK's own HttpClient with every request checked against its case.",
       "status": "required",
       "tests": {
         "tests/Thalovant.Sdk.Tests/ConformanceRecord.cs": "1b478cc4d8a1eca5ce5776acdf09e3f095e346011a7c8e0f1dc764bd3aa4cdbb",
-        "tests/Thalovant.Sdk.Tests/Fixtures/device-login-vectors.json": "8a2257cd80b5d2dfa9553420b51617c697b1ad4e6af60ba83e980e1731fa7854",
-        "tests/Thalovant.Sdk.Tests/HomeLinkVectorTests.cs": "aed8e4c52d96c5697dd3be1071f7f921e49bae202586987bcbe81ec65b48ecbf",
+        "tests/Thalovant.Sdk.Tests/Fixtures/device-login-vectors.json": "8204aefe89b9dbcea146479d41e5c21ac61a05d809f8fc6a60f52913f45f1321",
+        "tests/Thalovant.Sdk.Tests/HomeLinkVectorTests.cs": "33e50d9451527d8c6816333f19158aa6556bf098e53aa68d64ec066c6513d6f5",
         "tests/Thalovant.Sdk.Tests/LoopbackApi.cs": "507fe9bbcba84463a2f801b7ae1fdfae0cc5cf18d601f4ae09eb59e4960323b3"
       },
       "vectors": {
@@ -129,23 +130,25 @@
     },
     "home-link": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "1d01d56f7f085013c2b59a984553411ba646850a32a1a2b78addcceeee2619fb",
-        "src/Thalovant.Sdk/Home.cs": "3ab2529fac5eb5f89893cdbb806e59bf2bfab396da077c4ce745d962e200d96f",
+        "src/Thalovant.Sdk/Client.cs": "a95e9311b87731bf2424b8027cb8fd96bbf7e812cd57eb16d013032f27fce17f",
+        "src/Thalovant.Sdk/Errors.cs": "9e24eb63d7b133743999384a2309006adad3651bda4fcc5923bfc65140591890",
+        "src/Thalovant.Sdk/Events.cs": "dad30615f7ce002a6361edfaeca1c001baf531ec8663352db1806bf708a598ef",
+        "src/Thalovant.Sdk/Home.cs": "ec1dd73d13308ecf0fa5b1fd1eedb54a98725b6d7d5aa69482c0b2643f69bb45",
         "src/Thalovant.Sdk/Noise.cs": "b6511a953c5af1167a364938f0adcbe434590bc7879f46d0ef42184052e70284",
-        "src/Thalovant.Sdk/Session.cs": "46a1f53da2c8a59908c09b5205f4cf9bac4ee45842ee7997bd055a2ddf10f5a7",
-        "src/Thalovant.Sdk/Transport.cs": "fa13082e00c863300fe099800086b2330603d15a100c77578f76eb5c9e258918"
+        "src/Thalovant.Sdk/Session.cs": "442c060fa128e00df22372af40fc3e7975c96bd7947fd49e27927d1e7fc5e9bd",
+        "src/Thalovant.Sdk/Transport.cs": "d56c7265ae249ac4d2e22fd94111b77492064bc300693f089fa4ec9657d6f277"
       },
-      "reason": "ThalovantHome (Home.cs) holds the contract: the code lists, the portable plain-speech rules in linear time (a tag is < or </ and an ASCII letter up to the next unquoted >, numeric references, the five XML entities and nbsp, Unicode White_Space), the response, and the answer inside the hub's 10 s counted from arrival -- the handler runs detached and is answered timeout at the deadline whatever it does, and a reply that could only go out late is withdrawn: its wait for the send lock is cancelled, so it is never sent and the link is left as it was. ThalovantClient.ReplyAsync and AnswerHomeRequests (Client.cs) send it as an OVOS-MSG-1 section 5.2 reply built from ThalovantEvent.Context, the context as the hub sent it, with no destination when it had no source. Keeping the link up: Transport.cs reads 1000, 1005 and 1008 during the handshake or within 750 ms after it as a refusal (CloseRefuses), treats a Noise answer that does not authenticate and a 401/403 upgrade (read from the message on netstandard2.1) as refusals, follows a failed KK with one XX at once, and reports a key that contradicts its pin (Noise.cs) as ThalovantHubKeyChangedException; Session.cs asks a pure LinkSupervisor after every attempt, stops at once on a changed key, and re-waits settle, probe and retry on a Stopwatch. home-link-vectors.json runs through a real HiveMindWssTransport; link-keeping-vectors.json runs its close and supervise cases against the pure functions and its handshake cases against a loopback hub doing the WebSocket upgrade and the Noise handshake for real.",
+      "reason": "ThalovantHome (Home.cs) holds the contract: the code lists; the portable plain-speech rules in linear time (a tag is < or </ and an ASCII letter up to the next unquoted >, numeric references, the five XML entities and nbsp, Unicode White_Space); the response; and the answer inside the hub's 10 s counted from arrival. The handler runs detached and is answered timeout at the deadline whatever it does. A reply that could only go out late is withdrawn: its wait for the send lock is cancelled, so it is never sent and the link is left as it was. ThalovantContext.StripSsml (Events.cs) uses the same tag rule for display text. ThalovantClient.ReplyAsync and AnswerHomeRequests (Client.cs) send the answer as an OVOS-MSG-1 section 5.2 reply built from ThalovantEvent.Context, with no destination when it had no source. Keeping the link up: Transport.cs reads 1000, 1005 and 1008 as a refusal (CloseRefuses) during the handshake, or within 750 ms after it while nothing from the hub has decrypted under the session's keys. Any decrypted frame counts: JSON, WIRE-1, a chunk, or the encrypted HELLO. Such a refusal right after an XX handshake is ThalovantClientKeyRejectedException (Errors.cs), a ThalovantHubRefusedException naming both key folders; after KK it stays a plain refusal. Transport.cs also treats a Noise answer that does not authenticate and a 401/403 upgrade (read from the message on netstandard2.1) as refusals, follows a failed KK with one XX at once, and reports a key that contradicts its pin (Noise.cs) as ThalovantHubKeyChangedException. Session.cs asks a pure LinkSupervisor after every attempt, stops at once on a changed hub key or a rejected client key, and re-waits settle, probe and retry on a Stopwatch. home-link-vectors.json runs through a real HiveMindWssTransport, its queued cases on a link whose send path another frame holds. link-keeping-vectors.json runs its close and supervise cases against the pure functions and its handshake cases as a kept link connects, against a loopback hub doing the WebSocket upgrade and the Noise handshake for real and pinning a client's first key as hivemind-core does.",
       "status": "required",
       "tests": {
         "tests/Thalovant.Sdk.Tests/ConformanceRecord.cs": "1b478cc4d8a1eca5ce5776acdf09e3f095e346011a7c8e0f1dc764bd3aa4cdbb",
-        "tests/Thalovant.Sdk.Tests/Fixtures/home-link-vectors.json": "3dc3d38020f3d1b7a2df61d0048fb13685a5361d2dff82710c1e1833cccc576f",
-        "tests/Thalovant.Sdk.Tests/Fixtures/link-keeping-vectors.json": "b3be27131c051c527d7b917dd6d7d24692920a0f59694b1031f009724e3de4bc",
-        "tests/Thalovant.Sdk.Tests/HomeLinkSessionTests.cs": "8b0935957429a3aed85fd9271002291c7dc552a7bea0268dcaf650c1d1a022e9",
-        "tests/Thalovant.Sdk.Tests/HomeLinkVectorTests.cs": "aed8e4c52d96c5697dd3be1071f7f921e49bae202586987bcbe81ec65b48ecbf",
-        "tests/Thalovant.Sdk.Tests/HubPeer.cs": "1b188971288e0c07a74ed834bc6d9b74b849dadf507374962d62cd16c496e07b",
-        "tests/Thalovant.Sdk.Tests/LinkKeepingVectorTests.cs": "8cac4956d3cbf9c3885d5c2bf5efb2d05745a0dcb30f42695d58d558344f75f7",
-        "tests/Thalovant.Sdk.Tests/LoopbackHub.cs": "4df47ff6f66e12ac1c12da6a99c391473959d656a2c012c8adca16e17c889b21"
+        "tests/Thalovant.Sdk.Tests/Fixtures/home-link-vectors.json": "bfaadf8f9c588ae79c02263743c8d3be0d80f8fad2db8ebce81158d0c336c547",
+        "tests/Thalovant.Sdk.Tests/Fixtures/link-keeping-vectors.json": "eea7f573e802cf447b6776868d513ad1fb086c1ec7300629ab5f9ec09c9c3257",
+        "tests/Thalovant.Sdk.Tests/HomeLinkSessionTests.cs": "2f2a8d0cfec8810c750d26da8971ace904a0f072141fc7974d3208e513b7092b",
+        "tests/Thalovant.Sdk.Tests/HomeLinkVectorTests.cs": "33e50d9451527d8c6816333f19158aa6556bf098e53aa68d64ec066c6513d6f5",
+        "tests/Thalovant.Sdk.Tests/HubPeer.cs": "b7ae74368cda1a2ba70a2e4f659d73d6543c214366b687a592be66ca931fbbca",
+        "tests/Thalovant.Sdk.Tests/LinkKeepingVectorTests.cs": "72e7806a4cb9628fd4274fa1fedde95345134e60a0db1b3f039738e8f268caa1",
+        "tests/Thalovant.Sdk.Tests/LoopbackHub.cs": "d11e85084aa05baf288bb645c337c7f823937167174fa6be6f1ade8bd5e120b1"
       },
       "vectors": {
         "home-link-vectors.json": "tests/Thalovant.Sdk.Tests/Fixtures/home-link-vectors.json",
@@ -154,12 +157,15 @@
     },
     "identity": {
       "implementation": {
-        "src/Thalovant.Sdk/Identity.cs": "4963d38f34f7ba561f8d1093fa21b1218012860c75c0181c75cc7aecb093f502",
-        "src/Thalovant.Sdk/Protocols.cs": "2c951c8d24b2600433c069dcb5248c4b6a1cf1089a982e7f2f20720522c6265d"
+        "src/Thalovant.Sdk/Identity.cs": "c433f7eb0d918a09aeb3012ffb4cdadcc958a998260cd38878cb740fe42b50c1",
+        "src/Thalovant.Sdk/NoiseStore.cs": "76b0d495c4bee8309af286c883fb1e48dbb571a313bcedfcb01f21c803d023eb",
+        "src/Thalovant.Sdk/Protocols.cs": "2c951c8d24b2600433c069dcb5248c4b6a1cf1089a982e7f2f20720522c6265d",
+        "src/Thalovant.Sdk/Transport.cs": "d56c7265ae249ac4d2e22fd94111b77492064bc300693f089fa4ec9657d6f277"
       },
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
+      "reason": "ThalovantIdentity (Identity.cs) parses and validates identity documents, and FromFile records the file on SourcePath. On .NET 8, a transport given no Noise store uses HiveMindFileNoiseStore.ForIdentity (NoiseStore.cs, Transport.cs): the identity's key lives in a noise folder beside its file, so every program reading one identity presents one key. The first time that folder is used it copies the key and hub pins from the old shared default (LocalApplicationData/Thalovant/noise) when that key has a pin for the hub being dialled, never moving them. An identity from anywhere else, or in a folder the user cannot write to, keeps the shared default; netstandard2.1 is unchanged. KeyFolderTests covers the folder, the copy, the refusal to copy a key that never met the hub, a folder that already has a key, and the fallback.",
       "status": "required",
       "tests": {
+        "tests/Thalovant.Sdk.Tests/KeyFolderTests.cs": "3c833b4d92c2e46dd6daab67f08f47f229c6c601fe4af56d8dd808688c666e30",
         "tests/Thalovant.Sdk.Tests/ModelRoundTripTests.cs": "e95c35c9b6957626925426889a521060185eef9059bc4e5e53f4828b187408c4",
         "tests/Thalovant.Sdk.Tests/ProtocolSelectionTests.cs": "0aa0aa5cddb07743f9363ea71f88c6ea1c76affb305665ce2d93cfafb7654bd3"
       }
@@ -178,6 +184,10 @@
         "inventory-vectors.json": "tests/Thalovant.Sdk.Tests/Fixtures/inventory-vectors.json"
       }
     },
+    "link-carriers": {
+      "reason": "This SDK offers only the WebSocket carrier: HubProtocol.Https and HubProtocol.Mqtt throw ThalovantUnsupportedProtocolException from the ThalovantClient constructor (Client.cs), so there is no second carrier to run these cases on. link-keeping-vectors.json holds the WebSocket's, KK then XX included, and runs here under home-link.",
+      "status": "not-applicable"
+    },
     "listing": {
       "implementation": {
         "src/Thalovant.Sdk/Intents.cs": "9735856abfbd9862b9fa52e4c3ed18e06f71c7b9277d271df16bd631816c5919",
@@ -195,13 +205,13 @@
     },
     "mesh": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "1d01d56f7f085013c2b59a984553411ba646850a32a1a2b78addcceeee2619fb",
-        "src/Thalovant.Sdk/Events.cs": "378a7b68d45c12839032d7e3405b0421fa6553e994e0b0eab82f82badd7b04c9"
+        "src/Thalovant.Sdk/Client.cs": "a95e9311b87731bf2424b8027cb8fd96bbf7e812cd57eb16d013032f27fce17f",
+        "src/Thalovant.Sdk/Events.cs": "dad30615f7ce002a6361edfaeca1c001baf531ec8663352db1806bf708a598ef"
       },
       "reason": "OnHive over the five hive kinds, and PropagateAsync/EscalateAsync/BroadcastAsync. Run against the shared mesh vectors.",
       "status": "required",
       "tests": {
-        "tests/Thalovant.Sdk.Tests/BinaryFrameTests.cs": "640901bd992d26a378f0134104fc83f852035f4ad587fba195edd2c87310d51c",
+        "tests/Thalovant.Sdk.Tests/BinaryFrameTests.cs": "d6009f42a70bd5b9472e219462ba2ee409159d9b2f5807fd1448f75e3b2a3bd9",
         "tests/Thalovant.Sdk.Tests/ConformanceRecord.cs": "1b478cc4d8a1eca5ce5776acdf09e3f095e346011a7c8e0f1dc764bd3aa4cdbb"
       },
       "vectors": {
@@ -210,8 +220,8 @@
     },
     "refusal": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "1d01d56f7f085013c2b59a984553411ba646850a32a1a2b78addcceeee2619fb",
-        "src/Thalovant.Sdk/Errors.cs": "3786931fe5aee7f5a980c3bd9102f008c456647ccb4ecc2bd38db37cf1e7a419",
+        "src/Thalovant.Sdk/Client.cs": "a95e9311b87731bf2424b8027cb8fd96bbf7e812cd57eb16d013032f27fce17f",
+        "src/Thalovant.Sdk/Errors.cs": "9e24eb63d7b133743999384a2309006adad3651bda4fcc5923bfc65140591890",
         "src/Thalovant.Sdk/Refusal.cs": "dff4e8b79ceb6816b1386c9079f648e057647f472ae65aaaf5c5a74484d6a8f8"
       },
       "reason": "Refusal.BelongsToAsk() and Refusal.ErrorFor() in src/Thalovant.Sdk/Refusal.cs, applied by AskState.Process() and AskAsync() in Client.cs, which counts asks, queries and fire-and-forget utterances inside the shared grace window -- recorded once connected and immediately before the publish, and kept when that publish throws. ThalovantPolicyDeniedException carries Quota -- read from every numeric shape a JsonValue holds -- and ThalovantUnansweredException is new; both remain ThalovantRuntimeException. Run against the shared refusal vectors plus collector-level cases.",
@@ -227,9 +237,9 @@
     },
     "runtime": {
       "implementation": {
-        "src/Thalovant.Sdk/Events.cs": "378a7b68d45c12839032d7e3405b0421fa6553e994e0b0eab82f82badd7b04c9",
+        "src/Thalovant.Sdk/Events.cs": "dad30615f7ce002a6361edfaeca1c001baf531ec8663352db1806bf708a598ef",
         "src/Thalovant.Sdk/Runtime.cs": "037c680410a2839321bf29e5ee1d318be87989cac0aeb2fb9a80b7faaca40fff",
-        "src/Thalovant.Sdk/Transport.cs": "fa13082e00c863300fe099800086b2330603d15a100c77578f76eb5c9e258918"
+        "src/Thalovant.Sdk/Transport.cs": "d56c7265ae249ac4d2e22fd94111b77492064bc300693f089fa4ec9657d6f277"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. HiveMind #251/#252 only changes the Python upstream client dispatcher; this consumer uses native single-dispatch transports (MCP delegates to the Node SDK), or caller-owned frame parsing in embedded C. No Python HiveMind bus dependency or slave-protocol reinjection exists here. Python now requires fixed upstream 1.1.9a1 and removes its identity-based suppression; equal independent native frames remain distinct. Reply claim metadata follows the Python string-ID contract, with first-seen ordering, case-sensitive fallback stages and legacy unstamped success. Invalid non-string stamps are ignored. Embedded C exposes bounded extraction and claim classification while its caller retains ordered IDs.",
       "status": "required",
@@ -245,13 +255,13 @@
     },
     "session": {
       "implementation": {
-        "src/Thalovant.Sdk/Session.cs": "46a1f53da2c8a59908c09b5205f4cf9bac4ee45842ee7997bd055a2ddf10f5a7"
+        "src/Thalovant.Sdk/Session.cs": "442c060fa128e00df22372af40fc3e7975c96bd7947fd49e27927d1e7fc5e9bd"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. The connected-client factory owns failed connection cleanup; Python performs that dial internally and retains failed retirement before replacement. HubSession also keeps a link: ConnectAsync settles a new link for 0.75 s so a close right after the handshake reads as a refusal, and RunAsync redials on the ladder and treats refusals as not yet admitted for HubSessionPolicy.RefusalGraceSeconds; run against an in-memory hub that completes the real Noise handshake.",
       "status": "required",
       "tests": {
-        "tests/Thalovant.Sdk.Tests/HomeLinkSessionTests.cs": "8b0935957429a3aed85fd9271002291c7dc552a7bea0268dcaf650c1d1a022e9",
-        "tests/Thalovant.Sdk.Tests/HubPeer.cs": "1b188971288e0c07a74ed834bc6d9b74b849dadf507374962d62cd16c496e07b",
+        "tests/Thalovant.Sdk.Tests/HomeLinkSessionTests.cs": "2f2a8d0cfec8810c750d26da8971ace904a0f072141fc7974d3208e513b7092b",
+        "tests/Thalovant.Sdk.Tests/HubPeer.cs": "b7ae74368cda1a2ba70a2e4f659d73d6543c214366b687a592be66ca931fbbca",
         "tests/Thalovant.Sdk.Tests/SessionInventoryTests.cs": "1575824c5def71c991a2dcb1941db63929eaa262e6456b96aa5f9d1032a97b0f"
       }
     }
@@ -268,7 +278,8 @@
     "76bc1eb9957da5a6fdf03e89f3905f8d37d3ef2fe7c841ba751718105ca30a45",
     "34a21f2ad875b220a571613e25b6a6e5f3d8de1a776f4949a7ab63ba93e07b16",
     "f79d99e9acd2fe299e3b313102541e47b366751defe5fa0dcfa44053aa7f007d",
-    "2460eb90bd56b1b182be3db365ba29bfef712d4ea2748061652ba0f28dcf6f50"
+    "2460eb90bd56b1b182be3db365ba29bfef712d4ea2748061652ba0f28dcf6f50",
+    "d33dc2be8b0074be4e16d89a4b615f0e6bc32d99fb513cb75e20c09cd0fab4b6"
   ],
   "schema_version": 1
 }

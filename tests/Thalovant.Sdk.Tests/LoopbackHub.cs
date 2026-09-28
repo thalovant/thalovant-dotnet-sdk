@@ -27,7 +27,9 @@ namespace Thalovant.Sdk.Tests;
 /// in order, which is what the <c>handshake</c> vectors compare. A handshake
 /// message it cannot read -- a KK first message under another PSK or another
 /// hub key -- is answered the way hivemind-core answers it: a close with no
-/// status.
+/// status. Like hivemind-core it pins the first static key a client shows it,
+/// and closes with no status, before sending anything, as soon as a handshake
+/// shows it another.
 /// </remarks>
 internal sealed class LoopbackHub : IDisposable
 {
@@ -60,7 +62,13 @@ internal sealed class LoopbackHub : IDisposable
     /// <summary>The close status to use; null closes with no status at all.</summary>
     internal WebSocketCloseStatus? CloseAfterHandshakeWith { get; set; }
 
-    /// <summary>The client's static key, learnt from its first XX: what KK needs.</summary>
+    /// <summary>
+    /// Send one encrypted frame before that close: a hub that has spoken has
+    /// accepted the client's key, so the close is a drop.
+    /// </summary>
+    internal bool CloseAfterHandshakeSpeaks { get; set; }
+
+    /// <summary>The client's static key, pinned from its first XX: what KK needs, and all it accepts after.</summary>
     private byte[]? _clientKey;
 
     internal LoopbackHub()
@@ -279,8 +287,16 @@ internal sealed class LoopbackHub : IDisposable
             }
             if (_exchange.Finished)
             {
+                var client = _exchange.RemoteStatic!;
+                if (_hub._clientKey is byte[] pinned && !Noise.Equal(pinned, client))
+                {
+                    // "client Noise static key contradicts pinned key": hivemind-core
+                    // aborts before it sends anything.
+                    await CloseAsync(null, stop);
+                    return true;
+                }
                 _session = _exchange.Session();
-                _hub._clientKey = _exchange.RemoteStatic;
+                _hub._clientKey = client;
             }
             return false;
         }
@@ -293,6 +309,14 @@ internal sealed class LoopbackHub : IDisposable
             var message = HiveWire.Decode(Encoding.UTF8.GetString(plain.Value.Data));
             if (message.MsgType == "hello" && _hub.CloseAfterHandshake)
             {
+                if (_hub.CloseAfterHandshakeSpeaks)
+                {
+                    var spoken = HiveWire.Encode(HiveWire.BusMessage("hub.ready", new JsonObject(), new JsonObject()));
+                    foreach (var encrypted in _session.Encrypt(Encoding.UTF8.GetBytes(spoken)))
+                    {
+                        await _socket.SendAsync(encrypted, WebSocketMessageType.Binary, true, stop);
+                    }
+                }
                 await CloseAsync(_hub.CloseAfterHandshakeWith, stop);
                 return true;
             }
@@ -312,6 +336,23 @@ internal sealed class LoopbackHub : IDisposable
             {
                 await _stream.WriteAsync(new byte[] { 0x88, 0x00 }, stop);
                 await _stream.FlushAsync(stop);
+                // Read on until the client closes too, as a server does after its
+                // close: ending the connection with the client's last frames
+                // unread would reset it, and the client would see a network
+                // failure rather than the close.
+                using var drained = CancellationTokenSource.CreateLinkedTokenSource(stop);
+                drained.CancelAfter(TimeSpan.FromSeconds(5));
+                var sink = new byte[4096];
+                try
+                {
+                    while (await _stream.ReadAsync(sink, drained.Token) > 0)
+                    {
+                    }
+                }
+                catch (Exception)
+                {
+                    // The client went away first.
+                }
                 return;
             }
             await _socket.CloseOutputAsync(status.Value, null, stop);

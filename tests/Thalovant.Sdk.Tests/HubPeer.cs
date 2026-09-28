@@ -229,8 +229,11 @@ internal sealed class HubPeer : WebSocket
     /// <summary>The client's Noise identity: a static key and the hub's pinned key, kept in memory.</summary>
     internal sealed class Store : IHiveMindNoiseStore
     {
-        private readonly byte[] _key = Noise.RandomKey();
+        private byte[] _key = Noise.RandomKey();
         private readonly Dictionary<string, byte[]> _pins = new Dictionary<string, byte[]>();
+
+        /// <summary>A new static key for this client, keeping the hub pins it has.</summary>
+        internal void ReplaceKey() => _key = Noise.RandomKey();
 
         public byte[] LoadOrCreateStaticKey() => (byte[])_key.Clone();
 

@@ -571,6 +571,15 @@ namespace Thalovant
         /// <summary>Whether the hub ended the last link the way it refuses credentials.</summary>
         internal bool LinkRefused => Transport?.ClosedRefused ?? false;
 
+        /// <summary>
+        /// The refusal to raise for a link the hub closed right after its
+        /// handshake: <see cref="ThalovantClientKeyRejectedException"/> when the
+        /// hub refused this client's own key, otherwise a plain refusal.
+        /// </summary>
+        internal ThalovantHubRefusedException LinkRefusal() =>
+            Transport?.RefusalAfterHandshake()
+            ?? new ThalovantHubRefusedException("The hub closed the link right after the handshake: it does not accept these credentials, or not yet.");
+
         /// <summary>Sends an utterance without waiting for a reply.</summary>
         public Task SendUtteranceAsync(
             string text,

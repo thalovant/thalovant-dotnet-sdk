@@ -45,7 +45,7 @@ internal static class ConformanceRecord {
     /// non-ASCII character unless told not to -- both of which are this
     /// platform's spelling of a value rather than the value.
     /// </remarks>
-    private static void Canonical(JsonNode? node, StringBuilder into) {
+    private static void Canonical(JsonNode? node, StringBuilder into, bool verbatimFractions) {
         switch (node) {
             case null:
                 into.Append("null");
@@ -54,7 +54,7 @@ internal static class ConformanceRecord {
                 into.Append('[');
                 for (var index = 0; index < array.Count; index++) {
                     if (index > 0) into.Append(',');
-                    Canonical(array[index], into);
+                    Canonical(array[index], into, verbatimFractions);
                 }
                 into.Append(']');
                 break;
@@ -66,7 +66,7 @@ internal static class ConformanceRecord {
                     if (!first) into.Append(',');
                     first = false;
                     into.Append(QuoteString(key)).Append(':');
-                    Canonical(map[key], into);
+                    Canonical(map[key], into, verbatimFractions);
                 }
                 into.Append('}');
                 break;
@@ -78,7 +78,7 @@ internal static class ConformanceRecord {
                 } else if (value.TryGetValue<bool>(out var flag)) {
                     into.Append(flag ? "true" : "false");
                 } else {
-                    into.Append(WholeNumber(value.ToJsonString()));
+                    into.Append(WholeNumber(value.ToJsonString(), verbatimFractions));
                 }
                 break;
             }
@@ -90,7 +90,7 @@ internal static class ConformanceRecord {
     /// conversation-vectors.json carries activated_at as 1.0, and every other
     /// SDK writes that value as 1.
     /// </remarks>
-    private static string WholeNumber(string raw) {
+    private static string WholeNumber(string raw, bool verbatimFractions) {
         var invariant = System.Globalization.CultureInfo.InvariantCulture;
         // Exactly, through BigInteger and decimal rather than double: a double
         // loses integer precision above 2^53 and a cast clamps rather than
@@ -103,10 +103,16 @@ internal static class ConformanceRecord {
             && decimal.Truncate(exact) == exact) {
             return ((System.Numerics.BigInteger)exact).ToString(invariant);
         }
-        // Refused rather than passed through. Only a whole number is written
-        // the same way by every language here -- 1.5 and 1E-07 (which Python
-        // spells 1e-07) have per-language spellings. No vector contains one,
-        // and if one ever does this should stop rather than lie.
+        // A vector file's own number, spelled as its author wrote it. The
+        // file is vendored byte for byte from the reference, whose json.dumps
+        // wrote it, so the token is already Python's spelling -- which is what
+        // the reference digests. connection-admission-vectors.json carries
+        // poll intervals of 0.01 s.
+        if (verbatimFractions) return raw;
+        // Refused rather than passed through for anything this SDK produced.
+        // Only a whole number is written the same way by every language here
+        // -- 1.5 and 1E-07 (which Python spells 1e-07) have per-language
+        // spellings -- so a produced fraction should stop rather than lie.
         throw new InvalidOperationException(
             $"conformance: cannot canonicalise {raw}: only whole numbers are "
             + "spelled the same way in every language");
@@ -117,9 +123,14 @@ internal static class ConformanceRecord {
             Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         });
 
-    internal static string CanonicalDigest(JsonNode? node) {
+    internal static string CanonicalDigest(JsonNode? node) => Digest(node, verbatimFractions: false);
+
+    /// <summary>The digest of a vendored vector file, whose fractions are the reference's own tokens.</summary>
+    private static string VectorDigest(JsonNode? node) => Digest(node, verbatimFractions: true);
+
+    private static string Digest(JsonNode? node, bool verbatimFractions) {
         var builder = new StringBuilder();
-        Canonical(node, builder);
+        Canonical(node, builder, verbatimFractions);
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()))).ToLowerInvariant();
     }
 
@@ -156,7 +167,7 @@ internal static class ConformanceRecord {
                 // differ in indentation and line endings, and the checker
                 // accepts it on the same terms.
                 results[vectorFile] = new JsonObject {
-                    ["digest"] = CanonicalDigest(parsed),
+                    ["digest"] = VectorDigest(parsed),
                     ["cases"] = recorded,
                 };
             }

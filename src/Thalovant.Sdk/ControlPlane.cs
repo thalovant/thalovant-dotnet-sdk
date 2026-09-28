@@ -63,6 +63,17 @@ namespace Thalovant
         public IReadOnlyList<HubProtocol>? PreferredProtocols { get; set; }
         public string? IdempotencyKey { get; set; }
 
+        /// <summary>
+        /// The kind of connection to make, sent as <c>spec.connection_type</c>:
+        /// one of <see cref="ThalovantConnectionTypes"/>, such as
+        /// <see cref="ThalovantConnectionTypes.HomeAssistant"/>. The kind decides
+        /// what the connection may send and receive, so the API must say the
+        /// connection is of that kind; see
+        /// <see cref="ThalovantControlPlane.CreateClientIdentityAsync(JsonObject, CreateClientIdentityOptions, CancellationToken)"/>.
+        /// Null leaves the kind to <see cref="Spec"/> and the API's default.
+        /// </summary>
+        public string? ConnectionType { get; set; }
+
         public CreateClientIdentityOptions(string name)
         {
             Name = name;
@@ -92,12 +103,27 @@ namespace Thalovant
 
         public HubProtocol? SelectedProtocol => Endpoint?.Protocol;
 
+        /// <summary>The new connection's id, when the API returned one.</summary>
+        public string? ClientId => JsonUtil.GetString(Client["id"]);
+
+        /// <summary>The connection type the API recorded (<c>spec.connection_type</c>), or null.</summary>
+        public string? ConnectionType => JsonUtil.GetString((Client["spec"] as JsonObject)?["connection_type"]);
+
+        /// <summary>
+        /// The operation that carries the new connection to its hub, when the API
+        /// returned one: the hub admits it about ninety seconds after it is
+        /// created. <see cref="ThalovantControlPlane.WaitForAdmissionAsync(BootstrapIdentityResult, TimeSpan?, TimeSpan?, CancellationToken)"/>
+        /// waits for it.
+        /// </summary>
+        public OperationResource? Operation { get; }
+
         public BootstrapIdentityResult(ThalovantIdentity identity, JsonObject hub, JsonObject client, SelectedHubEndpoint? endpoint)
         {
             Identity = identity;
             Hub = hub;
             Client = client;
             Endpoint = endpoint;
+            Operation = ThalovantControlPlane.OperationOrNull(client["operation"]);
         }
 
         /// <summary>
@@ -266,6 +292,10 @@ namespace Thalovant
                 throw new ThalovantApiException("Thalovant API token response did not include access_token.");
             }
             AccessToken = accessToken;
+            // The id goes with the token it names: one left over from an
+            // earlier device login would have RevokeApiTokenAsync() revoke
+            // that token and then forget this one.
+            TokenId = TokenIdOf(token);
             return token;
         }
 
@@ -308,6 +338,10 @@ namespace Thalovant
                 throw new ThalovantApiException("Thalovant API token response did not include access_token.");
             }
             AccessToken = accessToken;
+            // The id goes with the token it names: one left over from an
+            // earlier device login would have RevokeApiTokenAsync() revoke
+            // that token and then forget this one.
+            TokenId = TokenIdOf(token);
             return token;
         }
 
@@ -340,46 +374,8 @@ namespace Thalovant
             CancellationToken cancellationToken = default)
         {
             options ??= new DeviceLoginOptions();
-            var payload = new JsonObject();
-            if (options.Scopes is not null)
-            {
-                var scopes = new JsonArray();
-                foreach (var scope in options.Scopes)
-                {
-                    scopes.Add(scope);
-                }
-                payload["scopes"] = scopes;
-            }
-            if (!string.IsNullOrEmpty(options.ClientName))
-            {
-                payload["client_name"] = options.ClientName;
-            }
-            var grant = await RequestObjectAsync("POST", "/v1/auth/device/authorize", payload, auth: false, cancellationToken: cancellationToken)
+            var authorization = await AuthorizeDeviceAsync(options.Scopes, options.ClientName, cancellationToken)
                 .ConfigureAwait(false);
-
-            var deviceCode = JsonUtil.GetString(grant["device_code"]);
-            var userCode = JsonUtil.GetString(grant["user_code"]);
-            var verificationUri = JsonUtil.GetString(grant["verification_uri"]);
-            if (string.IsNullOrEmpty(deviceCode) || string.IsNullOrEmpty(userCode) || string.IsNullOrEmpty(verificationUri))
-            {
-                throw new ThalovantApiException("Thalovant API device authorization response was incomplete.");
-            }
-            var completeUri = JsonUtil.GetString(grant["verification_uri_complete"]);
-            if (DeviceVerificationUri(verificationUri!) == null ||
-                (grant["verification_uri_complete"] != null && (completeUri == null || DeviceVerificationUri(completeUri) == null)))
-                throw new ThalovantApiException("Thalovant API device authorization returned an invalid verification URI.");
-            var rawInterval = JsonUtil.GetInt(grant["interval"]);
-            var interval = rawInterval is int seconds && seconds >= 0
-                ? TimeSpan.FromSeconds(seconds)
-                : DefaultDevicePollInterval;
-            var authorization = new DeviceAuthorization(
-                deviceCode!,
-                userCode!,
-                verificationUri!,
-                JsonUtil.GetString(grant["verification_uri_complete"]),
-                JsonUtil.GetInt(grant["expires_in"]),
-                interval,
-                grant);
 
             if (options.Prompt is not null)
             {
@@ -403,17 +399,219 @@ namespace Thalovant
 
             var token = await PollDeviceTokenAsync(
                 authorization.DeviceCode,
-                interval,
+                authorization.Interval,
                 options.Timeout,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
+            return AcceptDeviceToken(token);
+        }
+
+        /// <summary>
+        /// The id of the API token this client signed in with through a device
+        /// login, which <see cref="RevokeApiTokenAsync"/> revokes by default; null
+        /// otherwise.
+        /// </summary>
+        public string? TokenId { get; set; }
+
+        /// <summary>
+        /// The wait before the next poll, per device code: a <c>slow_down</c>
+        /// lengthens it for good (RFC 8628 §3.5), across however many calls the
+        /// caller's own loop makes.
+        /// </summary>
+        private readonly Dictionary<string, TimeSpan> _deviceIntervals = new Dictionary<string, TimeSpan>(StringComparer.Ordinal);
+
+        /// <summary>
+        /// Starts a device sign-in, one step at a time, for a caller that runs its
+        /// own loop -- a Home Assistant config flow shows the code, then polls on
+        /// its own schedule. <c>POST /v1/auth/device/authorize</c>.
+        /// </summary>
+        /// <remarks>
+        /// Show the person <see cref="DeviceAuthorization.VerificationUri"/> and
+        /// <see cref="DeviceAuthorization.UserCode"/> (or
+        /// <see cref="DeviceAuthorization.VerificationUriComplete"/>, which
+        /// carries the code), then call <see cref="PollDeviceLoginAsync"/> every
+        /// <see cref="DeviceAuthorization.Interval"/>. <paramref name="scopes"/>
+        /// are what the token will carry; the API defaults to <c>hubs:read</c> and
+        /// <c>clients:write</c>. A Free plan can approve only
+        /// <see cref="ThalovantHome.HomeAssistantScopes"/>. A verification URL
+        /// that is not http(s), has no host, or carries credentials is refused
+        /// with <see cref="ThalovantApiException"/>: it is about to be opened in a
+        /// browser.
+        /// </remarks>
+        public async Task<DeviceAuthorization> BeginDeviceLoginAsync(
+            IEnumerable<string>? scopes = null,
+            string? clientName = null,
+            CancellationToken cancellationToken = default)
+        {
+            var authorization = await AuthorizeDeviceAsync(scopes, clientName, cancellationToken).ConfigureAwait(false);
+            RememberDeviceInterval(authorization.DeviceCode, authorization.Interval, replace: true);
+            return authorization;
+        }
+
+        /// <summary>
+        /// Asks once whether a device sign-in was approved: one
+        /// <c>POST /v1/auth/device/token</c>.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Approved returns the token and keeps it on this client
+        /// (<see cref="AccessToken"/> and <see cref="TokenId"/>). Otherwise it
+        /// throws <see cref="ThalovantDeviceLoginPendingException"/> -- poll again
+        /// after its <see cref="ThalovantDeviceLoginPendingException.Interval"/>,
+        /// which a <c>slow_down</c> has already lengthened --
+        /// <see cref="ThalovantDeviceCodeExpiredException"/> or
+        /// <see cref="ThalovantDeviceAccessDeniedException"/>. All three are
+        /// <see cref="ThalovantApiException"/>; so is any other failure, which
+        /// carries what the API said.
+        /// </para>
+        /// <para>
+        /// Neither the device code nor the token ever appears in an exception
+        /// message.
+        /// </para>
+        /// </remarks>
+        public async Task<DeviceLoginResult> PollDeviceLoginAsync(
+            DeviceAuthorization authorization,
+            CancellationToken cancellationToken = default)
+        {
+            if (authorization is null) throw new ArgumentNullException(nameof(authorization));
+            var deviceCode = authorization.DeviceCode;
+            var interval = RememberDeviceInterval(deviceCode, authorization.Interval, replace: false);
+            JsonObject token;
+            try
+            {
+                token = await DeviceTokenOnceAsync(deviceCode, interval, cancellationToken).ConfigureAwait(false);
+            }
+            catch (ThalovantDeviceLoginPendingException pending)
+            {
+                RememberDeviceInterval(deviceCode, pending.Interval, replace: true);
+                throw;
+            }
+            catch (Exception error) when (error is ThalovantDeviceAccessDeniedException || error is ThalovantDeviceCodeExpiredException)
+            {
+                // This code is finished. Anything else -- a 503, a lost
+                // response -- leaves it, and its lengthened wait, as it was.
+                ForgetDeviceInterval(deviceCode);
+                throw;
+            }
+            ForgetDeviceInterval(deviceCode);
+            return AcceptDeviceToken(token);
+        }
+
+        /// <summary>
+        /// Revokes an API token; by default the one this client signed in with
+        /// (<see cref="TokenId"/>). <c>DELETE /v1/auth/api-tokens/{token_id}</c>.
+        /// </summary>
+        /// <remarks>
+        /// A token may always revoke itself, whatever its scopes. Revoking the
+        /// token in use forgets it here too, so a later call fails locally rather
+        /// than with a 401.
+        /// </remarks>
+        public async Task RevokeApiTokenAsync(string? tokenId = null, CancellationToken cancellationToken = default)
+        {
+            var target = string.IsNullOrEmpty(tokenId) ? TokenId : tokenId;
+            if (string.IsNullOrEmpty(target))
+            {
+                throw new ThalovantApiException(
+                    "No API token id to revoke: pass tokenId, or sign in with a device login first.");
+            }
+            await RequestDataAsync("DELETE", "/v1/auth/api-tokens/" + Uri.EscapeDataString(target!), cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+            if (target == TokenId)
+            {
+                AccessToken = null;
+                TokenId = null;
+            }
+        }
+
+        /// <summary><c>POST /v1/auth/device/authorize</c>, and the grant read out of it.</summary>
+        private async Task<DeviceAuthorization> AuthorizeDeviceAsync(
+            IEnumerable<string>? scopes,
+            string? clientName,
+            CancellationToken cancellationToken)
+        {
+            var payload = new JsonObject();
+            if (scopes is not null)
+            {
+                var list = new JsonArray();
+                foreach (var scope in scopes)
+                {
+                    list.Add(scope);
+                }
+                payload["scopes"] = list;
+            }
+            if (!string.IsNullOrEmpty(clientName))
+            {
+                payload["client_name"] = clientName;
+            }
+            var grant = await RequestObjectAsync("POST", "/v1/auth/device/authorize", payload, auth: false, cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+
+            var deviceCode = JsonUtil.GetString(grant["device_code"]);
+            var userCode = JsonUtil.GetString(grant["user_code"]);
+            var verificationUri = JsonUtil.GetString(grant["verification_uri"]);
+            if (string.IsNullOrEmpty(deviceCode) || string.IsNullOrEmpty(userCode) || string.IsNullOrEmpty(verificationUri))
+            {
+                throw new ThalovantApiException("Thalovant API device authorization response was incomplete.");
+            }
+            var completeUri = JsonUtil.GetString(grant["verification_uri_complete"]);
+            if (DeviceVerificationUri(verificationUri!) == null ||
+                (grant["verification_uri_complete"] != null && (completeUri == null || DeviceVerificationUri(completeUri) == null)))
+                throw new ThalovantApiException("Thalovant API device authorization returned an invalid verification URI.");
+            var rawInterval = JsonUtil.GetInt(grant["interval"]);
+            var interval = rawInterval is int seconds && seconds >= 0
+                ? TimeSpan.FromSeconds(seconds)
+                : DefaultDevicePollInterval;
+            return new DeviceAuthorization(
+                deviceCode!,
+                userCode!,
+                verificationUri!,
+                completeUri,
+                JsonUtil.GetInt(grant["expires_in"]),
+                interval,
+                grant);
+        }
+
+        /// <summary>The wait remembered for a device code, setting it first when there is none (or always, with <paramref name="replace"/>).</summary>
+        private TimeSpan RememberDeviceInterval(string deviceCode, TimeSpan interval, bool replace)
+        {
+            lock (_deviceIntervals)
+            {
+                if (!replace && _deviceIntervals.TryGetValue(deviceCode, out var known))
+                {
+                    return known;
+                }
+                // A caller that abandons codes mid-flight must not grow this for ever.
+                if (!_deviceIntervals.ContainsKey(deviceCode) && _deviceIntervals.Count >= 64)
+                {
+                    _deviceIntervals.Clear();
+                }
+                _deviceIntervals[deviceCode] = interval;
+                return interval;
+            }
+        }
+
+        private void ForgetDeviceInterval(string deviceCode)
+        {
+            lock (_deviceIntervals)
+            {
+                _deviceIntervals.Remove(deviceCode);
+            }
+        }
+
+        /// <summary>Keeps an approved device token, and its id, on this client.</summary>
+        private DeviceLoginResult AcceptDeviceToken(JsonObject token)
+        {
             var accessToken = JsonUtil.GetString(token["access_token"]);
             if (string.IsNullOrEmpty(accessToken))
             {
                 throw new ThalovantApiException("Thalovant API token response did not include access_token.");
             }
             AccessToken = accessToken;
+            TokenId = TokenIdOf(token);
             return DeviceLoginResult.FromToken(token, accessToken!);
         }
+
+        private static string? TokenIdOf(JsonObject token) =>
+            JsonUtil.GetString(token["token_id"]) is string id && id.Length > 0 ? id : null;
 
         /// <summary>
         /// Polls <c>POST /v1/auth/device/token</c> until approval or a terminal state.
@@ -434,38 +632,16 @@ namespace Thalovant
             clock ??= MonotonicClock;
             var deadline = clock() + timeout;
             var wait = interval;
-            var body = new JsonObject { ["device_code"] = deviceCode };
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var (statusCode, text) = await SendRawAsync("POST", "/v1/auth/device/token", body, auth: false, cancellationToken: cancellationToken)
-                    .ConfigureAwait(false);
-                var parsed = ThalovantApiException.ParseProblem(text);
-                if (statusCode >= 200 && statusCode < 300)
+                try
                 {
-                    if (parsed is null)
-                    {
-                        throw new ThalovantApiException("Thalovant API returned an unexpected response shape.");
-                    }
-                    return parsed;
+                    return await DeviceTokenOnceAsync(deviceCode, wait, cancellationToken).ConfigureAwait(false);
                 }
-                var error = statusCode == 400 && parsed is not null ? JsonUtil.GetString(parsed["error"]) : null;
-                switch (error)
+                catch (ThalovantDeviceLoginPendingException pending)
                 {
-                    case "authorization_pending":
-                        break;
-                    case "slow_down":
-                        wait += DevicePollSlowDownIncrement;
-                        break;
-                    case "access_denied":
-                        throw new ThalovantDeviceAccessDeniedException(
-                            "The device sign-in request was denied in the browser.");
-                    case "expired_token":
-                        throw new ThalovantDeviceCodeExpiredException(
-                            "The device sign-in code expired before it was approved. "
-                            + "Call LoginWithBrowserAsync() again to request a new code.");
-                    default:
-                        throw ApiError(statusCode, text, parsed);
+                    wait = pending.Interval;
                 }
                 var remaining = deadline - clock();
                 if (remaining <= TimeSpan.Zero)
@@ -473,6 +649,47 @@ namespace Thalovant
                     throw new ThalovantTimeoutException("Timed out waiting for the device sign-in to be approved.");
                 }
                 await delay(wait < remaining ? wait : remaining, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        /// <summary>
+        /// One <c>POST /v1/auth/device/token</c>: the token response, or the
+        /// exception that says why there is none yet. <paramref name="interval"/>
+        /// is this code's wait so far; a pending answer carries it, five seconds
+        /// longer after a <c>slow_down</c>.
+        /// </summary>
+        private async Task<JsonObject> DeviceTokenOnceAsync(string deviceCode, TimeSpan interval, CancellationToken cancellationToken)
+        {
+            var body = new JsonObject { ["device_code"] = deviceCode };
+            var (statusCode, text) = await SendRawAsync("POST", "/v1/auth/device/token", body, auth: false, cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+            var parsed = ThalovantApiException.ParseProblem(text);
+            if (statusCode >= 200 && statusCode < 300)
+            {
+                if (parsed is null)
+                {
+                    throw new ThalovantApiException("Thalovant API returned an unexpected response shape.");
+                }
+                return parsed;
+            }
+            var error = statusCode == 400 && parsed is not null ? JsonUtil.GetString(parsed["error"]) : null;
+            switch (error)
+            {
+                case "authorization_pending":
+                    throw new ThalovantDeviceLoginPendingException(
+                        "The device sign-in has not been approved yet.", interval, statusCode, text, parsed);
+                case "slow_down":
+                    throw new ThalovantDeviceLoginPendingException(
+                        "The device sign-in has not been approved yet.", interval + DevicePollSlowDownIncrement, statusCode, text, parsed);
+                case "access_denied":
+                    throw new ThalovantDeviceAccessDeniedException(
+                        "The device sign-in request was denied in the browser.", statusCode, text, parsed);
+                case "expired_token":
+                    throw new ThalovantDeviceCodeExpiredException(
+                        "The device sign-in code expired before it was approved. "
+                        + "Start the sign-in again to request a new code.", statusCode, text, parsed);
+                default:
+                    throw ApiError(statusCode, text, parsed);
             }
         }
 
@@ -1116,6 +1333,31 @@ namespace Thalovant
             return await CreateClientIdentityAsync(hub, options, cancellationToken).ConfigureAwait(false);
         }
 
+        /// <summary>
+        /// Provisions a client identity on <paramref name="hub"/> (a hub resource
+        /// already read): <c>POST /v1/clients</c> with an <c>Idempotency-Key</c>
+        /// header, parsing the returned <c>initial_identify</c> credentials.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// With <see cref="CreateClientIdentityOptions.ConnectionType"/> set, the
+        /// kind is sent as <c>spec.connection_type</c> and the API must say the
+        /// connection is of that kind. A 422 about the field, or a created
+        /// connection whose type came back different, throws
+        /// <see cref="ThalovantUnsupportedConnectionTypeException"/> -- after
+        /// deleting that connection, which would otherwise be an ordinary
+        /// satellite nobody asked for. A plan that does not allow it throws
+        /// <see cref="ThalovantPlanException"/>; a hub that already holds its one
+        /// link of that kind, <see cref="ThalovantAlreadyLinkedException"/>; a
+        /// token that cannot do it, <see cref="ThalovantAuthenticationException"/>.
+        /// </para>
+        /// <para>
+        /// The result's <see cref="BootstrapIdentityResult.Operation"/> tracks the
+        /// hub admitting the connection, about ninety seconds;
+        /// <see cref="WaitForAdmissionAsync(BootstrapIdentityResult, TimeSpan?, TimeSpan?, CancellationToken)"/>
+        /// waits for it.
+        /// </para>
+        /// </remarks>
         public async Task<BootstrapIdentityResult> CreateClientIdentityAsync(JsonObject hub, CreateClientIdentityOptions options, CancellationToken cancellationToken = default)
         {
             var hubId = JsonUtil.GetString(hub["id"]);
@@ -1129,6 +1371,11 @@ namespace Thalovant
             var cryptoKey = NewSecret();
             var spec = JsonUtil.CloneObject(options.Spec);
             spec["version"] = JsonUtil.OptionalString(spec["version"]) ?? "1";
+            var connectionType = options.ConnectionType;
+            if (connectionType is not null)
+            {
+                spec["connection_type"] = connectionType;
+            }
             spec["apiKey"] = apiKey;
             spec["password"] = password;
             spec["cryptoKey"] = cryptoKey;
@@ -1145,7 +1392,20 @@ namespace Thalovant
                 payload["owner_id"] = options.OwnerId;
             }
 
-            var client = await CreateClientAsync(payload, options.IdempotencyKey, cancellationToken).ConfigureAwait(false);
+            JsonObject client;
+            try
+            {
+                client = await CreateClientAsync(payload, options.IdempotencyKey, cancellationToken).ConfigureAwait(false);
+            }
+            catch (ThalovantApiException error) when (connectionType is not null && RefusesConnectionType(error))
+            {
+                throw new ThalovantUnsupportedConnectionTypeException(
+                    $"The Thalovant API cannot create a '{connectionType}' connection yet.", error);
+            }
+            if (connectionType is not null)
+            {
+                await RequireConnectionTypeAsync(client, connectionType).ConfigureAwait(false);
+            }
             var protocols = HubProtocolSettings.From(hub);
             var endpoints = HubDataPlaneEndpoints.FromHub(hub);
             var endpoint = HubEndpoints.SelectDataPlaneEndpoint(
@@ -1173,6 +1433,254 @@ namespace Thalovant
             identityJson["protocols"] = protocols.ToJsonObject();
             var identity = new ThalovantIdentity(identityJson);
             return new BootstrapIdentityResult(identity, hub, client, endpoint);
+        }
+
+        /// <summary>A 422 whose problem is about <c>connection_type</c>.</summary>
+        private static bool RefusesConnectionType(ThalovantApiException error)
+        {
+            if (error.StatusCode != 422)
+            {
+                return false;
+            }
+            var text = error.Problem?.ToJsonString() ?? error.Message;
+            return text.IndexOf("connection_type", StringComparison.Ordinal) >= 0
+                || text.IndexOf("connectionType", StringComparison.Ordinal) >= 0;
+        }
+
+        /// <summary>Deletes, then refuses, a connection the API did not make of the kind asked.</summary>
+        private async Task RequireConnectionTypeAsync(JsonObject client, string connectionType)
+        {
+            var echoed = JsonUtil.GetString((client["spec"] as JsonObject)?["connection_type"]);
+            if (echoed == connectionType)
+            {
+                return;
+            }
+            var clientId = JsonUtil.GetString(client["id"]);
+            var note = "";
+            if (!string.IsNullOrEmpty(clientId))
+            {
+                try
+                {
+                    // Not the caller's token: this undoes what the call just
+                    // did, and a connection left behind has grants nobody
+                    // asked for.
+                    await DeleteClientAsync(clientId!, JsonUtil.GetString(client["etag"]), CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                catch (ThalovantApiException)
+                {
+                    note = $" Deleting the connection it made instead ({clientId}) failed; remove it in the dashboard.";
+                }
+            }
+            throw new ThalovantUnsupportedConnectionTypeException(
+                $"The Thalovant API did not make a '{connectionType}' connection (it answered '{echoed ?? "no type"}').{note}");
+        }
+
+        /// <summary>
+        /// One client (a hub connection), with the <c>etag</c> a change needs.
+        /// <c>GET /v1/clients/{client_id}</c>.
+        /// </summary>
+        public Task<JsonObject> GetClientAsync(string clientId, CancellationToken cancellationToken = default)
+        {
+            return RequestObjectAsync("GET", "/v1/clients/" + Uri.EscapeDataString(clientId), cancellationToken: cancellationToken);
+        }
+
+        /// <summary>
+        /// Deletes a client (a hub connection). <c>DELETE /v1/clients/{client_id}</c>
+        /// with <c>If-Match</c>.
+        /// </summary>
+        /// <remarks>
+        /// Without <paramref name="etag"/> this reads the client's current one
+        /// first. If another writer changed the client in between (HTTP 412) it
+        /// reads the etag once more and retries once. A client that is already
+        /// gone (HTTP 404, on either request) counts as deleted.
+        /// </remarks>
+        public async Task DeleteClientAsync(string clientId, string? etag = null, CancellationToken cancellationToken = default)
+        {
+            var path = "/v1/clients/" + Uri.EscapeDataString(clientId);
+            for (var attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    if (etag is null)
+                    {
+                        var current = await GetClientAsync(clientId, cancellationToken).ConfigureAwait(false);
+                        etag = JsonUtil.GetString(current["etag"]);
+                        if (string.IsNullOrEmpty(etag))
+                        {
+                            throw new ThalovantApiException("Thalovant API client resource did not include an etag.");
+                        }
+                    }
+                    var headers = new Dictionary<string, string> { ["If-Match"] = etag! };
+                    await RequestDataAsync("DELETE", path, headers: headers, cancellationToken: cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+                catch (ThalovantApiException error) when (error.StatusCode == 404)
+                {
+                    return;
+                }
+                catch (ThalovantApiException error) when (error.StatusCode == 412 && attempt == 0)
+                {
+                    etag = null;
+                }
+            }
+        }
+
+        /// <summary>Default wait for <see cref="WaitForAdmissionAsync(OperationResource?, TimeSpan?, TimeSpan?, CancellationToken)"/>: a hub admits a new connection in about ninety seconds.</summary>
+        public static readonly TimeSpan DefaultAdmissionTimeout = TimeSpan.FromSeconds(180);
+
+        /// <summary>Default time between two reads of an operation being waited on.</summary>
+        public static readonly TimeSpan DefaultOperationPollInterval = TimeSpan.FromSeconds(2);
+
+        /// <summary>
+        /// Waits until the hub has admitted a connection
+        /// <see cref="CreateClientIdentityAsync(JsonObject, CreateClientIdentityOptions, CancellationToken)"/>
+        /// just created, by following its <see cref="BootstrapIdentityResult.Operation"/>.
+        /// </summary>
+        /// <inheritdoc cref="WaitForAdmissionAsync(OperationResource?, TimeSpan?, TimeSpan?, CancellationToken)"/>
+        public Task WaitForAdmissionAsync(
+            BootstrapIdentityResult connection,
+            TimeSpan? timeout = null,
+            TimeSpan? pollInterval = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (connection is null) throw new ArgumentNullException(nameof(connection));
+            return WaitForAdmissionAsync(connection.Operation, timeout, pollInterval, cancellationToken);
+        }
+
+        /// <summary>
+        /// Waits until the hub has admitted a new connection, polling
+        /// <c>GET /v1/operations/{id}</c> (the operation's <c>links.self</c>).
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Returns at once when there is nothing to wait on: no operation, or one
+        /// the API no longer tracks (HTTP 404). <c>ready</c> is admitted;
+        /// <c>requested</c>, <c>committed</c> and <c>applied</c> keep polling, and
+        /// a 5xx is ridden out. Throws <see cref="ThalovantAdmissionFailedException"/>
+        /// when the operation failed or timed out on the platform, and
+        /// <see cref="ThalovantAdmissionTimeoutException"/> -- a
+        /// <see cref="ThalovantConnectionException"/> that is also an
+        /// <see cref="IThalovantTimeout"/> -- when <paramref name="timeout"/>
+        /// (<see cref="DefaultAdmissionTimeout"/>) passes first; the connection
+        /// may still be admitted after that.
+        /// </para>
+        /// <para>
+        /// A <c>links.self</c> on another origin than the API's is never fetched,
+        /// because the token goes nowhere else: that throws
+        /// <see cref="ThalovantApiException"/>.
+        /// </para>
+        /// </remarks>
+        public async Task WaitForAdmissionAsync(
+            OperationResource? operation,
+            TimeSpan? timeout = null,
+            TimeSpan? pollInterval = null,
+            CancellationToken cancellationToken = default)
+        {
+            var budget = timeout ?? DefaultAdmissionTimeout;
+            var every = pollInterval ?? DefaultOperationPollInterval;
+            if (budget < TimeSpan.Zero || every <= TimeSpan.Zero || every.TotalMilliseconds > int.MaxValue)
+                throw new ArgumentOutOfRangeException(nameof(pollInterval), "Admission waits must be positive, and the poll interval must fit Task.Delay.");
+            if (operation is null)
+            {
+                return;
+            }
+            var link = operation.Links.TryGetValue("self", out var self) ? self : null;
+            if (link is not null
+                && (link.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || link.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                && (!Uri.TryCreate(link, UriKind.Absolute, out var target)
+                    || !string.Equals(target.Authority, new Uri(ApiUrl).Authority, StringComparison.OrdinalIgnoreCase)))
+            {
+                // The token goes to the API's own origin and nowhere else.
+                throw new ThalovantApiException("The admission operation points outside the Thalovant API.");
+            }
+            var operationId = OperationId(operation);
+            var clock = Stopwatch.StartNew();
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                OperationResource? current = null;
+                try
+                {
+                    current = await GetOperationAsync(operationId, cancellationToken).ConfigureAwait(false);
+                }
+                catch (ThalovantApiException error) when (error.StatusCode == 404)
+                {
+                    // The API no longer tracks it: nothing is left to wait for.
+                    return;
+                }
+                catch (ThalovantApiException error) when (error.StatusCode >= 500)
+                {
+                    // Ridden out: the platform is busy, not the operation failed.
+                }
+                catch (ThalovantApiException error)
+                {
+                    throw new ThalovantAdmissionFailedException(
+                        $"The hub could not admit the connection: {error.Message}", error.ErrorCode, error);
+                }
+                if (current is not null)
+                {
+                    if (current.Status == OperationStatus.Ready)
+                    {
+                        return;
+                    }
+                    if (current.Status == OperationStatus.Failed || current.Status == OperationStatus.TimedOut)
+                    {
+                        throw new ThalovantAdmissionFailedException(
+                            $"The hub could not admit the connection: operation {current.Id} ended with status "
+                            + $"{OperationStatusConverter.WireName(current.Status)} ({current.ErrorCode ?? "no code"}).",
+                            current.ErrorCode);
+                    }
+                }
+                var remaining = budget - clock.Elapsed;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    throw new ThalovantAdmissionTimeoutException(
+                        $"The hub did not admit the connection within {budget.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture)}s; it may still.",
+                        budget);
+                }
+                await Task.Delay(every < remaining ? every : remaining, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        /// <summary>The id to poll: the operation's own, else the tail of its <c>links.self</c>.</summary>
+        private static string OperationId(OperationResource operation)
+        {
+            if (!string.IsNullOrEmpty(operation.Id))
+            {
+                return operation.Id;
+            }
+            var text = (operation.Links.TryGetValue("self", out var self) ? self : null)?.Trim() ?? "";
+            var marker = text.LastIndexOf("/v1/operations/", StringComparison.Ordinal);
+            if (marker >= 0)
+            {
+                text = text.Substring(marker + "/v1/operations/".Length);
+                var query = text.IndexOf('?');
+                if (query >= 0) text = text.Substring(0, query);
+                text = text.Trim('/');
+            }
+            if (text.Length == 0)
+            {
+                throw new ThalovantApiException("An operation needs an id to wait on.");
+            }
+            return Uri.UnescapeDataString(text);
+        }
+
+        /// <summary>The operation a create answered with, or null when there is none or it is unreadable.</summary>
+        internal static OperationResource? OperationOrNull(JsonNode? node)
+        {
+            if (node is not JsonObject value)
+            {
+                return null;
+            }
+            try
+            {
+                return JsonSerializer.Deserialize<OperationResource>(value.ToJsonString());
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
         }
 
         /// <summary>

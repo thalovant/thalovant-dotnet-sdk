@@ -71,7 +71,7 @@ namespace Thalovant.Sdk.Tests {
             var handler=new StubHttpMessageHandler();var api=new ThalovantControlPlane(apiUrl:"https://api.example.com",accessToken:"test",httpMessageHandler:handler);
             int attempts=status==412?3:1;
             for(int i=0;i<attempts;i++){handler.Enqueue(200,"{\"config\":{},\"revision\":\""+new string('a',64)+"\"}");handler.Enqueue(status,"{}");}
-            var error=await Assert.ThrowsAsync<ThalovantApiException>(()=>api.UpdateRuntimeGroupConfigAsync("x",new JsonObject()));Assert.Equal(status,error.StatusCode);Assert.Equal(attempts*2,handler.Requests.Count);
+            var error=await Assert.ThrowsAnyAsync<ThalovantApiException>(()=>api.UpdateRuntimeGroupConfigAsync("x",new JsonObject()));Assert.Equal(status,error.StatusCode);Assert.Equal(attempts*2,handler.Requests.Count);
         }
         [Theory][InlineData("{\"config\":{}}")][InlineData("{\"config\":{},\"revision\":\"bad\"}")]
         public async Task OlderServerFailsBeforeAnyWrite(string body) {

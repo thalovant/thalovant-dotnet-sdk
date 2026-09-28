@@ -100,6 +100,41 @@ present the code yourself, set `Timeout` (default 15 minutes), and pass a
 `ThalovantDeviceCodeExpiredException`, and running past the timeout throws
 `ThalovantTimeoutException`.
 
+### One step at a time
+
+A caller that runs its own loop, such as a setup screen that shows the code and
+polls on its own schedule, takes the flow in steps:
+
+```csharp
+var grant = await api.BeginDeviceLoginAsync(ThalovantHome.HomeAssistantScopes, clientName: "Home Assistant");
+Show(grant.VerificationUriComplete ?? grant.VerificationUri, grant.UserCode);
+
+while (true)
+{
+    try
+    {
+        var token = await api.PollDeviceLoginAsync(grant);   // kept on api.AccessToken and api.TokenId
+        break;
+    }
+    catch (ThalovantDeviceLoginPendingException pending)
+    {
+        await Task.Delay(pending.Interval);                 // already longer after a slow_down
+    }
+}
+```
+
+`PollDeviceLoginAsync` makes one request. Besides the pending answer it throws
+`ThalovantDeviceCodeExpiredException` or `ThalovantDeviceAccessDeniedException`;
+all three are `ThalovantApiException` and carry the API's HTTP 400. A
+`slow_down` adds five seconds to the interval for good, however many calls your
+loop makes. A verification URL that is not http(s), has no host, or carries
+credentials is refused before you could open it, and neither the device code
+nor the token ever appears in an exception message.
+
+`RevokeApiTokenAsync()` revokes the token this client signed in with (a token
+may always revoke itself) and forgets it locally; pass a token id to revoke
+another one.
+
 ## Use a Pre-Provisioned API Token (CI)
 
 Non-interactive environments can skip login entirely by constructing the
@@ -591,6 +626,67 @@ var selected = HubEndpoints.SelectDataPlaneEndpoint(
 `HubProtocol.Https` or `HubProtocol.Mqtt` throws
 `ThalovantUnsupportedProtocolException`.
 
+## Link Home Assistant
+
+A Home Assistant link is a connection of its own kind: the hub's home skill
+sends it `thalovant.home.request`, and it answers every one with
+`thalovant.home.response`. Setting one up takes four steps.
+
+1. **Sign in** with the device flow, one step at a time (see above), asking for
+   `ThalovantHome.HomeAssistantScopes`: `hubs:read`, `clients:read` and
+   `clients:write`, which is all a Free plan can approve.
+2. **Create the connection** with its kind:
+
+   ```csharp
+   var link = await api.CreateClientIdentityAsync(hub, new CreateClientIdentityOptions("Home Assistant")
+   {
+       ConnectionType = ThalovantConnectionTypes.HomeAssistant,
+   });
+   ```
+
+   The API must say the connection is of that kind. When it answers with an
+   ordinary connection instead, the SDK deletes it and throws
+   `ThalovantUnsupportedConnectionTypeException`, as it does for a 422 about the
+   field. A hub takes one Home Assistant link, so a second one throws
+   `ThalovantAlreadyLinkedException` naming the connection that holds it.
+   `DeleteClientAsync(clientId)` removes a connection: it reads the etag when
+   you have none, retries once if the connection changed underneath, and treats
+   one already gone as deleted.
+3. **Wait for the hub to admit it**, about ninety seconds:
+
+   ```csharp
+   await api.WaitForAdmissionAsync(link);   // 180 s by default
+   ```
+
+   A failed operation throws `ThalovantAdmissionFailedException` with its
+   `ErrorCode`. Running out of time throws `ThalovantAdmissionTimeoutException`,
+   which is both a connection error and a timeout, because the connection may
+   still be admitted later. A 5xx while polling is ridden out, and an operation
+   link to another origin is never followed.
+4. **Answer requests** on a link that stays up:
+
+   ```csharp
+   await using var session = HubSession.ForIdentity(link.Identity);
+   using var answering = session.AnswerHomeRequests(async (request, cancellationToken) =>
+   {
+       var speech = await agent.ProcessAsync(request.Utterance, request.Lang, cancellationToken);
+       return HomeAnswer.ActionDone(speech);
+   });
+   await session.RunAsync(stopping);
+   ```
+
+The answer is a reply: it carries the request's context, with `source` and
+`destination` swapped, so it goes back to the skill that asked. Speech is sent as
+plain text, with markup removed and entities decoded. `response_type` is
+`action_done`, `query_answer` or `error`, and an error names one of
+`HomeErrorCodes`. Every request gets exactly one answer inside the hub's ten
+seconds: a handler that throws is answered `failed_to_handle`, one still busy
+after nine seconds is answered `timeout` and its token is cancelled, and one that
+answers outside the contract is answered `unknown`. When the SDK answers for a
+handler, the speech is empty and the hub speaks its own sentence for the code,
+in the device's language. A `ThalovantClient` answers the same way through
+`client.AnswerHomeRequests(handler)`.
+
 ## Errors
 
 - `ThalovantApiException` — control API failures, with `StatusCode`, raw
@@ -603,8 +699,22 @@ var selected = HubEndpoints.SelectDataPlaneEndpoint(
 - `ThalovantPolicyDeniedException` (a `ThalovantRuntimeException`) — the hub
   refused a message type this connection may not publish (`hive.policy.denied`),
   with `DeniedType`, `Code`, `Reason`, and the `Allowed` list.
-- `ThalovantDeviceAccessDeniedException` / `ThalovantDeviceCodeExpiredException`
-  — the browser device sign-in was denied or its code expired.
+- `ThalovantAuthenticationException`, `ThalovantPlanException`,
+  `ThalovantAlreadyLinkedException` (with `ClientId`) and
+  `ThalovantUnsupportedConnectionTypeException` — control API refusals a caller
+  can act on: sign in again (401, 423, 403 `Insufficient scopes`), the plan
+  does not allow it (402, 403 `plan_limit`), the hub already has its Home
+  Assistant link (409), or the API cannot make that kind of connection. All of
+  them are `ThalovantApiException`.
+- `ThalovantDeviceLoginPendingException` (with `Interval`),
+  `ThalovantDeviceAccessDeniedException` / `ThalovantDeviceCodeExpiredException`
+  — a device sign-in not decided yet, denied, or expired. All three are
+  `ThalovantApiException` since 0.9.0.
+- `ThalovantHubRefusedException`, `ThalovantAdmissionFailedException` (with
+  `ErrorCode`) and `ThalovantAdmissionTimeoutException` — all
+  `ThalovantConnectionException`: the hub turned the credentials away, the
+  platform could not admit a new connection, or it has not yet. The admission
+  timeout is also an `IThalovantTimeout`, like `ThalovantTimeoutException`.
 - `ThalovantIdentityException` — malformed or insecure identity documents.
 - `ThalovantUnsupportedProtocolException` — the protocol is disabled, missing
   an endpoint, or not supported by this SDK.
@@ -798,7 +908,8 @@ for example Spanish `qué hora es` becomes `Qué hora es?`, while French
 ## Managed sessions and inventory caches
 
 `HubSession` owns one reusable hub connection. Supply a factory that returns a
-connected client and cleans up a failed or cancelled connection attempt. Event
+connected client and cleans up a failed or cancelled connection attempt, or use
+`HubSession.ForIdentity(identity)`. Event
 subscriptions survive client replacement. Go and Rust expose a persistent event
 stream; the other managed SDKs expose subscription handles. Close the session
 when its owner shuts down; close waits for admitted operations and is terminal.
@@ -814,6 +925,18 @@ waiting for session admission and your connection factory are separate budgets.
 await using var session = new HubSession(connectClient, warm: false);
 var reply = await session.AskAsync("What is the weather?");
 ```
+
+A link the hub sends requests down has to stay up. `ConnectAsync` makes one
+attempt and `RunAsync` keeps the link until the session closes: it waits on the
+same ladder after a failed attempt, looks at a held link every probe interval
+and the moment it drops, and dials again. A link that closes within
+`SettleWindow` (0.75 seconds) of the handshake was refused, not opened: that is
+how a hub says it does not know the connection's key. Because a new connection
+is refused until its hub admits it, `RunAsync` retries refusals for
+`RefusalGraceSeconds` (600 by default, set through the five-argument
+`HubSessionPolicy` constructor) before it throws `ThalovantHubRefusedException`.
+`OnStateChange` reports each time the link comes up or goes down; the SDK itself
+logs nothing. `ReplyAsync` answers a message back along the route it came.
 
 `Inventory`, `Skill`, and `Intent` provide a presentable view separate from the
 runtime's native intent inventory. Unknown catalogue locales remain unknown;

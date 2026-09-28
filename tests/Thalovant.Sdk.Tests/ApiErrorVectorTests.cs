@@ -68,7 +68,9 @@ public sealed class ApiErrorVectorTests {
     private static async Task<ThalovantApiException> Refusal(int status, string contentType, byte[] body) {
         using var handler = new Answering(status, contentType, body);
         var api = new ThalovantControlPlane(handler, apiUrl: "https://api.example.test", accessToken: "synthetic-token");
-        return await Assert.ThrowsAsync<ThalovantApiException>(() => api.GetHubAsync("hub-1"));
+        // Any kind: a plan limit, a 401 and a 409 each arrive as their own
+        // subclass, and every one of them carries these fields.
+        return await Assert.ThrowsAnyAsync<ThalovantApiException>(() => api.GetHubAsync("hub-1"));
     }
 
     private static Task<ThalovantApiException> Refusal(JsonNode response) => Refusal(

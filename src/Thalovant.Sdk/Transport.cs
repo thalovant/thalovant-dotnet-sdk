@@ -96,7 +96,61 @@ namespace Thalovant
         private NoiseHandshake? _noiseHandshake;
         private NoiseSession? _noiseSession;
         private (string NodeId, byte[] Key)? _cachedPsk;
-        private void ResetSession() { _connected = false; _handshakeComplete = false; _serverHello = null; _noiseHandshake = null; _noiseSession = null; }
+        private void ResetSession() { _connected = false; _handshakeComplete = false; _serverHello = null; _noiseHandshake = null; _noiseSession = null; _stopped.TrySetResult(true); }
+
+        /// <summary>Completes when the current link ends; already complete while there is none.</summary>
+        private TaskCompletionSource<bool> _stopped = Ended();
+
+        /// <summary>Whether the hub closed the last link the way it refuses credentials.</summary>
+        private bool _closedRefused;
+
+        private static TaskCompletionSource<bool> Ended()
+        {
+            var ended = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            ended.SetResult(true);
+            return ended;
+        }
+
+        /// <summary>
+        /// Completes when the current link ends, so a waiter need not poll. Already
+        /// complete while no link is up.
+        /// </summary>
+        internal Task Stopped
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    return _stopped.Task;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Whether the hub closed the last link the way it refuses credentials: a
+        /// close with no status, 1000, 1005 or 1008. A hub that does not know a
+        /// client's static key says so only by closing right after the handshake,
+        /// so a caller that just connected can tell that from a drop. A socket
+        /// that failed without a close (1006, a reset) is the network's trouble,
+        /// not a verdict on the credentials.
+        /// </summary>
+        internal bool ClosedRefused
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    return _closedRefused;
+                }
+            }
+        }
+
+        private static bool RefusalClose(WebSocketCloseStatus? status) =>
+            status is null
+            || (int)status.Value == 0
+            || status.Value == WebSocketCloseStatus.NormalClosure
+            || status.Value == WebSocketCloseStatus.Empty
+            || status.Value == WebSocketCloseStatus.PolicyViolation;
         private CancellationTokenSource? _receiveCancellation;
         private bool _connected;
         private bool _handshakeComplete;
@@ -237,6 +291,8 @@ namespace Thalovant
             lock (_lock) {
                 _handshakeGate = gate = new AsyncGate();
                 ResetSession();
+                _stopped = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                _closedRefused = false;
                 _lastError = null;
                 socket = _socketFactory();
                 _socket = socket;
@@ -249,7 +305,15 @@ namespace Thalovant
                 connectTimeout.CancelAfter(effectiveTimeout);
                 try
                 {
-                    if (socket is ClientWebSocket clientSocket) await clientSocket.ConnectAsync(url, connectTimeout.Token).ConfigureAwait(false);
+                    if (socket is ClientWebSocket clientSocket)
+                    {
+#if NET8_0_OR_GREATER
+                        // So a 401/403 on the upgrade reads as a refusal of the
+                        // credentials rather than as an unreachable hub.
+                        clientSocket.Options.CollectHttpResponseDetails = true;
+#endif
+                        await clientSocket.ConnectAsync(url, connectTimeout.Token).ConfigureAwait(false);
+                    }
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && !receiveToken.IsCancellationRequested)
                 {
@@ -257,6 +321,15 @@ namespace Thalovant
                 }
                 catch (WebSocketException exception)
                 {
+#if NET8_0_OR_GREATER
+                    if (socket is ClientWebSocket upgraded
+                        && (upgraded.HttpStatusCode == System.Net.HttpStatusCode.Unauthorized
+                            || upgraded.HttpStatusCode == System.Net.HttpStatusCode.Forbidden))
+                    {
+                        throw new ThalovantHubRefusedException(
+                            $"The hub refused this connection's credentials (HTTP {(int)upgraded.HttpStatusCode}).");
+                    }
+#endif
                     throw new ThalovantConnectionException($"HiveMind WSS connect failed: {exception.Message}", exception);
                 }
                 lock (_lock)
@@ -444,7 +517,7 @@ namespace Thalovant
                         {
                             var reason = result.CloseStatusDescription;
                             var suffix = string.IsNullOrEmpty(reason) ? "" : $": {reason}";
-                            HandleSocketClosed(socket, new ThalovantConnectionException(
+                            HandleSocketClosed(socket, result.CloseStatus, new ThalovantConnectionException(
                                 $"HiveMind WSS closed before handshake completed ({(int?)result.CloseStatus ?? 0}){suffix}."));
                             return;
                         }
@@ -493,13 +566,25 @@ namespace Thalovant
             if (!ReferenceEquals(socket, _socket)) throw new OperationCanceledException("Noise connection was replaced.");
         }
 
-        private void HandleSocketClosed(WebSocket socket, ThalovantConnectionException error)
+        private void HandleSocketClosed(WebSocket socket, WebSocketCloseStatus? status, ThalovantConnectionException error)
         {
             lock (_lock) {
                 if (!ReferenceEquals(socket, _socket)) return;
                 var complete = _handshakeComplete;
+                var refused = RefusalClose(status);
+                // Waiting for the hub's HELLO means it did not know the access
+                // key; having sent the Noise response means it did not accept
+                // the password. Waiting for its offer, a close says nothing about
+                // the credentials yet.
+                var verdictPhase = _serverHello == null || _noiseHandshake != null;
+                _closedRefused = refused;
                 ResetSession();
-                if (!complete) { _lastError = error.Message; _handshakeGate.Fail(error); }
+                if (!complete)
+                {
+                    if (refused && verdictPhase) error = new ThalovantHubRefusedException("The hub refused this connection's credentials.");
+                    _lastError = error.Message;
+                    _handshakeGate.Fail(error);
+                }
             }
         }
 

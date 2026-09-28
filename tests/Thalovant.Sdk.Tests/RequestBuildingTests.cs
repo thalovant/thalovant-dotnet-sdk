@@ -156,7 +156,7 @@ namespace Thalovant.Sdk.Tests
         public async Task LoginMfaRequiredSurfacesErrorCode()
         {
             _handler.Enqueue(401, """{"detail": {"code": "mfa_required", "recovery_available": true}}""");
-            var error = await Assert.ThrowsAsync<ThalovantApiException>(
+            var error = await Assert.ThrowsAsync<ThalovantAuthenticationException>(
                 () => _api.LoginAsync("dev@example.com", "secret"));
             Assert.Equal(401, error.StatusCode);
             Assert.Equal("mfa_required", error.ErrorCode);

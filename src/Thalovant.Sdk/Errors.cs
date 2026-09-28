@@ -35,8 +35,17 @@ namespace Thalovant
     /// <c>resource</c>, <c>limit</c>, <c>used</c> and <c>plan</c>. All of them
     /// are on <see cref="Problem"/>.
     /// </para>
+    /// <para>
+    /// A refusal a caller can act on arrives as a subclass, so it can be caught
+    /// on its own: <see cref="ThalovantAuthenticationException"/> (sign in
+    /// again), <see cref="ThalovantPlanException"/> (the plan does not allow
+    /// it), <see cref="ThalovantAlreadyLinkedException"/> (the hub already has
+    /// its one link of that kind), <see cref="ThalovantUnsupportedConnectionTypeException"/>,
+    /// and the three device sign-in outcomes. Every one of them is still a
+    /// <see cref="ThalovantApiException"/> carrying the fields above.
+    /// </para>
     /// </remarks>
-    public sealed class ThalovantApiException : ThalovantException
+    public class ThalovantApiException : ThalovantException
     {
         /// <summary>
         /// The body parsed once, kept private: <see cref="Problem"/> hands out
@@ -85,12 +94,28 @@ namespace Thalovant
         /// </remarks>
         public JsonObject? Problem => _problem is null ? null : (JsonObject)_problem.DeepClone();
 
+        /// <summary>
+        /// How long the API asked the caller to wait before trying again, when it
+        /// said: a 429's <c>retry_after_seconds</c> (at the top of the problem or
+        /// inside its <c>detail</c> object, where the API puts it), else its
+        /// <c>Retry-After</c> header in seconds, else <c>RateLimit-Reset</c>, which
+        /// is all the API's own rate limiter sends with its plain-text 429. Null
+        /// otherwise.
+        /// </summary>
+        public TimeSpan? RetryAfter { get; private set; }
+
         public ThalovantApiException(string message, int? statusCode = null, string? body = null, string? errorCode = null)
             : this(message, statusCode, body, errorCode, ParseProblem(body))
         {
         }
 
-        private ThalovantApiException(string message, int? statusCode, string? body, string? errorCode, JsonObject? problem)
+        /// <summary>A failure with no answer from the API at all, and the reason it had none.</summary>
+        private protected ThalovantApiException(string message, Exception innerException)
+            : base(message, innerException)
+        {
+        }
+
+        private protected ThalovantApiException(string message, int? statusCode, string? body, string? errorCode, JsonObject? problem)
             : base(message)
         {
             StatusCode = statusCode;
@@ -98,15 +123,87 @@ namespace Thalovant
             _problem = problem;
             ErrorCode = errorCode ?? ProblemText(problem, "code");
             Detail = ProblemText(problem, "detail");
+            RetryAfter = RetryAfterIn(problem);
+        }
+
+        /// <summary>A problem's <c>retry_after_seconds</c>, at its top or inside a <c>detail</c> object.</summary>
+        private static TimeSpan? RetryAfterIn(JsonObject? problem)
+        {
+            if (problem is null)
+            {
+                return null;
+            }
+            foreach (var source in new[] { problem, problem["detail"] as JsonObject })
+            {
+                if (source?["retry_after_seconds"] is JsonValue value
+                    && value.GetValueKind() == JsonValueKind.Number
+                    && value.TryGetValue<double>(out var seconds)
+                    && seconds >= 0 && seconds <= TimeSpan.MaxValue.TotalSeconds)
+                {
+                    return TimeSpan.FromSeconds(seconds);
+                }
+            }
+            return null;
+        }
+
+        /// <summary>The header's wait, when the body named none.</summary>
+        internal ThalovantApiException WithRetryAfterHeader(TimeSpan? header)
+        {
+            RetryAfter ??= header;
+            return this;
         }
 
         /// <summary>
         /// The error for a response the API answered with a failure status,
         /// from the body the caller already parsed with <see cref="ParseProblem"/>
-        /// so that it is parsed once.
+        /// so that it is parsed once. The class says what kind of refusal it
+        /// is; every one of them is a <see cref="ThalovantApiException"/>.
         /// </summary>
-        internal static ThalovantApiException FromResponse(string message, int statusCode, string body, JsonObject? problem) =>
-            new ThalovantApiException(message, statusCode, body, null, problem);
+        internal static ThalovantApiException FromResponse(string message, int statusCode, string body, JsonObject? problem)
+        {
+            var code = ProblemText(problem, "code");
+            var detail = ProblemText(problem, "detail");
+            // A token that is unknown, expired or revoked; an account locked;
+            // or a token without the scope: signing in again is the way out of
+            // each, and of nothing else.
+            if (statusCode == 401 || statusCode == 423 || (statusCode == 403 && detail == "Insufficient scopes"))
+            {
+                return new ThalovantAuthenticationException(message, statusCode, body, problem);
+            }
+            if (statusCode == 402 || (statusCode == 403 && code == "plan_limit"))
+            {
+                return new ThalovantPlanException(message, statusCode, body, problem);
+            }
+            if (statusCode == 409 && code == ThalovantAlreadyLinkedException.Code)
+            {
+                return new ThalovantAlreadyLinkedException(message, statusCode, body, problem, LinkedClientId(problem));
+            }
+            return new ThalovantApiException(message, statusCode, body, null, problem);
+        }
+
+        /// <summary>The connection a <c>home_assistant_already_linked</c> refusal names, when it names one.</summary>
+        private static string? LinkedClientId(JsonObject? problem)
+        {
+            if (problem is null)
+            {
+                return null;
+            }
+            foreach (var source in new[] { problem, problem["detail"] as JsonObject })
+            {
+                if (source is null)
+                {
+                    continue;
+                }
+                foreach (var key in new[] { "client_id", "existing_client_id", "connection_id" })
+                {
+                    if (source[key] is JsonValue value && value.TryGetValue<string>(out var id) && id.Length > 0)
+                    {
+                        return id;
+                    }
+                }
+            }
+            return null;
+        }
 
         /// <summary>
         /// A member of an error body that is a string with a non-whitespace
@@ -190,18 +287,167 @@ namespace Thalovant
         }
     }
 
+    /// <summary>
+    /// The control API could not be reached at all: DNS, the connection, TLS or a
+    /// proxy failed, so there is no status, code, detail or problem. Trying again
+    /// later can succeed.
+    /// </summary>
+    /// <remarks>
+    /// Before 0.9.0 this was a plain <see cref="ThalovantApiException"/>, which it
+    /// still is, so every existing handler still catches it; the type is what tells
+    /// "the API is out of reach" from "the API answered no".
+    /// </remarks>
+    public sealed class ThalovantApiUnreachableException : ThalovantApiException
+    {
+        public ThalovantApiUnreachableException(string message, Exception innerException)
+            : base(message, innerException)
+        {
+        }
+    }
+
+    /// <summary>
+    /// The control API turned the credential itself away: sign in again.
+    /// </summary>
+    /// <remarks>
+    /// HTTP 401 (the token is unknown, expired or revoked), 423 (the account is
+    /// locked), or 403 <c>Insufficient scopes</c> (the token lacks the scope the
+    /// call needs). Signing in again is the way out of each, which is true of no
+    /// other refusal.
+    /// </remarks>
+    public sealed class ThalovantAuthenticationException : ThalovantApiException
+    {
+        public ThalovantAuthenticationException(string message, int? statusCode = null, string? body = null, string? errorCode = null)
+            : base(message, statusCode, body, errorCode)
+        {
+        }
+
+        internal ThalovantAuthenticationException(string message, int statusCode, string body, JsonObject? problem)
+            : base(message, statusCode, body, null, problem)
+        {
+        }
+    }
+
+    /// <summary>The account's plan does not allow the request.</summary>
+    /// <remarks>
+    /// HTTP 402, or 403 with the code <c>plan_limit</c>, whose
+    /// <see cref="ThalovantApiException.Problem"/> carries the <c>resource</c>,
+    /// <c>limit</c> and <c>used</c> the API reported.
+    /// </remarks>
+    public sealed class ThalovantPlanException : ThalovantApiException
+    {
+        public ThalovantPlanException(string message, int? statusCode = null, string? body = null, string? errorCode = null)
+            : base(message, statusCode, body, errorCode)
+        {
+        }
+
+        internal ThalovantPlanException(string message, int statusCode, string body, JsonObject? problem)
+            : base(message, statusCode, body, null, problem)
+        {
+        }
+    }
+
+    /// <summary>
+    /// The hub already has the one connection of this kind it allows: a hub
+    /// takes one Home Assistant link.
+    /// </summary>
+    /// <remarks>HTTP 409 with the code <c>home_assistant_already_linked</c>.</remarks>
+    public sealed class ThalovantAlreadyLinkedException : ThalovantApiException
+    {
+        /// <summary>The API's code for this refusal.</summary>
+        public const string Code = "home_assistant_already_linked";
+
+        /// <summary>The connection that holds the link, when the API said which.</summary>
+        public string? ClientId { get; }
+
+        public ThalovantAlreadyLinkedException(string message, int? statusCode = null, string? body = null, string? clientId = null)
+            : base(message, statusCode, body, Code)
+        {
+            ClientId = clientId;
+        }
+
+        internal ThalovantAlreadyLinkedException(string message, int statusCode, string body, JsonObject? problem, string? clientId)
+            : base(message, statusCode, body, null, problem)
+        {
+            ClientId = clientId;
+        }
+    }
+
+    /// <summary>The API cannot make a connection of the kind asked for.</summary>
+    /// <remarks>
+    /// Either a 422 about <c>connection_type</c>, which keeps the API's fields,
+    /// or a created connection whose kind did not come back as asked: an API
+    /// that silently ignored the field would have handed out an ordinary
+    /// connection. The SDK deletes such a connection before throwing, and
+    /// <see cref="ThalovantApiException.StatusCode"/> is then null.
+    /// </remarks>
+    public sealed class ThalovantUnsupportedConnectionTypeException : ThalovantApiException
+    {
+        public ThalovantUnsupportedConnectionTypeException(string message, int? statusCode = null, string? body = null, string? errorCode = null)
+            : base(message, statusCode, body, errorCode)
+        {
+        }
+
+        internal ThalovantUnsupportedConnectionTypeException(string message, ThalovantApiException refusal)
+            : base(message, refusal.StatusCode, refusal.Body, null, refusal.Problem)
+        {
+        }
+    }
+
+    /// <summary>
+    /// One device sign-in poll found the person has not decided yet. Poll again
+    /// after <see cref="Interval"/>.
+    /// </summary>
+    public sealed class ThalovantDeviceLoginPendingException : ThalovantApiException
+    {
+        /// <summary>
+        /// How long to wait before the next poll, already five seconds longer for
+        /// every <c>slow_down</c> the API has sent for this code (RFC 8628 §3.5).
+        /// </summary>
+        public TimeSpan Interval { get; }
+
+        public ThalovantDeviceLoginPendingException(string message, TimeSpan interval, int? statusCode = null, string? body = null)
+            : base(message, statusCode, body)
+        {
+            Interval = interval;
+        }
+
+        internal ThalovantDeviceLoginPendingException(string message, TimeSpan interval, int statusCode, string body, JsonObject? problem)
+            : base(message, statusCode, body, null, problem)
+        {
+            Interval = interval;
+        }
+    }
+
     /// <summary>The browser device sign-in request was denied by the user.</summary>
-    public sealed class ThalovantDeviceAccessDeniedException : ThalovantException
+    /// <remarks>
+    /// A <see cref="ThalovantApiException"/> since 0.9.0, carrying the API's
+    /// HTTP 400 answer: the refusal is the API's, like every other one.
+    /// </remarks>
+    public sealed class ThalovantDeviceAccessDeniedException : ThalovantApiException
     {
         public ThalovantDeviceAccessDeniedException(string message) : base(message)
+        {
+        }
+
+        internal ThalovantDeviceAccessDeniedException(string message, int statusCode, string body, JsonObject? problem)
+            : base(message, statusCode, body, null, problem)
         {
         }
     }
 
     /// <summary>The device sign-in code expired before it was approved.</summary>
-    public sealed class ThalovantDeviceCodeExpiredException : ThalovantException
+    /// <remarks>
+    /// A <see cref="ThalovantApiException"/> since 0.9.0, carrying the API's
+    /// HTTP 400 answer.
+    /// </remarks>
+    public sealed class ThalovantDeviceCodeExpiredException : ThalovantApiException
     {
         public ThalovantDeviceCodeExpiredException(string message) : base(message)
+        {
+        }
+
+        internal ThalovantDeviceCodeExpiredException(string message, int statusCode, string body, JsonObject? problem)
+            : base(message, statusCode, body, null, problem)
         {
         }
     }
@@ -214,8 +460,18 @@ namespace Thalovant
         }
     }
 
+    /// <summary>
+    /// Implemented by every exception that means a wait ran out, whatever else it
+    /// is: <see cref="ThalovantTimeoutException"/>, and
+    /// <see cref="ThalovantAdmissionTimeoutException"/>, which is also a
+    /// connection error. Catch with <c>when (error is IThalovantTimeout)</c>.
+    /// </summary>
+    public interface IThalovantTimeout
+    {
+    }
+
     /// <summary>The hub data-plane connection could not be established or was lost.</summary>
-    public sealed class ThalovantConnectionException : ThalovantException
+    public class ThalovantConnectionException : ThalovantException
     {
         public ThalovantConnectionException(string message) : base(message)
         {
@@ -223,6 +479,87 @@ namespace Thalovant
 
         public ThalovantConnectionException(string message, Exception innerException) : base(message, innerException)
         {
+        }
+    }
+
+    /// <summary>The hub turned this connection's credentials away.</summary>
+    /// <remarks>
+    /// A hub closes the socket without a status for an access key it does not
+    /// know, with 1008 for a malformed authorization, and aborts the Noise
+    /// handshake for a wrong password; one that does not know the client's
+    /// static key says so only by closing right after the handshake. None of
+    /// those clears up on its own the way a dropped network does -- except that
+    /// a connection just created is refused until its hub admits it, which is
+    /// why <see cref="HubSession.RunAsync"/> retries refusals for a grace period
+    /// before it throws this.
+    /// </remarks>
+    public sealed class ThalovantHubRefusedException : ThalovantConnectionException
+    {
+        public ThalovantHubRefusedException(string message) : base(message)
+        {
+        }
+    }
+
+    /// <summary>
+    /// The hub's Noise static key is not the one pinned for it: the hub was
+    /// replaced, or something is standing in for it.
+    /// </summary>
+    /// <remarks>
+    /// A connection error, not a refusal: retrying cannot change it, so
+    /// <see cref="HubSession.RunAsync"/> stops at once. The SDK never replaces a
+    /// pin itself; verify the hub's rotation before removing the saved pin.
+    /// </remarks>
+    public sealed class ThalovantHubKeyChangedException : ThalovantConnectionException
+    {
+        public ThalovantHubKeyChangedException(string message) : base(message)
+        {
+        }
+    }
+
+    /// <summary>
+    /// A hub has not admitted a new connection within the wait. Both a connection
+    /// error and a timeout (<see cref="IThalovantTimeout"/>): the connection
+    /// exists and may still be admitted, so waiting longer, or connecting later,
+    /// can succeed.
+    /// </summary>
+    public sealed class ThalovantAdmissionTimeoutException : ThalovantConnectionException, IThalovantTimeout
+    {
+        /// <summary>How long the wait lasted.</summary>
+        public TimeSpan Timeout { get; }
+
+        public ThalovantAdmissionTimeoutException(string message, TimeSpan timeout) : base(message)
+        {
+            Timeout = timeout;
+        }
+    }
+
+    /// <summary>
+    /// The operation that admits a new connection failed or timed out on the
+    /// platform, or the API refused the wait itself.
+    /// </summary>
+    public sealed class ThalovantAdmissionFailedException : ThalovantConnectionException
+    {
+        /// <summary>The operation's own <c>error_code</c>, when the platform failed it; null when the API refused the wait.</summary>
+        public string? ErrorCode { get; }
+
+        /// <summary>
+        /// The API's refusal of the wait itself, with its status, code, detail and
+        /// problem; null when it was the platform that failed the operation.
+        /// </summary>
+        public ThalovantApiException? ApiError => InnerException as ThalovantApiException;
+
+        /// <summary>The HTTP status of the API's refusal; null when the platform failed the operation.</summary>
+        public int? StatusCode => ApiError?.StatusCode;
+
+        public ThalovantAdmissionFailedException(string message, string? errorCode = null) : base(message)
+        {
+            ErrorCode = errorCode;
+        }
+
+        public ThalovantAdmissionFailedException(string message, string? errorCode, Exception innerException)
+            : base(message, innerException)
+        {
+            ErrorCode = errorCode;
         }
     }
 
@@ -473,7 +810,7 @@ namespace Thalovant
     }
 
     /// <summary>The hub did not respond within the allotted time.</summary>
-    public sealed class ThalovantTimeoutException : ThalovantException
+    public sealed class ThalovantTimeoutException : ThalovantException, IThalovantTimeout
     {
         public ThalovantTimeoutException(string message) : base(message)
         {

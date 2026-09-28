@@ -59,7 +59,10 @@ namespace Thalovant.Tests
             for (var test = 0; test < 3; test++) {
                 var state = new NoiseHandshake("XXpsk2", test == 0 ? new byte[32] : Key("psk"), test == 1 ? Encoding.UTF8.GetBytes("tampered") : Noise.Unhex(exchange["prologue"]!.GetValue<string>()), Key("static_i"), test == 2 ? Key("public_i") : Key("public_r"), generateEphemeral: () => Key("ephemeral_i"));
                 state.Write(Encoding.UTF8.GetBytes(exchange["payloads"]![0]!.GetValue<string>()));
-                Assert.Throws<CryptographicException>(() => state.Read(Noise.Unhex(exchange["messages"]![1]!.GetValue<string>())));
+                // A wrong password or transcript does not authenticate; a key that
+                // is not the pinned one is a different peer, and says so.
+                if (test == 2) Assert.Throws<NoisePinMismatchException>(() => state.Read(Noise.Unhex(exchange["messages"]![1]!.GetValue<string>())));
+                else Assert.Throws<CryptographicException>(() => state.Read(Noise.Unhex(exchange["messages"]![1]!.GetValue<string>())));
                 Assert.False(state.Finished);
             }
             Assert.Throws<CryptographicException>(() => Noise.Dh(Key("static_i"), new byte[32]));

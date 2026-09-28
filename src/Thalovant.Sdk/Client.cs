@@ -508,6 +508,69 @@ namespace Thalovant
                 cancellationToken).ConfigureAwait(false);
         }
 
+        /// <summary>
+        /// Answers a message the hub sent, back along the route it came
+        /// (OVOS-MSG-1 §5.2).
+        /// </summary>
+        /// <remarks>
+        /// The reply carries a deep copy of the request's context -- its session,
+        /// its request id, everything a skill waiting on it matches -- with
+        /// <c>source</c> and <c>destination</c> swapped
+        /// (<see cref="ThalovantContext.ReplyContext"/>). <paramref name="context"/>
+        /// entries are laid over the copy before the swap.
+        /// </remarks>
+        public Task ReplyAsync(
+            ThalovantEvent request,
+            string messageType,
+            JsonObject? data = null,
+            JsonObject? context = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (request is null) throw new ArgumentNullException(nameof(request));
+            if (string.IsNullOrWhiteSpace(messageType))
+            {
+                throw new ArgumentException("A reply needs a non-empty message type.", nameof(messageType));
+            }
+            var basis = JsonUtil.CloneObject(request.Context);
+            if (context is not null)
+            {
+                foreach (var pair in context)
+                {
+                    basis[pair.Key] = pair.Value?.DeepClone();
+                }
+            }
+            return EmitAsync(messageType.Trim(), data, ThalovantContext.ReplyContext(basis), cancellationToken);
+        }
+
+        /// <summary>
+        /// Answers every <c>thalovant.home.request</c> this client receives with
+        /// one <c>thalovant.home.response</c>, sent as a reply
+        /// (<see cref="ThalovantHome"/>). Close the returned subscription to stop;
+        /// that cancels the answers still running.
+        /// </summary>
+        /// <param name="handler">What the home says. It runs off the receive loop, one task per request.</param>
+        /// <param name="timeout">How long it has, <see cref="ThalovantHome.DefaultHandlerTimeout"/> by default.</param>
+        public ThalovantSubscription AnswerHomeRequests(HomeRequestHandler handler, TimeSpan? timeout = null) =>
+            ThalovantHome.AnswerEvery(
+                (name, listener) => On(name, listener),
+                (request, payload, token) => ReplyAsync(request, ThalovantHome.ResponseEvent, payload, cancellationToken: token),
+                handler,
+                timeout);
+
+        /// <summary>
+        /// Whether the link is up right now, without dialling: the transport is
+        /// connected and authenticated. A bus a test supplied is taken at its word.
+        /// </summary>
+        internal bool LinkUp => Transport is HiveMindWssTransport transport
+            ? transport.Connected && transport.HandshakeComplete
+            : RuntimeConnected && RuntimeHandshakeComplete;
+
+        /// <summary>Completes when the current link ends; null when the bus cannot say.</summary>
+        internal Task? LinkStopped => Transport?.Stopped;
+
+        /// <summary>Whether the hub ended the last link the way it refuses credentials.</summary>
+        internal bool LinkRefused => Transport?.ClosedRefused ?? false;
+
         /// <summary>Sends an utterance without waiting for a reply.</summary>
         public Task SendUtteranceAsync(
             string text,

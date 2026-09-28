@@ -497,7 +497,7 @@ namespace Thalovant.Sdk.Tests
             const string PaidDetail = """{"detail": "API access requires a paid plan."}""";
 
             _handler.Enqueue(402, PaidDetail);
-            var error = await Assert.ThrowsAsync<ThalovantApiException>(
+            var error = await Assert.ThrowsAsync<ThalovantPlanException>(
                 () => _api.CreateHubAsync(new CreateHubOptions("hub", new JsonObject())));
             Assert.Equal(402, error.StatusCode);
             Assert.Contains("paid plan", error.Body!, StringComparison.Ordinal);
@@ -505,13 +505,13 @@ namespace Thalovant.Sdk.Tests
             _handler.Enqueue(402, PaidDetail);
             Assert.Equal(
                 402,
-                (await Assert.ThrowsAsync<ThalovantApiException>(
+                (await Assert.ThrowsAsync<ThalovantPlanException>(
                     () => _api.CreateRuntimeGroupAsync(new CreateRuntimeGroupOptions("kiosks")))).StatusCode);
 
             _handler.Enqueue(402, PaidDetail);
             Assert.Equal(
                 402,
-                (await Assert.ThrowsAsync<ThalovantApiException>(
+                (await Assert.ThrowsAsync<ThalovantPlanException>(
                     () => _api.InstallRuntimeGroupSkillAsync(
                         "group-1",
                         new InstallRuntimeGroupSkillOptions("skill-weather")))).StatusCode);
@@ -521,7 +521,7 @@ namespace Thalovant.Sdk.Tests
         public async Task ScopeGateSurfacesAs403()
         {
             _handler.Enqueue(403, """{"detail": "Insufficient scopes"}""");
-            var error = await Assert.ThrowsAsync<ThalovantApiException>(
+            var error = await Assert.ThrowsAsync<ThalovantAuthenticationException>(
                 () => _api.ReleaseRuntimeGroupAsync("group-1", new ReleaseOptions { Channel = "stable" }));
             Assert.Equal(403, error.StatusCode);
             Assert.Contains("Insufficient scopes", error.Body!, StringComparison.Ordinal);
@@ -530,7 +530,7 @@ namespace Thalovant.Sdk.Tests
             _handler.Enqueue(403, """{"detail": "Insufficient scopes"}""");
             Assert.Equal(
                 403,
-                (await Assert.ThrowsAsync<ThalovantApiException>(
+                (await Assert.ThrowsAsync<ThalovantAuthenticationException>(
                     () => _api.ListRuntimeGroupInventoryAsync("group-1"))).StatusCode);
         }
 

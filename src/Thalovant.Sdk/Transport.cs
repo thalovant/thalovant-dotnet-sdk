@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.IO;
 using System.Net.WebSockets;
@@ -50,6 +51,41 @@ namespace Thalovant
                 throw timeoutError;
             }
         }
+    }
+
+    /// <summary>Timers that wait at least the whole duration.</summary>
+    internal static class Monotonic
+    {
+        /// <summary>
+        /// Waits at least <paramref name="wait"/> by the monotonic clock. A timer
+        /// can wake early -- Windows' did, by a millisecond on a second -- and a
+        /// wait that ends early is a poll before its deadline, or a request before
+        /// the API said it may be sent.
+        /// </summary>
+        internal static async Task DelayAtLeastAsync(TimeSpan wait, CancellationToken cancellationToken)
+        {
+            var clock = Stopwatch.StartNew();
+            if (wait <= TimeSpan.Zero)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return;
+            }
+            await Task.Delay(Capped(wait), cancellationToken).ConfigureAwait(false);
+            for (var left = wait - clock.Elapsed; left > TimeSpan.Zero; left = wait - clock.Elapsed)
+            {
+                await Task.Delay(Capped(TimeSpan.FromMilliseconds(Math.Max(1, Math.Ceiling(left.TotalMilliseconds)))), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+
+        /// <summary>Task.Delay takes at most int.MaxValue milliseconds; a longer wait is taken in turns.</summary>
+        private static TimeSpan Capped(TimeSpan wait) =>
+            wait.TotalMilliseconds > int.MaxValue - 1 ? TimeSpan.FromMilliseconds(int.MaxValue - 1) : wait;
+
+        /// <summary>A task that completes once <paramref name="wait"/> has wholly passed, or never faults: cancellation just ends it.</summary>
+        internal static Task QuietlyAsync(TimeSpan wait, CancellationToken cancellationToken) =>
+            DelayAtLeastAsync(wait, cancellationToken).ContinueWith(_ => { }, CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
     /// <summary>
@@ -145,12 +181,6 @@ namespace Thalovant
             }
         }
 
-        private static bool RefusalClose(WebSocketCloseStatus? status) =>
-            status is null
-            || (int)status.Value == 0
-            || status.Value == WebSocketCloseStatus.NormalClosure
-            || status.Value == WebSocketCloseStatus.Empty
-            || status.Value == WebSocketCloseStatus.PolicyViolation;
         private CancellationTokenSource? _receiveCancellation;
         private bool _connected;
         private bool _handshakeComplete;
@@ -282,8 +312,43 @@ namespace Thalovant
         private async Task ConnectCoreAsync(TimeSpan? timeout, CancellationToken cancellationToken)
         {
             if (Connected && HandshakeComplete) return;
+            var budget = timeout ?? TimeSpan.FromSeconds(6);
+            var clock = Stopwatch.StartNew();
+            try
+            {
+                await ConnectAttemptAsync(budget, forceXX: false, cancellationToken).ConfigureAwait(false);
+            }
+            catch (ThalovantHubRefusedException) when (AttemptPattern == "KKpsk0" && budget - clock.Elapsed > TimeSpan.Zero)
+            {
+                // A KK attempt that failed -- its answer did not authenticate, or
+                // the hub closed with a refusal code, which is what a hub does when
+                // it cannot read a KK first message -- is followed at once by one
+                // XX attempt, whose outcome is the connect's. Only XX tells a
+                // changed password (a refusal) from a changed hub key: the pin is
+                // still checked when XX completes, so this is not a downgrade.
+                await ConnectAttemptAsync(budget - clock.Elapsed, forceXX: true, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        /// <summary>The Noise pattern the last connect attempt chose; null before one was chosen.</summary>
+        internal string? AttemptPattern
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    return _attemptPattern;
+                }
+            }
+        }
+
+        private string? _attemptPattern;
+        private bool _forceXX;
+        private long _handshakeCompletedAt;
+
+        private async Task ConnectAttemptAsync(TimeSpan effectiveTimeout, bool forceXX, CancellationToken cancellationToken)
+        {
             await DisconnectAsync().ConfigureAwait(false);
-            var effectiveTimeout = timeout ?? TimeSpan.FromSeconds(6);
             WebSocket socket;
             AsyncGate gate;
             CancellationToken receiveToken;
@@ -293,6 +358,8 @@ namespace Thalovant
                 ResetSession();
                 _stopped = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 _closedRefused = false;
+                _attemptPattern = null;
+                _forceXX = forceXX;
                 _lastError = null;
                 socket = _socketFactory();
                 _socket = socket;
@@ -321,15 +388,12 @@ namespace Thalovant
                 }
                 catch (WebSocketException exception)
                 {
-#if NET8_0_OR_GREATER
-                    if (socket is ClientWebSocket upgraded
-                        && (upgraded.HttpStatusCode == System.Net.HttpStatusCode.Unauthorized
-                            || upgraded.HttpStatusCode == System.Net.HttpStatusCode.Forbidden))
+                    var status = UpgradeStatus(socket, exception);
+                    if (status == 401 || status == 403)
                     {
                         throw new ThalovantHubRefusedException(
-                            $"The hub refused this connection's credentials (HTTP {(int)upgraded.HttpStatusCode}).");
+                            $"The hub refused this connection's credentials (HTTP {status}).");
                     }
-#endif
                     throw new ThalovantConnectionException($"HiveMind WSS connect failed: {exception.Message}", exception);
                 }
                 lock (_lock)
@@ -349,6 +413,58 @@ namespace Thalovant
                 HandleSocketFailure(socket, exception);
                 throw;
             }
+        }
+
+        /// <summary>
+        /// The HTTP status a failed WebSocket upgrade was answered with, or null.
+        /// .NET 8 reports it on the socket; netstandard2.1 (Unity) has no such
+        /// property, and its <see cref="ClientWebSocket"/> names the status only in
+        /// the exception's message ("The server returned status code '401' when
+        /// status code '101' was expected."), so that is read instead.
+        /// </summary>
+        internal static int? UpgradeStatus(WebSocket socket, WebSocketException exception)
+        {
+#if NET8_0_OR_GREATER
+            if (socket is ClientWebSocket upgraded && upgraded.HttpStatusCode != 0)
+            {
+                return (int)upgraded.HttpStatusCode;
+            }
+#endif
+            return UpgradeStatus(exception.Message);
+        }
+
+        internal static int? UpgradeStatus(string? message)
+        {
+            if (string.IsNullOrEmpty(message)) return null;
+            var match = System.Text.RegularExpressions.Regex.Match(message, @"status code '([1-5][0-9]{2})' when status code '101'");
+            return match.Success ? int.Parse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) : (int?)null;
+        }
+
+        /// <summary>The RFC 6455 close codes a hub refuses credentials with.</summary>
+        internal static readonly IReadOnlyList<int> RefusalCloseCodes = new[] { 1000, 1005, 1008 };
+
+        /// <summary>How long after the handshake a close is still the hub's answer to it.</summary>
+        internal const int RefusalSettleMs = 750;
+
+        /// <summary>How late a transport may learn a close's code and still have it count.</summary>
+        internal const int CloseCodeGraceMs = 250;
+
+        /// <summary>
+        /// Whether a close is the hub refusing the credentials rather than a drop:
+        /// a code of 1000, 1005 (which includes a close frame with no status at
+        /// all) or 1008, during the handshake -- any step of it -- or within
+        /// <see cref="RefusalSettleMs"/> after it. <paramref name="code"/> is null
+        /// when the socket ended with no close frame. The close's own time decides
+        /// the window, not when its code was learnt, and a code learnt more than
+        /// <see cref="CloseCodeGraceMs"/> late is no code.
+        /// </summary>
+        internal static bool CloseRefuses(int? code, long? closedAfterHandshakeMs, long codeLateMs = 0)
+        {
+            if (code is not int value || !RefusalCloseCodes.Contains(value) || codeLateMs > CloseCodeGraceMs)
+            {
+                return false;
+            }
+            return closedAfterHandshakeMs is null || closedAfterHandshakeMs <= RefusalSettleMs;
         }
 
         public Task DisconnectAsync()
@@ -571,17 +687,17 @@ namespace Thalovant
             lock (_lock) {
                 if (!ReferenceEquals(socket, _socket)) return;
                 var complete = _handshakeComplete;
-                var refused = RefusalClose(status);
-                // Waiting for the hub's HELLO means it did not know the access
-                // key; having sent the Noise response means it did not accept
-                // the password. Waiting for its offer, a close says nothing about
-                // the credentials yet.
-                var verdictPhase = _serverHello == null || _noiseHandshake != null;
+                // A close frame with no status is 1005; the close's own time,
+                // counted from the end of the handshake, decides the window.
+                long? after = complete
+                    ? (long)((Stopwatch.GetTimestamp() - _handshakeCompletedAt) * 1000.0 / Stopwatch.Frequency)
+                    : (long?)null;
+                var refused = CloseRefuses(status.HasValue ? (int)status.Value : 1005, after);
                 _closedRefused = refused;
                 ResetSession();
                 if (!complete)
                 {
-                    if (refused && verdictPhase) error = new ThalovantHubRefusedException("The hub refused this connection's credentials.");
+                    if (refused) error = new ThalovantHubRefusedException("The hub refused this connection's credentials.");
                     _lastError = error.Message;
                     _handshakeGate.Fail(error);
                 }
@@ -660,7 +776,8 @@ namespace Thalovant
                     string[] Offered(string field) => (noise[field] as JsonArray)?.Select(v => JsonUtil.GetString(v) ?? "").ToArray() ?? Array.Empty<string>();
                     var pin = _noiseStore.LoadPin(nodeId);
                     var patterns = Offered("patterns");
-                    var pattern = pin != null && patterns.Contains("KKpsk0") ? "KKpsk0" : patterns.Contains("XXpsk2") ? "XXpsk2" : throw new ThalovantConnectionException("No supported Noise pattern offered.");
+                    var pattern = pin != null && !_forceXX && patterns.Contains("KKpsk0") ? "KKpsk0" : patterns.Contains("XXpsk2") ? "XXpsk2" : throw new ThalovantConnectionException("No supported Noise pattern offered.");
+                    _attemptPattern = pattern;
                     if (!Offered("suites").Contains(Noise.Suite)) throw new ThalovantConnectionException("No supported Noise suite offered (requires 25519_AESGCM_SHA256).");
                     var psk = _cachedPsk.HasValue && _cachedPsk.Value.NodeId == nodeId ? _cachedPsk.Value.Key : Noise.DerivePsk(Identity.Password, nodeId);
                     _cachedPsk = (nodeId, psk);
@@ -670,7 +787,23 @@ namespace Thalovant
                     parameters = new JsonObject { ["pattern"] = pattern, ["suite"] = Noise.Suite, ["msg"] = Noise.Hex(first) };
                 } else {
                     state = _noiseHandshake ?? throw new ThalovantConnectionException("Noise message arrived before offer.");
-                    state.Read(Noise.Unhex(encoded!));
+                    try
+                    {
+                        state.Read(Noise.Unhex(encoded!));
+                    }
+                    catch (NoisePinMismatchException)
+                    {
+                        throw new ThalovantHubKeyChangedException(
+                            "The hub's Noise key is not the one pinned for it: the hub was replaced, or something is standing in for it. "
+                            + "Verify its rotation before removing the saved pin.");
+                    }
+                    catch (System.Security.Cryptography.CryptographicException)
+                    {
+                        // Its answer does not authenticate under the key this
+                        // password derives: the password is wrong, or has changed.
+                        throw new ThalovantHubRefusedException(
+                            "The hub's Noise handshake did not authenticate: this connection's password is wrong, or has changed.");
+                    }
                     if (!state.Finished) parameters = new JsonObject { ["msg"] = Noise.Hex(state.Write()) };
                 }
             }
@@ -683,13 +816,21 @@ namespace Thalovant
             lock (_lock) {
                 RequireSocket(socket);
                 if (!ReferenceEquals(state, _noiseHandshake)) throw new OperationCanceledException("Noise handshake was replaced.");
-                _noiseStore.VerifyOrPin(nodeId, state.RemoteStatic ?? throw new ThalovantConnectionException("Missing authenticated server key."));
+                var remote = state.RemoteStatic ?? throw new ThalovantConnectionException("Missing authenticated server key.");
+                if (_noiseStore.LoadPin(nodeId) is byte[] pinned && !Noise.Equal(pinned, remote))
+                {
+                    throw new ThalovantHubKeyChangedException(
+                        "The hub's Noise key is not the one pinned for it: the hub was replaced, or something is standing in for it. "
+                        + "Verify its rotation before removing the saved pin.");
+                }
+                _noiseStore.VerifyOrPin(nodeId, remote);
                 _noiseSession = session = state.Session(); _noiseHandshake = null;
             }
             await SendCapturedAsync(socket, session, HiveWire.HelloMessage(Identity.SiteId, Identity.PublicKey, "thalovant-dotnet-" + Guid.NewGuid().ToString("D")), cancellationToken).ConfigureAwait(false);
             lock (_lock) {
                 RequireSocket(socket);
                 _handshakeComplete = true;
+                _handshakeCompletedAt = Stopwatch.GetTimestamp();
                 _handshakeGate.Open();
             }
         }

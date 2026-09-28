@@ -94,8 +94,24 @@ namespace Thalovant
         /// </remarks>
         public JsonObject? Problem => _problem is null ? null : (JsonObject)_problem.DeepClone();
 
+        /// <summary>
+        /// How long the API asked the caller to wait before trying again, when it
+        /// said: a 429's <c>retry_after_seconds</c> (at the top of the problem or
+        /// inside its <c>detail</c> object, where the API puts it), else its
+        /// <c>Retry-After</c> header in seconds, else <c>RateLimit-Reset</c>, which
+        /// is all the API's own rate limiter sends with its plain-text 429. Null
+        /// otherwise.
+        /// </summary>
+        public TimeSpan? RetryAfter { get; private set; }
+
         public ThalovantApiException(string message, int? statusCode = null, string? body = null, string? errorCode = null)
             : this(message, statusCode, body, errorCode, ParseProblem(body))
+        {
+        }
+
+        /// <summary>A failure with no answer from the API at all, and the reason it had none.</summary>
+        private protected ThalovantApiException(string message, Exception innerException)
+            : base(message, innerException)
         {
         }
 
@@ -107,6 +123,34 @@ namespace Thalovant
             _problem = problem;
             ErrorCode = errorCode ?? ProblemText(problem, "code");
             Detail = ProblemText(problem, "detail");
+            RetryAfter = RetryAfterIn(problem);
+        }
+
+        /// <summary>A problem's <c>retry_after_seconds</c>, at its top or inside a <c>detail</c> object.</summary>
+        private static TimeSpan? RetryAfterIn(JsonObject? problem)
+        {
+            if (problem is null)
+            {
+                return null;
+            }
+            foreach (var source in new[] { problem, problem["detail"] as JsonObject })
+            {
+                if (source?["retry_after_seconds"] is JsonValue value
+                    && value.GetValueKind() == JsonValueKind.Number
+                    && value.TryGetValue<double>(out var seconds)
+                    && seconds >= 0 && seconds <= TimeSpan.MaxValue.TotalSeconds)
+                {
+                    return TimeSpan.FromSeconds(seconds);
+                }
+            }
+            return null;
+        }
+
+        /// <summary>The header's wait, when the body named none.</summary>
+        internal ThalovantApiException WithRetryAfterHeader(TimeSpan? header)
+        {
+            RetryAfter ??= header;
+            return this;
         }
 
         /// <summary>
@@ -240,6 +284,24 @@ namespace Thalovant
                     // disposed on return.
                     return JsonValue.Create(element.Clone());
             }
+        }
+    }
+
+    /// <summary>
+    /// The control API could not be reached at all: DNS, the connection, TLS or a
+    /// proxy failed, so there is no status, code, detail or problem. Trying again
+    /// later can succeed.
+    /// </summary>
+    /// <remarks>
+    /// Before 0.9.0 this was a plain <see cref="ThalovantApiException"/>, which it
+    /// still is, so every existing handler still catches it; the type is what tells
+    /// "the API is out of reach" from "the API answered no".
+    /// </remarks>
+    public sealed class ThalovantApiUnreachableException : ThalovantApiException
+    {
+        public ThalovantApiUnreachableException(string message, Exception innerException)
+            : base(message, innerException)
+        {
         }
     }
 
@@ -439,6 +501,22 @@ namespace Thalovant
     }
 
     /// <summary>
+    /// The hub's Noise static key is not the one pinned for it: the hub was
+    /// replaced, or something is standing in for it.
+    /// </summary>
+    /// <remarks>
+    /// A connection error, not a refusal: retrying cannot change it, so
+    /// <see cref="HubSession.RunAsync"/> stops at once. The SDK never replaces a
+    /// pin itself; verify the hub's rotation before removing the saved pin.
+    /// </remarks>
+    public sealed class ThalovantHubKeyChangedException : ThalovantConnectionException
+    {
+        public ThalovantHubKeyChangedException(string message) : base(message)
+        {
+        }
+    }
+
+    /// <summary>
     /// A hub has not admitted a new connection within the wait. Both a connection
     /// error and a timeout (<see cref="IThalovantTimeout"/>): the connection
     /// exists and may still be admitted, so waiting longer, or connecting later,
@@ -455,11 +533,23 @@ namespace Thalovant
         }
     }
 
-    /// <summary>The operation that admits a new connection failed or timed out on the platform.</summary>
+    /// <summary>
+    /// The operation that admits a new connection failed or timed out on the
+    /// platform, or the API refused the wait itself.
+    /// </summary>
     public sealed class ThalovantAdmissionFailedException : ThalovantConnectionException
     {
-        /// <summary>The operation's own <c>error_code</c>, when it had one.</summary>
+        /// <summary>The operation's own <c>error_code</c>, when the platform failed it; null when the API refused the wait.</summary>
         public string? ErrorCode { get; }
+
+        /// <summary>
+        /// The API's refusal of the wait itself, with its status, code, detail and
+        /// problem; null when it was the platform that failed the operation.
+        /// </summary>
+        public ThalovantApiException? ApiError => InnerException as ThalovantApiException;
+
+        /// <summary>The HTTP status of the API's refusal; null when the platform failed the operation.</summary>
+        public int? StatusCode => ApiError?.StatusCode;
 
         public ThalovantAdmissionFailedException(string message, string? errorCode = null) : base(message)
         {

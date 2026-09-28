@@ -118,10 +118,36 @@ internal static class ConformanceRecord {
             + "spelled the same way in every language");
     }
 
-    private static string QuoteString(string value) =>
-        JsonSerializer.Serialize(value, new JsonSerializerOptions {
-            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-        });
+    /// <summary>A string spelled exactly as the reference's <c>json.dumps(..., ensure_ascii=False)</c> spells it.</summary>
+    /// <remarks>
+    /// Only the quote, the backslash and the C0 controls are escaped -- the
+    /// latter as <c>\n</c>, <c>\r</c>, <c>\t</c>, <c>\b</c>, <c>\f</c>, or <c>\u00xx</c> in lower
+    /// case -- and everything else is written as itself. System.Text.Json, even
+    /// with UnsafeRelaxedJsonEscaping, also escapes U+007F, the C1 controls and
+    /// the line and paragraph separators, so home-link-vectors.json, whose
+    /// speech cases hold U+2028, digested differently from the reference's
+    /// although every case matched.
+    /// </remarks>
+    private static string QuoteString(string value) {
+        var into = new StringBuilder(value.Length + 2);
+        into.Append('"');
+        foreach (var character in value) {
+            switch (character) {
+                case '"': into.Append("\\\""); break;
+                case '\\': into.Append("\\\\"); break;
+                case '\n': into.Append("\\n"); break;
+                case '\r': into.Append("\\r"); break;
+                case '\t': into.Append("\\t"); break;
+                case '\b': into.Append("\\b"); break;
+                case '\f': into.Append("\\f"); break;
+                default:
+                    if (character < ' ') into.Append("\\u").Append(((int)character).ToString("x4", System.Globalization.CultureInfo.InvariantCulture));
+                    else into.Append(character);
+                    break;
+            }
+        }
+        return into.Append('"').ToString();
+    }
 
     internal static string CanonicalDigest(JsonNode? node) => Digest(node, verbatimFractions: false);
 

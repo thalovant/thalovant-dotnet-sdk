@@ -140,6 +140,17 @@ namespace Thalovant
         internal byte[] Crypt(byte[] data, bool encrypt) { var result = Cipher.Crypt(data, _hash, encrypt); MixHash(encrypt ? result : data); return result; }
         internal (NoiseCipher, NoiseCipher) Split() { var keys = Noise.Hkdf(_chainingKey, Noise.Empty); return (new NoiseCipher(keys[0]), new NoiseCipher(keys[1])); }
     }
+    /// <summary>
+    /// A peer's static key contradicts the one pinned for it: not an
+    /// authentication failure, which a wrong password is, but a different peer.
+    /// </summary>
+    internal sealed class NoisePinMismatchException : CryptographicException
+    {
+        internal NoisePinMismatchException() : base("Noise server key contradicts its persisted pin.")
+        {
+        }
+    }
+
     internal sealed class NoiseHandshake
     {
         internal string Pattern { get; }
@@ -178,7 +189,7 @@ namespace Thalovant
             foreach (var token in _messages[_index]) switch (token)
             {
                 case "e": _remoteEphemeral = Take(32); _symmetric.MixHash(_remoteEphemeral); _symmetric.MixKey(_remoteEphemeral); break;
-                case "s": var key = _symmetric.Crypt(Take(_symmetric.Cipher.HasKey ? 48 : 32), false); if (RemoteStatic != null && !Noise.Equal(key, RemoteStatic)) throw new CryptographicException("Noise server key contradicts its persisted pin."); RemoteStatic = key; break;
+                case "s": var key = _symmetric.Crypt(Take(_symmetric.Cipher.HasKey ? 48 : 32), false); if (RemoteStatic != null && !Noise.Equal(key, RemoteStatic)) throw new NoisePinMismatchException(); RemoteStatic = key; break;
                 case "psk": _symmetric.MixKeyAndHash(_psk); break;
                 default: _symmetric.MixKey(Dh(token)); break;
             }

@@ -46,6 +46,96 @@ namespace Thalovant
         public double NextWait(double current) => Math.Min(current * 2, RetryCeilingSeconds);
     }
 
+    /// <summary>What one attempt to keep a link up came to.</summary>
+    internal enum LinkOutcome
+    {
+        /// <summary>The link came up.</summary>
+        Up,
+
+        /// <summary>An established link went down.</summary>
+        Dropped,
+
+        /// <summary>The hub or the network could not be reached.</summary>
+        Failed,
+
+        /// <summary>The hub turned the credentials away.</summary>
+        Refused,
+
+        /// <summary>The hub's Noise key is not the pinned one.</summary>
+        KeyChanged,
+    }
+
+    internal enum LinkAction
+    {
+        Hold,
+        Retry,
+        GiveUp,
+    }
+
+    /// <summary>What to do after an outcome: hold, retry after <see cref="Wait"/>, or give up for <see cref="Reason"/>.</summary>
+    internal readonly struct LinkDecision
+    {
+        internal LinkDecision(LinkAction action, TimeSpan wait = default, string? reason = null)
+        {
+            Action = action;
+            Wait = wait;
+            Reason = reason;
+        }
+
+        internal LinkAction Action { get; }
+        internal TimeSpan Wait { get; }
+        internal string? Reason { get; }
+    }
+
+    /// <summary>
+    /// How a long-lived link is kept up, as a pure function of what happened and
+    /// when: <see cref="HubSession.RunAsync"/> asks it after every attempt, and
+    /// <c>link-keeping-vectors.json</c> holds every SDK to the same answers.
+    /// </summary>
+    internal sealed class LinkSupervisor
+    {
+        private readonly HubSessionPolicy _policy;
+        private double _wait;
+        private double? _refusedSince;
+
+        internal LinkSupervisor(HubSessionPolicy policy)
+        {
+            _policy = policy;
+            _wait = policy.RetrySeconds;
+        }
+
+        /// <summary>The decision after <paramref name="outcome"/>, observed at <paramref name="now"/> seconds on any monotonic origin.</summary>
+        internal LinkDecision After(LinkOutcome outcome, double now)
+        {
+            switch (outcome)
+            {
+                case LinkOutcome.Up:
+                    _wait = _policy.RetrySeconds;
+                    _refusedSince = null;
+                    return new LinkDecision(LinkAction.Hold);
+                case LinkOutcome.Dropped:
+                    return new LinkDecision(LinkAction.Retry, TimeSpan.Zero);
+                case LinkOutcome.KeyChanged:
+                    return new LinkDecision(LinkAction.GiveUp, reason: "key_changed");
+                case LinkOutcome.Refused:
+                    _refusedSince ??= now;
+                    if (now - _refusedSince.Value >= _policy.RefusalGraceSeconds)
+                    {
+                        return new LinkDecision(LinkAction.GiveUp, reason: "refused");
+                    }
+                    break;
+                case LinkOutcome.Failed:
+                    _refusedSince = null;
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(outcome));
+            }
+            var wait = _wait;
+            _wait = _policy.NextWait(_wait);
+            return new LinkDecision(LinkAction.Retry, TimeSpan.FromSeconds(wait));
+        }
+    }
+
     /// <summary>One managed connection. Failed admitted calls are never replayed.</summary>
     /// <remarks>
     /// <para>
@@ -213,7 +303,7 @@ namespace Thalovant
             var stopped = client.LinkStopped;
             if (stopped is null || settle <= TimeSpan.Zero) return;
             using var timer = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            var first = await Task.WhenAny(stopped, Task.Delay(settle, timer.Token)).ConfigureAwait(false);
+            var first = await Task.WhenAny(stopped, Monotonic.QuietlyAsync(settle, timer.Token)).ConfigureAwait(false);
             timer.Cancel();
             cancellationToken.ThrowIfCancellationRequested();
             if (first != stopped) return;
@@ -269,18 +359,22 @@ namespace Thalovant
         /// already opened is the one this keeps.
         /// </summary>
         /// <remarks>
-        /// After a failed attempt it waits on the retry ladder; a dropped link is
-        /// dialled again at once. Refusals are retried until they have lasted
-        /// <see cref="HubSessionPolicy.RefusalGraceSeconds"/>, then this throws
-        /// <see cref="ThalovantHubRefusedException"/>. A fault that will not fix
-        /// itself -- a factory that cannot build a client, a hub key that no longer
-        /// matches its pin -- is thrown at once.
+        /// After every attempt it does what <c>link-keeping-vectors.json</c> says:
+        /// a link that came up is held, and resets the ladder and the refusal
+        /// clock; one that dropped is dialled again at once; a failed attempt waits
+        /// the ladder's step (<see cref="HubSessionPolicy.RetrySeconds"/>, doubling
+        /// to <see cref="HubSessionPolicy.RetryCeilingSeconds"/>); refusals wait the
+        /// same way until they have lasted <see cref="HubSessionPolicy.RefusalGraceSeconds"/>,
+        /// then this throws <see cref="ThalovantHubRefusedException"/>; and a
+        /// changed hub key throws <see cref="ThalovantHubKeyChangedException"/> at
+        /// once, since retrying cannot change it. A fault that will not fix itself
+        /// -- a factory that cannot build a client -- is thrown at once too.
         /// </remarks>
         public async Task RunAsync(CancellationToken cancellationToken = default)
         {
             using var running = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _closing.Token);
             var token = running.Token;
-            double? refusedSince = null;
+            var supervisor = new LinkSupervisor(Policy);
             while (!IsClosed)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -291,13 +385,19 @@ namespace Thalovant
                     await StoppedOrProbeAsync(held, token).ConfigureAwait(false);
                     if (IsClosed) break;
                     cancellationToken.ThrowIfCancellationRequested();
-                    if (!held.LinkUp) await DropIfHeldAsync(held).ConfigureAwait(false);
+                    if (!held.LinkUp)
+                    {
+                        await DropIfHeldAsync(held).ConfigureAwait(false);
+                        supervisor.After(LinkOutcome.Dropped, _clock()); // dial again at once
+                    }
                     continue;
                 }
+                LinkOutcome outcome;
+                Exception failure;
                 try
                 {
                     await ConnectAsync(token).ConfigureAwait(false);
-                    refusedSince = null;
+                    supervisor.After(LinkOutcome.Up, _clock());
                     continue;
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -309,21 +409,29 @@ namespace Thalovant
                 {
                     break;
                 }
-                catch (ThalovantHubRefusedException)
+                catch (ThalovantHubKeyChangedException error)
                 {
-                    var now = _clock();
-                    refusedSince ??= now;
-                    if (now - refusedSince.Value >= Policy.RefusalGraceSeconds) throw;
+                    outcome = LinkOutcome.KeyChanged;
+                    failure = error;
+                }
+                catch (ThalovantHubRefusedException error)
+                {
+                    outcome = LinkOutcome.Refused;
+                    failure = error;
                 }
                 catch (Exception error) when (Retryable(error))
                 {
-                    refusedSince = null;
+                    outcome = LinkOutcome.Failed;
+                    failure = error;
                 }
-                var wait = RetryAt - _clock();
-                if (wait <= 0) continue;
+                var decision = supervisor.After(outcome, _clock());
+                if (decision.Action == LinkAction.GiveUp)
+                {
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+                }
                 try
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(Math.Min(wait, int.MaxValue / 1000.0)), token).ConfigureAwait(false);
+                    await Monotonic.DelayAtLeastAsync(decision.Wait, token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested)
                 {
@@ -345,7 +453,7 @@ namespace Thalovant
         private async Task StoppedOrProbeAsync(ThalovantClient held, CancellationToken token)
         {
             using var timer = CancellationTokenSource.CreateLinkedTokenSource(token);
-            var probe = Task.Delay(TimeSpan.FromSeconds(Math.Min(Policy.ProbeSeconds, int.MaxValue / 1000.0)), timer.Token);
+            var probe = Monotonic.QuietlyAsync(TimeSpan.FromSeconds(Policy.ProbeSeconds), timer.Token);
             var stopped = held.LinkStopped;
             await (stopped is null ? probe : Task.WhenAny(stopped, probe)).ContinueWith(_ => { }, TaskScheduler.Default).ConfigureAwait(false);
             timer.Cancel();

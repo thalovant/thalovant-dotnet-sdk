@@ -557,13 +557,16 @@ namespace Thalovant
             CancellationToken cancellationToken)
         {
             var payload = new JsonObject();
-            if (scopes is not null)
+            var list = new JsonArray();
+            foreach (var scope in scopes ?? Array.Empty<string>())
             {
-                var list = new JsonArray();
-                foreach (var scope in scopes)
-                {
-                    list.Add(scope);
-                }
+                list.Add(scope);
+            }
+            // An empty list is left out exactly as none is: the API requires at
+            // least one scope and answers [] with a 422, and a missing field asks
+            // for its default.
+            if (list.Count > 0)
+            {
                 payload["scopes"] = list;
             }
             if (!string.IsNullOrEmpty(clientName))
@@ -1626,22 +1629,30 @@ namespace Thalovant
         /// the API no longer tracks (HTTP 404). <c>ready</c> is admitted;
         /// <c>requested</c>, <c>committed</c> and <c>applied</c> keep polling, and
         /// a 5xx is ridden out. So is a 429, the token's rate limit, which this
-        /// wait shares with every other call: the next poll waits the
-        /// <c>retry_after_seconds</c> it names (inside the problem's
-        /// <c>detail</c> object, where the API puts it, or at the top) when that
-        /// is longer than <paramref name="pollInterval"/>, and when it is longer
-        /// than the time left the wait ends at once as a timeout. Throws <see cref="ThalovantAdmissionFailedException"/>
-        /// when the operation failed or timed out on the platform, and
-        /// <see cref="ThalovantAdmissionTimeoutException"/> -- a
-        /// <see cref="ThalovantConnectionException"/> that is also an
-        /// <see cref="IThalovantTimeout"/> -- when <paramref name="timeout"/>
-        /// (<see cref="DefaultAdmissionTimeout"/>) passes first; the connection
-        /// may still be admitted after that.
+        /// wait shares with every other call: the next poll waits
+        /// <see cref="ThalovantApiException.RetryAfter"/> when that is longer than
+        /// <paramref name="pollInterval"/>, and when it is longer than the time
+        /// left the wait ends at once as a timeout. No read runs past
+        /// <paramref name="timeout"/> (<see cref="DefaultAdmissionTimeout"/>).
         /// </para>
         /// <para>
-        /// A <c>links.self</c> on another origin than the API's is never fetched,
-        /// because the token goes nowhere else: that throws
-        /// <see cref="ThalovantApiException"/>.
+        /// Throws <see cref="ThalovantAdmissionFailedException"/> when the
+        /// operation failed or timed out on the platform
+        /// (<see cref="ThalovantAdmissionFailedException.ErrorCode"/>) or the API
+        /// refused the wait itself (<see cref="ThalovantAdmissionFailedException.ApiError"/>),
+        /// and <see cref="ThalovantAdmissionTimeoutException"/> -- a
+        /// <see cref="ThalovantConnectionException"/> that is also an
+        /// <see cref="IThalovantTimeout"/> -- when the time runs out; the
+        /// connection may still be admitted after that. A 401 or 403 is thrown as
+        /// the API's own error (<see cref="ThalovantAuthenticationException"/> and
+        /// its kin), and an API out of reach as
+        /// <see cref="ThalovantApiUnreachableException"/>: neither says anything
+        /// about the connection.
+        /// </para>
+        /// <para>
+        /// A <c>links.self</c> on another origin than the API's -- scheme, host and
+        /// port, the default port spelled out -- is never fetched, because the
+        /// token goes nowhere else: that throws <see cref="ThalovantApiException"/>.
         /// </para>
         /// </remarks>
         public async Task WaitForAdmissionAsync(
@@ -1659,46 +1670,70 @@ namespace Thalovant
                 return;
             }
             var link = operation.Links.TryGetValue("self", out var self) ? self : null;
-            if (link is not null
-                && (link.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || link.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-                && (!Uri.TryCreate(link, UriKind.Absolute, out var target)
-                    || !string.Equals(target.Authority, new Uri(ApiUrl).Authority, StringComparison.OrdinalIgnoreCase)))
+            if (link is not null && link.IndexOf("://", StringComparison.Ordinal) >= 0 && !SameOrigin(link, ApiUrl))
             {
-                // The token goes to the API's own origin and nowhere else.
+                // The token goes to the API's own origin -- scheme, host and
+                // port -- and nowhere else.
                 throw new ThalovantApiException("The admission operation points outside the Thalovant API.");
             }
             var operationId = OperationId(operation);
             var clock = Stopwatch.StartNew();
+            ThalovantAdmissionTimeoutException TimedOut(string? why = null) => new ThalovantAdmissionTimeoutException(
+                $"The hub did not admit the connection within {budget.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture)}s"
+                + (why is null ? "" : $" ({why})") + "; it may still admit it later.",
+                budget);
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 OperationResource? current = null;
-                var pause = every.TotalSeconds;
+                var pause = every;
                 var rateLimited = false;
-                try
+                // Every read is bounded by what is left of the wait: a read the
+                // API is slow to answer must not carry the wait past it.
+                using (var read = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
                 {
-                    current = await GetOperationAsync(operationId, cancellationToken).ConfigureAwait(false);
-                }
-                catch (ThalovantApiException error) when (error.StatusCode == 404)
-                {
-                    // The API no longer tracks it: nothing is left to wait for.
-                    return;
-                }
-                catch (ThalovantApiException error) when (error.StatusCode >= 500)
-                {
-                    // Ridden out: the platform is busy, not the operation failed.
-                }
-                catch (ThalovantApiException error) when (error.StatusCode == 429)
-                {
-                    // The token's rate limit, which this wait shares with the
-                    // caller's other calls: the connection is still on its way.
-                    rateLimited = true;
-                    if (RetryAfterSeconds(error.Problem) is double asked && asked > pause) pause = asked;
-                }
-                catch (ThalovantApiException error)
-                {
-                    throw new ThalovantAdmissionFailedException(
-                        $"The hub could not admit the connection: {error.Message}", error.ErrorCode, error);
+                    var left = budget - clock.Elapsed;
+                    read.CancelAfter(left > TimeSpan.Zero ? left : TimeSpan.Zero);
+                    try
+                    {
+                        current = await GetOperationAsync(operationId, read.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        throw TimedOut();
+                    }
+                    catch (ThalovantApiUnreachableException)
+                    {
+                        // Out of reach says nothing about the hub: the connection
+                        // may be admitted already. Not a failed admission.
+                        throw;
+                    }
+                    catch (ThalovantApiException error) when (error.StatusCode == 404)
+                    {
+                        // The API no longer tracks it: nothing is left to wait for.
+                        return;
+                    }
+                    catch (ThalovantApiException error) when (error.StatusCode == 401 || error.StatusCode == 403)
+                    {
+                        // The token, not the connection: signing in again fixes it.
+                        throw;
+                    }
+                    catch (ThalovantApiException error) when (error.StatusCode >= 500)
+                    {
+                        // Ridden out: the platform is busy, not the operation failed.
+                    }
+                    catch (ThalovantApiException error) when (error.StatusCode == 429)
+                    {
+                        // The token's rate limit, which this wait shares with the
+                        // caller's other calls: the connection is still on its way.
+                        rateLimited = true;
+                        if (error.RetryAfter is TimeSpan asked && asked > pause) pause = asked;
+                    }
+                    catch (ThalovantApiException error)
+                    {
+                        throw new ThalovantAdmissionFailedException(
+                            $"The hub could not admit the connection: {error.Message}", null, error);
+                    }
                 }
                 if (current is not null)
                 {
@@ -1715,58 +1750,32 @@ namespace Thalovant
                     }
                 }
                 var remaining = budget - clock.Elapsed;
-                if (remaining <= TimeSpan.Zero || (rateLimited && pause > remaining.TotalSeconds))
+                if (remaining <= TimeSpan.Zero)
                 {
-                    // Asked to wait longer than is left, waiting it out would end
-                    // in the same timeout, only later.
-                    throw new ThalovantAdmissionTimeoutException(
-                        $"The hub did not admit the connection within {budget.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture)}s; it may still."
-                        + (rateLimited ? " The API asked to slow down." : ""),
-                        budget);
+                    throw TimedOut();
                 }
-                var next = TimeSpan.FromSeconds(pause);
-                await DelayAtLeastAsync(next < remaining ? next : remaining, cancellationToken).ConfigureAwait(false);
+                if (rateLimited && pause > remaining)
+                {
+                    // Asked to wait longer than is left: waiting it out would
+                    // only end in the same timeout, later.
+                    throw TimedOut("the API asked to slow down");
+                }
+                await Monotonic.DelayAtLeastAsync(pause < remaining ? pause : remaining, cancellationToken).ConfigureAwait(false);
             }
         }
 
-        /// <summary>
-        /// Waits at least <paramref name="wait"/> by the monotonic clock. A timer
-        /// can wake a little early -- Windows' did, by a millisecond, on a wait of
-        /// a second -- and a wait the API asked for (<c>retry_after_seconds</c>)
-        /// that ends early is a request sent before the API said it may be.
-        /// </summary>
-        private static async Task DelayAtLeastAsync(TimeSpan wait, CancellationToken cancellationToken)
+        /// <summary>Whether two URLs share an origin: scheme, host and port, the scheme's default port spelled out.</summary>
+        internal static bool SameOrigin(string url, string other)
         {
-            var clock = Stopwatch.StartNew();
-            await Task.Delay(wait, cancellationToken).ConfigureAwait(false);
-            for (var left = wait - clock.Elapsed; left > TimeSpan.Zero; left = wait - clock.Elapsed)
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var a) || !Uri.TryCreate(other, UriKind.Absolute, out var b))
             {
-                await Task.Delay(TimeSpan.FromMilliseconds(Math.Max(1, Math.Ceiling(left.TotalMilliseconds))), cancellationToken).ConfigureAwait(false);
+                return false;
             }
-        }
-
-        /// <summary>
-        /// The <c>retry_after_seconds</c> of a 429, at the top of the problem or
-        /// inside a <c>detail</c> object, where the API puts it (its 429s are
-        /// FastAPI's envelope around a structured refusal); null when it names none.
-        /// </summary>
-        private static double? RetryAfterSeconds(JsonObject? problem)
-        {
-            if (problem is null)
-            {
-                return null;
-            }
-            foreach (var source in new[] { problem, problem["detail"] as JsonObject })
-            {
-                if (source?["retry_after_seconds"] is JsonValue value
-                    && value.GetValueKind() == JsonValueKind.Number
-                    && value.TryGetValue<double>(out var seconds)
-                    && seconds >= 0 && !double.IsInfinity(seconds))
-                {
-                    return seconds;
-                }
-            }
-            return null;
+            // Uri.Port is the scheme's default when the URL names none: 443 for
+            // https and 80 for http, so https://h and https://h:443 are one.
+            return string.Equals(a.Scheme, b.Scheme, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(a.IdnHost, b.IdnHost, StringComparison.OrdinalIgnoreCase)
+                && a.Port == b.Port;
         }
 
         /// <summary>The id to poll: the operation's own, else the tail of its <c>links.self</c>.</summary>
@@ -1893,6 +1902,24 @@ namespace Thalovant
             bool auth = true,
             CancellationToken cancellationToken = default)
         {
+            var (statusCode, text, _) = await SendAsync(method, path, body, headers, auth, cancellationToken).ConfigureAwait(false);
+            return (statusCode, text);
+        }
+
+        /// <summary>
+        /// Sends a request and returns its status, its body, and the wait its
+        /// <c>Retry-After</c> or <c>RateLimit-Reset</c> header names. A request the
+        /// API never answered -- DNS, the connection, TLS, a proxy -- throws
+        /// <see cref="ThalovantApiUnreachableException"/>.
+        /// </summary>
+        private async Task<(int StatusCode, string Body, TimeSpan? RetryAfter)> SendAsync(
+            string method,
+            string path,
+            JsonObject? body,
+            IReadOnlyDictionary<string, string>? headers,
+            bool auth,
+            CancellationToken cancellationToken)
+        {
             using var request = BuildRequest(method, path, body, headers, auth);
             HttpResponseMessage response;
             try
@@ -1901,15 +1928,34 @@ namespace Thalovant
             }
             catch (HttpRequestException exception)
             {
-                throw new ThalovantApiException($"Thalovant API request failed: {exception.Message}");
+                throw new ThalovantApiUnreachableException($"Thalovant API request failed: {exception.Message}", exception);
             }
             using (response)
             {
                 var bytes = response.Content is null
                     ? Array.Empty<byte>()
                     : await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
-                return ((int)response.StatusCode, DecodeBody(bytes));
+                return ((int)response.StatusCode, DecodeBody(bytes), RetryAfterHeader(response));
             }
+        }
+
+        /// <summary>
+        /// <c>Retry-After</c> in whole seconds, else <c>RateLimit-Reset</c>: the
+        /// API's own rate limiter answers a 429 in plain text with only the
+        /// latter. An HTTP-date <c>Retry-After</c> is not read.
+        /// </summary>
+        private static TimeSpan? RetryAfterHeader(HttpResponseMessage response)
+        {
+            foreach (var name in new[] { "Retry-After", "RateLimit-Reset" })
+            {
+                if (response.Headers.TryGetValues(name, out var values)
+                    && values.FirstOrDefault()?.Trim() is string text
+                    && text.Length > 0 && text.Length <= 9 && text.All(ch => ch >= '0' && ch <= '9'))
+                {
+                    return TimeSpan.FromSeconds(int.Parse(text, CultureInfo.InvariantCulture));
+                }
+            }
+            return null;
         }
 
         /// <summary>
@@ -1934,11 +1980,11 @@ namespace Thalovant
             bool auth = true,
             CancellationToken cancellationToken = default)
         {
-            var (statusCode, text) = await SendRawAsync(method, path, body, headers, auth, cancellationToken)
+            var (statusCode, text, retryAfter) = await SendAsync(method, path, body, headers, auth, cancellationToken)
                 .ConfigureAwait(false);
             if (statusCode < 200 || statusCode >= 300)
             {
-                throw ApiError(statusCode, text);
+                throw ApiError(statusCode, text).WithRetryAfterHeader(retryAfter);
             }
             return text;
         }

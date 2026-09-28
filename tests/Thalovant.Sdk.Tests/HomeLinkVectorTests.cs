@@ -103,63 +103,9 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
         }
     }
 
-    /// <summary>Serves a case's exchanges in order and checks each request against its own.</summary>
-    private sealed class ScriptedApi : HttpMessageHandler
-    {
-        private readonly JsonArray _exchanges;
-        private int _index;
-
-        internal List<string> Sent { get; } = new List<string>();
-        internal List<string> Mismatches { get; } = new List<string>();
-        internal bool AllUsed => _index == _exchanges.Count;
-
-        internal ScriptedApi(JsonArray exchanges) => _exchanges = exchanges;
-
-        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            var path = request.RequestUri!.AbsolutePath;
-            var ifMatch = request.Headers.TryGetValues("If-Match", out var values) ? string.Join(",", values) : null;
-            lock (Sent) Sent.Add($"{request.Method.Method} {path}" + (ifMatch is null ? "" : $" If-Match={ifMatch}"));
-            if (_index >= _exchanges.Count)
-            {
-                Mismatches.Add($"unexpected {request.Method.Method} {path}");
-                return new HttpResponseMessage((HttpStatusCode)599) { Content = new StringContent("{}"), RequestMessage = request };
-            }
-            var exchange = _exchanges[_index]!.AsObject();
-            if (exchange["repeat"]?.GetValue<bool>() != true) _index++;
-            var expected = exchange["request"]!.AsObject();
-            if (request.Method.Method != (string)expected["method"]! || path != (string)expected["path"]!)
-                Mismatches.Add($"{request.Method.Method} {path} != {expected["method"]} {expected["path"]}");
-            var raw = request.Content is null ? "" : await request.Content.ReadAsStringAsync(cancellationToken);
-            var body = raw.Length == 0 ? null : JsonNode.Parse(raw);
-            if (expected.TryGetPropertyValue("json", out var json) && !JsonNode.DeepEquals(body, json))
-                Mismatches.Add($"body {body?.ToJsonString()} != {json?.ToJsonString()}");
-            if (expected.TryGetPropertyValue("json_subset", out var subset) && !Contains(body, subset))
-                Mismatches.Add($"body lacks {subset?.ToJsonString()}");
-            if (expected.TryGetPropertyValue("if_match", out var match) && ifMatch != (string?)match)
-                Mismatches.Add($"If-Match {ifMatch} != {match}");
-            if (expected.TryGetPropertyValue("authorization", out var authorization)
-                && request.Headers.Authorization?.ToString() != (string?)authorization)
-                Mismatches.Add("wrong Authorization header");
-            var response = exchange["response"]!.AsObject();
-            var text = (string)response["body"]!;
-            var content = new ByteArrayContent(Encoding.UTF8.GetBytes(text));
-            if (text.Length > 0) content.Headers.TryAddWithoutValidation("Content-Type", (string)response["content_type"]!);
-            return new HttpResponseMessage((HttpStatusCode)response["status"]!.GetValue<int>()) { Content = content, RequestMessage = request };
-        }
-
-        private static bool Contains(JsonNode? value, JsonNode? subset)
-        {
-            if (subset is JsonObject wanted)
-            {
-                return value is JsonObject actual && wanted.All(pair => actual.ContainsKey(pair.Key) && Contains(actual[pair.Key], pair.Value));
-            }
-            return JsonNode.DeepEquals(value, subset);
-        }
-    }
-
-    private static ThalovantControlPlane Plane(ScriptedApi api, string? accessToken = null) =>
-        new ThalovantControlPlane(api, apiUrl: "https://api.example.test", accessToken: accessToken);
+    /// <summary>A control plane pointed at the loopback API, over the SDK's own HttpClient.</summary>
+    private static ThalovantControlPlane Plane(LoopbackApi api, string? accessToken = null) =>
+        new ThalovantControlPlane(apiUrl: api.Url, accessToken: accessToken);
 
     // -- device login ---------------------------------------------------------
 
@@ -169,7 +115,7 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
     {
         var vector = Case(Device, name);
         var call = vector["call"]!.AsObject();
-        using var api = new ScriptedApi(vector["exchanges"]!.AsArray());
+        using var api = new LoopbackApi(vector["exchanges"]!.AsArray());
         var plane = Plane(api);
         var produced = new JsonArray();
         if ((string)call["op"]! == "begin")
@@ -264,7 +210,7 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
     [Fact]
     public async Task RevokingAnotherTokenByIdStillThrowsWhatTheApiSaid()
     {
-        using var api = new ScriptedApi(new JsonArray(new JsonObject
+        using var api = new LoopbackApi(new JsonArray(new JsonObject
         {
             ["request"] = new JsonObject { ["method"] = "DELETE", ["path"] = "/v1/auth/api-tokens/someone-else" },
             ["response"] = new JsonObject { ["status"] = 401, ["content_type"] = "application/problem+json", ["body"] = """{"detail":"Could not validate credentials"}""" },
@@ -283,7 +229,7 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
     public async Task APasswordSignInTakesTheDeviceTokensPlaceAndItsId()
     {
         var approved = Case(Device, "approved, with the token's scopes and id")["exchanges"]!.AsArray()[0]!.DeepClone();
-        using var api = new ScriptedApi(new JsonArray(approved, new JsonObject
+        using var api = new LoopbackApi(new JsonArray(approved, new JsonObject
         {
             ["request"] = new JsonObject { ["method"] = "POST", ["path"] = "/v1/auth/token" },
             ["response"] = new JsonObject { ["status"] = 200, ["content_type"] = "application/json", ["body"] = """{"access_token":"session-token","token_type":"bearer"}""" },
@@ -309,7 +255,7 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
     {
         var vector = Case(Kinds, name);
         var call = vector["call"]!.AsObject();
-        using var api = new ScriptedApi(vector["exchanges"]!.AsArray());
+        using var api = new LoopbackApi(vector["exchanges"]!.AsArray());
         var plane = Plane(api, "synthetic-token");
         JsonObject produced;
         if ((string)call["op"]! == "create")
@@ -397,7 +343,7 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
     [InlineData("""{"detail":"Schema validation failed: 'home_assistant' is not one of ['voice_satellite'] at spec.connection_type","code":"schema_validation_failed"}""", true)]
     public async Task OnlyA422ThatNamesTheKindMakesItUnsupported(string body, bool unsupported)
     {
-        using var api = new ScriptedApi(new JsonArray(Exchange("POST", "/v1/clients", 422, body)));
+        using var api = new LoopbackApi(new JsonArray(Exchange("POST", "/v1/clients", 422, body)));
         var plane = Plane(api, "synthetic-token");
         var options = new CreateClientIdentityOptions("Home Assistant") { ConnectionType = ThalovantConnectionTypes.HomeAssistant };
         var error = await Assert.ThrowsAnyAsync<ThalovantApiException>(() => plane.CreateClientIdentityAsync((JsonObject)KitchenHub.DeepClone(), options));
@@ -409,7 +355,7 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
     public async Task ARateLimitWhileWaitingForAdmissionIsRiddenOut()
     {
         const string Ready = """{"id":"op-1","kind":"client.sync","aggregate_type":"client","status":"ready","details":{},"created_at":"2026-09-27T10:00:00Z","updated_at":"2026-09-27T10:00:00Z","links":{"self":"/v1/operations/op-1"}}""";
-        using var api = new ScriptedApi(new JsonArray(
+        using var api = new LoopbackApi(new JsonArray(
             Exchange("GET", "/v1/operations/op-1", 429, """{"detail":"Too many requests","code":"token_rate_limited","retry_after_seconds":0.2}"""),
             Exchange("GET", "/v1/operations/op-1", 200, Ready)));
         var plane = Plane(api, "synthetic-token");
@@ -430,9 +376,14 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
     {
         var vector = Case(Admission, name);
         var call = vector["call"]!.AsObject();
-        using var api = new ScriptedApi(vector["exchanges"]!.AsArray());
-        var plane = Plane(api, "synthetic-token");
-        var operation = call["operation"] is JsonObject raw ? JsonSerializer.Deserialize<OperationResource>(raw.ToJsonString()) : null;
+        using var api = new LoopbackApi(vector["exchanges"]!.AsArray());
+        // An API out of reach is a port nothing listens on.
+        var plane = (string?)call["api"] == "unreachable"
+            ? new ThalovantControlPlane(apiUrl: $"http://127.0.0.1:{LoopbackApi.ClosedPort()}", accessToken: "synthetic-token")
+            : Plane(api, "synthetic-token");
+        var operation = call["operation"] is JsonObject raw
+            ? JsonSerializer.Deserialize<OperationResource>(Placed(raw, api).ToJsonString())
+            : null;
         var expect = vector["expect"]!.AsObject();
         JsonObject produced;
         var clock = System.Diagnostics.Stopwatch.StartNew();
@@ -449,12 +400,27 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
             // A connection error and a timeout at once: it may still be admitted.
             Assert.IsAssignableFrom<ThalovantConnectionException>(error);
             Assert.IsAssignableFrom<IThalovantTimeout>(error);
+            Assert.EndsWith("it may still admit it later.", error.Message, StringComparison.Ordinal);
             produced = new JsonObject { ["outcome"] = "timeout" };
             if (expect.ContainsKey("polls")) produced["polls"] = api.Sent.Count;
         }
         catch (ThalovantAdmissionFailedException error)
         {
-            produced = new JsonObject { ["outcome"] = "failed", ["error_code"] = error.ErrorCode, ["polls"] = api.Sent.Count };
+            produced = new JsonObject { ["outcome"] = "failed", ["error_code"] = error.ErrorCode, ["status"] = error.StatusCode };
+            if (error.ApiError is ThalovantApiException refusal)
+            {
+                produced["code"] = refusal.ErrorCode;
+                produced["detail"] = refusal.Detail;
+            }
+            produced["polls"] = api.Sent.Count;
+        }
+        catch (ThalovantApiUnreachableException)
+        {
+            produced = new JsonObject { ["outcome"] = "unreachable", ["polls"] = api.Sent.Count };
+        }
+        catch (ThalovantAuthenticationException error)
+        {
+            produced = new JsonObject { ["outcome"] = "auth", ["status"] = error.StatusCode, ["polls"] = api.Sent.Count };
         }
         catch (ThalovantApiException)
         {
@@ -471,6 +437,17 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
         Assert.Empty(api.Mismatches);
         Same(vector["expect"]!, produced, name);
     }
+
+    /// <summary>The case's operation with <c>{api_host}</c> and <c>{api_port}</c> filled in with the loopback API's.</summary>
+    private static JsonNode Placed(JsonNode node, LoopbackApi api) => node switch
+    {
+        JsonObject map => new JsonObject(map.Select(pair => new KeyValuePair<string, JsonNode?>(pair.Key, pair.Value is null ? null : Placed(pair.Value, api)))),
+        JsonArray list => new JsonArray(list.Select(item => item is null ? null : Placed(item, api)).ToArray()),
+        JsonValue value when value.TryGetValue<string>(out var text) => JsonValue.Create(
+            text.Replace("{api_host}", "127.0.0.1", StringComparison.Ordinal)
+                .Replace("{api_port}", api.Port.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal))!,
+        _ => node.DeepClone(),
+    };
 
     // -- the home link -------------------------------------------------------
 
@@ -494,7 +471,16 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
         var client = _hub.Client;
         Assert.True(client.LinkUp);
         JsonNode produced;
-        if ((string)vector["kind"]! == "reply_context")
+        var kind = (string)vector["kind"]!;
+        if (kind == "speech")
+        {
+            produced = JsonValue.Create(ThalovantHome.PlainSpeech((string)vector["text"]!))!;
+        }
+        else if (kind == "deadline")
+        {
+            produced = await Deadline(vector);
+        }
+        else if (kind == "reply_context")
         {
             var context = vector["context"]!.AsObject();
             produced = ThalovantContext.ReplyContext(context);
@@ -526,6 +512,60 @@ public sealed class HomeLinkVectorTests : IClassFixture<HomeLinkVectorTests.Conn
         }
         ConformanceRecord.Record("home-link-vectors.json", name, produced.DeepClone());
         Same(vector["expect"]!, produced, name);
+    }
+
+    /// <summary>
+    /// One request answered inside the hub's bound, through a transport that
+    /// takes the case's <c>send_ms</c> to put a reply on the wire: whether the
+    /// reply went out, and what it said.
+    /// </summary>
+    private static async Task<JsonObject> Deadline(JsonObject vector)
+    {
+        var hub = TimeSpan.FromMilliseconds(vector["hub_timeout_ms"]!.GetValue<long>());
+        var send = TimeSpan.FromMilliseconds(vector["send_ms"]!.GetValue<long>());
+        var request = HomeRequest.FromEvent(new ThalovantEvent(ThalovantHome.RequestEvent, vector["request"]!.DeepClone().AsObject(),
+            new JsonObject { ["source"] = "skill" }));
+        var wire = new List<JsonObject>();
+        async Task Reply(JsonObject payload, CancellationToken cancellationToken)
+        {
+            await Task.Delay(send, cancellationToken);
+            lock (wire) wire.Add(payload);
+        }
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var sent = await ThalovantHome.AnswerAsync(request, Handler(vector["handler"]!.AsObject()), Reply,
+            TimeSpan.FromMilliseconds(vector["timeout_ms"]!.GetValue<long>()), hub);
+        // Never past the hub's bound, whatever the handler or the transport did.
+        Assert.True(clock.Elapsed <= hub + TimeSpan.FromMilliseconds(100), $"answered after {clock.Elapsed}");
+        var produced = new JsonObject { ["replied"] = sent is not null };
+        if (sent is not null)
+        {
+            lock (wire) Assert.True(JsonNode.DeepEquals(sent, Assert.Single(wire)));
+            produced["response"] = sent.DeepClone();
+        }
+        else
+        {
+            await Task.Delay(send);
+            lock (wire) Assert.Empty(wire); // a reply the hub gave up on is withdrawn, not sent late
+        }
+        return produced;
+    }
+
+    [Fact]
+    public async Task AHandlerThatIgnoresCancellationDoesNotHoldTheAnswerBack()
+    {
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var sent = await ThalovantHome.AnswerAsync(
+            new HomeRequest("s1", "x"),
+            (request, cancellationToken) =>
+            {
+                Thread.Sleep(2000); // blocks, and never looks at its token
+                return new ValueTask<HomeAnswer>(HomeAnswer.ActionDone("Too late."));
+            },
+            (payload, cancellationToken) => Task.CompletedTask,
+            TimeSpan.FromMilliseconds(100),
+            TimeSpan.FromSeconds(1));
+        Assert.True(clock.Elapsed < TimeSpan.FromMilliseconds(900), $"took {clock.Elapsed}");
+        Assert.Equal("timeout", (string?)sent!["error_code"]);
     }
 
     [Fact]

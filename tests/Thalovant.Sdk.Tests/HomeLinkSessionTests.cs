@@ -90,14 +90,15 @@ public sealed class HomeLinkSessionTests
         Assert.IsNotType<ThalovantHubRefusedException>(error);
     }
 
-    [Fact]
-    public async Task ANoStatusCloseBeforeTheHelloIsARefusalAndOneWhileWaitingForTheOfferIsNot()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ANoStatusCloseAnywhereInTheHandshakeIsARefusal(bool beforeHello)
     {
-        var refused = HubPeer.ClientFor(new HubPeer(HubPeer.Opening.RefuseBeforeHello));
-        await Assert.ThrowsAsync<ThalovantHubRefusedException>(() => refused.ConnectAsync(TimeSpan.FromSeconds(10)));
-        var dropped = HubPeer.ClientFor(new HubPeer(HubPeer.Opening.CloseAfterHello));
-        var error = await Assert.ThrowsAsync<ThalovantConnectionException>(() => dropped.ConnectAsync(TimeSpan.FromSeconds(10)));
-        Assert.IsNotType<ThalovantHubRefusedException>(error);
+        // Including between the hub's HELLO and its offer: every step of the
+        // handshake counts (link-keeping-vectors.json).
+        var client = HubPeer.ClientFor(new HubPeer(beforeHello ? HubPeer.Opening.RefuseBeforeHello : HubPeer.Opening.CloseAfterHello));
+        await Assert.ThrowsAsync<ThalovantHubRefusedException>(() => client.ConnectAsync(TimeSpan.FromSeconds(10)));
     }
 
     [Fact]
@@ -216,7 +217,7 @@ public sealed class HomeLinkSessionTests
     [Theory]
     [InlineData("<speak>It is <say-as interpret-as=\"cardinal\">21</say-as>&nbsp;degrees\n  &amp; rising.</speak>", "It is 21 degrees & rising.")]
     [InlineData(null, "")]
-    [InlineData("  \u001c spaced out\t", "spaced out")]
+    [InlineData("  a\u001cb\u2003c\t", "a\u001cb c")]
     [InlineData("a < b", "a < b")]
     public void SpeechIsPlainText(string? text, string plain)
     {

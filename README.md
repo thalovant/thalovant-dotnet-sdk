@@ -127,9 +127,11 @@ while (true)
 `ThalovantDeviceCodeExpiredException` or `ThalovantDeviceAccessDeniedException`;
 all three are `ThalovantApiException` and carry the API's HTTP 400. A
 `slow_down` adds five seconds to the interval for good, however many calls your
-loop makes. A verification URL that is not http(s), has no host, or carries
-credentials is refused before you could open it, and neither the device code
-nor the token ever appears in an exception message.
+loop makes. An empty scope list is left out of the request, exactly as none is:
+the API asks for at least one and answers `[]` with a 422. A verification URL
+that is not http(s), has no host, or carries credentials is refused before you
+could open it, and neither the device code nor the token ever appears in an
+exception message.
 
 `RevokeApiTokenAsync()` revokes the token this client signed in with (a token
 may always revoke itself) and forgets it locally; pass a token id to revoke
@@ -660,13 +662,19 @@ sends it `thalovant.home.request`, and it answers every one with
    await api.WaitForAdmissionAsync(link);   // 180 s by default
    ```
 
-   A failed operation throws `ThalovantAdmissionFailedException` with its
-   `ErrorCode`. Running out of time throws `ThalovantAdmissionTimeoutException`,
+   An operation the platform failed throws `ThalovantAdmissionFailedException`
+   with its `ErrorCode`; a refusal of the wait itself throws the same exception
+   with the API's own error on `ApiError` (status, code, detail). A 401 or 403
+   is thrown as the API's authentication error, and an API out of reach as
+   `ThalovantApiUnreachableException`: neither says anything about the
+   connection. Running out of time throws `ThalovantAdmissionTimeoutException`,
    which is both a connection error and a timeout, because the connection may
-   still be admitted later. A 5xx while polling is ridden out, and so is a 429
-   (your plan's rate limit): the next poll waits the `retry_after_seconds` the
-   API names, and when that is longer than the time left the wait ends at once
-   as a timeout. An operation link to another origin is never followed.
+   still be admitted later. No read runs past the deadline. A 5xx while polling
+   is ridden out, and so is a 429 (your plan's rate limit): the next poll waits
+   `RetryAfter`, read from the body's `retry_after_seconds`, else the
+   `Retry-After` header, else `RateLimit-Reset`, and when that is longer than
+   the time left the wait ends at once as a timeout. An operation link to
+   another origin (scheme, host and port) is never followed.
 4. **Answer requests** on a link that stays up:
 
    ```csharp
@@ -680,16 +688,31 @@ sends it `thalovant.home.request`, and it answers every one with
    ```
 
 The answer is a reply: it carries the request's context, with `source` and
-`destination` swapped, so it goes back to the skill that asked. Speech is sent as
-plain text, with markup removed and entities decoded. `response_type` is
-`action_done`, `query_answer` or `error`, and an error names one of
-`HomeErrorCodes`. Every request gets exactly one answer inside the hub's ten
-seconds: a handler that throws is answered `failed_to_handle`, one still busy
-after nine seconds is answered `timeout` and its token is cancelled, and one that
-answers outside the contract is answered `unknown`. When the SDK answers for a
-handler, the speech is empty and the hub speaks its own sentence for the code,
-in the device's language. A `ThalovantClient` answers the same way through
-`client.AnswerHomeRequests(handler)`.
+`destination` swapped, so it goes back to the skill that asked. A request with a
+destination and no source is answered with no destination at all, rather than
+back to itself. `response_type` is `action_done`, `query_answer` or `error`, and
+an error names one of `HomeErrorCodes`.
+
+Speech is sent as plain text. Real tags, comments and processing instructions
+are removed, so "5 < 6 and 7 > 3" survives whole. Numeric character references,
+the five XML entities and `&nbsp;` are decoded, and nothing else (`&eacute;`
+stays as written). Every run of Unicode White_Space becomes one space.
+
+Every request gets at most one answer, and never after the hub's ten seconds,
+counted from its arrival:
+
+- A handler that throws is answered `failed_to_handle`.
+- One still busy after nine seconds, or after what is left of the ten, is
+  answered `timeout` at that moment and its token is cancelled. It runs on its
+  own, so ignoring the token cannot hold the answer back.
+- One that answers outside the contract is answered `unknown`.
+- A reply that could only go out after the bound is withdrawn, not sent late.
+
+When the SDK answers for a handler, the speech is empty and the hub speaks its
+own sentence for the code, in the device's language. A `ThalovantClient` answers
+the same way through `client.AnswerHomeRequests(handler)`, and
+`ThalovantHome.AnswerAsync(request, handler, reply)` applies the same bound
+around a transport of your own.
 
 ## Errors
 
@@ -714,11 +737,17 @@ in the device's language. A `ThalovantClient` answers the same way through
   `ThalovantDeviceAccessDeniedException` / `ThalovantDeviceCodeExpiredException`
   — a device sign-in not decided yet, denied, or expired. All three are
   `ThalovantApiException` since 0.9.0.
-- `ThalovantHubRefusedException`, `ThalovantAdmissionFailedException` (with
-  `ErrorCode`) and `ThalovantAdmissionTimeoutException` — all
-  `ThalovantConnectionException`: the hub turned the credentials away, the
-  platform could not admit a new connection, or it has not yet. The admission
-  timeout is also an `IThalovantTimeout`, like `ThalovantTimeoutException`.
+- `ThalovantApiUnreachableException` (a `ThalovantApiException`) — the control
+  API could not be reached at all, so there is no status; trying later can
+  succeed. A 429's wait, when the API named one, is on every
+  `ThalovantApiException` as `RetryAfter`.
+- `ThalovantHubRefusedException`, `ThalovantHubKeyChangedException`,
+  `ThalovantAdmissionFailedException` (with `ErrorCode`, or the API's refusal
+  on `ApiError`) and `ThalovantAdmissionTimeoutException` — all
+  `ThalovantConnectionException`. In order: the hub turned the credentials away;
+  its Noise key is not the one pinned for it; the platform could not admit a new
+  connection; or it has not admitted it yet. The admission timeout is also an
+  `IThalovantTimeout`, like `ThalovantTimeoutException`.
 - `ThalovantIdentityException` — malformed or insecure identity documents.
 - `ThalovantUnsupportedProtocolException` — the protocol is disabled, missing
   an endpoint, or not supported by this SDK.
@@ -931,14 +960,27 @@ var reply = await session.AskAsync("What is the weather?");
 ```
 
 A link the hub sends requests down has to stay up. `ConnectAsync` makes one
-attempt and `RunAsync` keeps the link until the session closes: it waits on the
-same ladder after a failed attempt, looks at a held link every probe interval
-and the moment it drops, and dials again. A link that closes within
-`SettleWindow` (0.75 seconds) of the handshake was refused, not opened: that is
-how a hub says it does not know the connection's key. Because a new connection
-is refused until its hub admits it, `RunAsync` retries refusals for
-`RefusalGraceSeconds` (600 by default, set through the five-argument
-`HubSessionPolicy` constructor) before it throws `ThalovantHubRefusedException`.
+attempt, and `RunAsync` keeps the link until the session closes:
+
+- It dials a dropped link again at once.
+- After a failed attempt it waits 10 seconds, doubling to 120.
+- It looks at a held link every probe interval, and the moment it drops.
+
+A close with code 1000, 1005 or 1008 is a refusal rather than a drop when it
+comes during the handshake, or within `SettleWindow` (0.75 seconds) after it.
+That is how a hub says it does not know the connection's key. So are a Noise
+answer that does not authenticate (a wrong password) and a 401 or 403 on the
+WebSocket upgrade.
+
+A pinned KK handshake that fails is followed at once by one XX attempt, inside
+the same connect. Only XX tells a changed password from a changed hub key, and
+it is not a downgrade: the pin is still checked. A hub whose key is not the
+pinned one throws `ThalovantHubKeyChangedException`, and `RunAsync` stops at
+once, since retrying cannot change it. Because a new connection is refused until
+its hub admits it, `RunAsync` retries refusals for `RefusalGraceSeconds` (600 by
+default, set through the five-argument `HubSessionPolicy` constructor) before it
+throws `ThalovantHubRefusedException`.
+
 `OnStateChange` reports each time the link comes up or goes down; the SDK itself
 logs nothing. `ReplyAsync` answers a message back along the route it came.
 

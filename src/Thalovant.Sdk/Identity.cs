@@ -114,6 +114,20 @@ namespace Thalovant
         public JsonObject Metadata { get; }
         public MqttBrokerCredentials? Mqtt { get; }
 
+        /// <summary>
+        /// The file this identity was read from, as a full path, when it was read
+        /// from one (<see cref="FromFile"/>). Not identity material: never
+        /// serialized.
+        /// </summary>
+        /// <remarks>
+        /// A client given no Noise store keeps this identity's Noise key in a
+        /// <c>noise</c> folder beside this file, so every program that reads the
+        /// same file presents the same key to the hub, which pins the first key a
+        /// connection shows it. Set it on an identity built another way to opt
+        /// into the same rule.
+        /// </remarks>
+        public string? SourcePath { get; init; }
+
         public ThalovantIdentity(JsonObject json)
         {
             AccessKey = Required(json, "access_key", "access_key", "accessKey", "api_key", "key");
@@ -133,7 +147,9 @@ namespace Thalovant
         }
 
         /// <summary>Parses an identity from a JSON document.</summary>
-        public static ThalovantIdentity FromJson(string json)
+        public static ThalovantIdentity FromJson(string json) => FromJson(json, sourcePath: null);
+
+        private static ThalovantIdentity FromJson(string json, string? sourcePath)
         {
             JsonObject parsed;
             try
@@ -144,14 +160,15 @@ namespace Thalovant
             {
                 throw new ThalovantIdentityException("Identity document is not a valid JSON object.");
             }
-            return new ThalovantIdentity(parsed);
+            return new ThalovantIdentity(parsed) { SourcePath = sourcePath };
         }
 
         /// <summary>
         /// Loads an identity from a JSON file. On POSIX platforms (net8.0 target) the
         /// file must not be group- or world-accessible; run <c>chmod 600 &lt;path&gt;</c>
         /// first. The check is skipped on Windows and on the netstandard2.1 (Unity)
-        /// build, which has no portable file-mode API.
+        /// build, which has no portable file-mode API. <see cref="SourcePath"/> is
+        /// the file's full path.
         /// </summary>
         public static ThalovantIdentity FromFile(string path)
         {
@@ -167,7 +184,7 @@ namespace Thalovant
             }
             try
             {
-                return FromJson(text);
+                return FromJson(text, Path.GetFullPath(path));
             }
             catch (ThalovantIdentityException) when (!IsValidJsonObject(text))
             {

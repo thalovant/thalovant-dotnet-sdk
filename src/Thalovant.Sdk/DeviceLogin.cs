@@ -14,6 +14,17 @@ namespace Thalovant
         public string? ClientName { get; set; }
 
         /// <summary>
+        /// The registered app to sign in as, such as
+        /// <see cref="ThalovantHome.HomeAssistantClientId"/>; left out of the
+        /// request when null. The approval page then shows the platform's own
+        /// name for the app as verified, with <see cref="ClientName"/> as the
+        /// device's label beside it, and approving the app again replaces the
+        /// token it already holds. An id the API does not know is refused (400
+        /// <c>unknown_client</c>).
+        /// </summary>
+        public string? ClientId { get; set; }
+
+        /// <summary>
         /// Whether to open the system browser at <c>verification_uri_complete</c>.
         /// Opening is best-effort and never fatal; the prompt always shows the
         /// verification URI and user code regardless.
@@ -72,6 +83,81 @@ namespace Thalovant
             ExpiresIn = expiresIn;
             Interval = interval;
             Raw = raw;
+        }
+    }
+
+    /// <summary>
+    /// A pending device sign-in as the person approving it sees it, from
+    /// <see cref="ThalovantControlPlane.DescribeDeviceLoginAsync"/>.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ClientVerified"/> is true only when a registered app asked
+    /// (it named its <see cref="ClientId"/>): <see cref="ClientName"/> is then
+    /// the platform's own name for that app, and <see cref="DeviceName"/>
+    /// whatever the device called itself, which nothing checks. Otherwise
+    /// <see cref="ClientName"/> is the device's own claim.
+    /// </remarks>
+    public sealed class DeviceLoginRequest
+    {
+        /// <summary>The scopes the token would carry.</summary>
+        public IReadOnlyList<string> Scopes { get; }
+
+        /// <summary>The app's name: the platform's when <see cref="ClientVerified"/>, otherwise the device's claim.</summary>
+        public string? ClientName { get; }
+
+        /// <summary>When the code stops being approvable, as the API wrote it (ISO 8601), when it said.</summary>
+        public string? ExpiresAt { get; }
+
+        /// <summary>The registered app that asked, when one did.</summary>
+        public string? ClientId { get; }
+
+        /// <summary>Whether the platform vouches for <see cref="ClientName"/>: true only with a <see cref="ClientId"/>.</summary>
+        public bool ClientVerified { get; }
+
+        /// <summary>What the device called itself, when a registered app asked.</summary>
+        public string? DeviceName { get; }
+
+        /// <summary>The raw payload as returned by the API.</summary>
+        public JsonObject Raw { get; }
+
+        public DeviceLoginRequest(
+            IReadOnlyList<string> scopes,
+            string? clientName,
+            string? expiresAt,
+            string? clientId,
+            bool clientVerified,
+            string? deviceName,
+            JsonObject raw)
+        {
+            Scopes = scopes;
+            ClientName = clientName;
+            ExpiresAt = expiresAt;
+            ClientId = clientId;
+            ClientVerified = clientVerified;
+            DeviceName = deviceName;
+            Raw = raw;
+        }
+
+        /// <summary>Reads <c>GET /v1/auth/device/codes/{user_code}</c>; absent or empty fields are null.</summary>
+        internal static DeviceLoginRequest FromPayload(JsonObject payload)
+        {
+            var scopes = new List<string>();
+            if (payload["scopes"] is JsonArray raw)
+            {
+                foreach (var entry in raw)
+                {
+                    if (JsonUtil.GetString(entry) is string scope)
+                    {
+                        scopes.Add(scope);
+                    }
+                }
+            }
+            string? Text(string key) => JsonUtil.GetString(payload[key]) is string value && value.Length > 0 ? value : null;
+            var clientId = Text("client_id");
+            // Verified only as the API says it, and only with the app named: a
+            // true without an id says nothing about who asked.
+            var verified = payload["client_verified"] is JsonValue flag && flag.TryGetValue<bool>(out var value) && value && clientId != null;
+            return new DeviceLoginRequest(scopes, Text("client_name"), Text("expires_at"), clientId, verified, Text("device_name"), payload);
         }
     }
 

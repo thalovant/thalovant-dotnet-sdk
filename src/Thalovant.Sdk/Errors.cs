@@ -493,11 +493,44 @@ namespace Thalovant
     /// why <see cref="HubSession.RunAsync"/> retries refusals for a grace period
     /// before it throws this.
     /// </remarks>
-    public sealed class ThalovantHubRefusedException : ThalovantConnectionException
+    public class ThalovantHubRefusedException : ThalovantConnectionException
     {
         public ThalovantHubRefusedException(string message) : base(message)
         {
         }
+    }
+
+    /// <summary>
+    /// The hub refused this client's own Noise key: it pinned a different one
+    /// for this connection. A refusal, so code that catches
+    /// <see cref="ThalovantHubRefusedException"/> still catches it.
+    /// </summary>
+    /// <remarks>
+    /// A hub pins the first static key a connection presents and refuses any
+    /// other for good, closing the link the moment the handshake that showed it
+    /// ends. Two programs that read the same identity but keep their keys in
+    /// different folders each present their own key, and whichever came second
+    /// is locked out. No handshake can recover from this (XX shows the same key
+    /// again), so <see cref="HubSession.RunAsync"/> stops on it at once. The fix
+    /// is to pair again (a new connection pins afresh), or to share the key
+    /// folder: give every program that reads this identity the same
+    /// <see cref="HiveMindFileNoiseStore"/> directory, the one holding the key
+    /// the hub trusts.
+    /// </remarks>
+    public sealed class ThalovantClientKeyRejectedException : ThalovantHubRefusedException
+    {
+        public ThalovantClientKeyRejectedException(string message, string? keyFolder = null, string? otherKeyFolder = null)
+            : base(message)
+        {
+            KeyFolder = keyFolder;
+            OtherKeyFolder = otherKeyFolder;
+        }
+
+        /// <summary>The folder this client's Noise key is in; null when its store is not a folder.</summary>
+        public string? KeyFolder { get; }
+
+        /// <summary>Where another program reading the same identity is likely to keep its key, when there is such a place.</summary>
+        public string? OtherKeyFolder { get; }
     }
 
     /// <summary>

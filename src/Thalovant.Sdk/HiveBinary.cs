@@ -158,7 +158,8 @@ namespace Thalovant
             var compressed = reader.ReadBit() == 1;
             var metadataBytes = reader.ReadBytes(reader.ReadUInt(8));
             var msgType = TypeCodes.TryGetValue(typeCode, out var named) ? named : "3rdparty";
-            // Metadata is optional, so an unreadable block reads as absent.
+            // Metadata is optional, so an empty block reads as absent; one that
+            // is compressed and will not inflate refuses the frame, as a payload does.
             var metadata = DecodeWireObject(metadataBytes, compressed, required: false);
             if (msgType == "bin") {
                 var kind = reader.ReadUInt(4);
@@ -175,75 +176,118 @@ namespace Thalovant
         }
 
         /// <summary>
-        /// Inflates a zlib stream when the frame says so. The encoder chooses
-        /// per frame whichever of the two is shorter, so a hub really does send
-        /// both, and a frame whose metadata cannot be read arrives with no
-        /// language and no filename beside its audio. The clip itself is never
-        /// compressed, whatever the flag says.
+        /// The most a compressed payload may inflate to: 32 MiB, what a
+        /// reassembled Noise message may hold (<c>NoiseSession.MaximumMessage</c>)
+        /// and what the reference allows. Beyond it the frame is refused.
         /// </summary>
+        internal const int MaxInflated = 32 * 1024 * 1024;
+
+        /// <summary>
+        /// The most a compressed metadata block may inflate to. It is at most 255
+        /// bytes on the wire, which no zlib stream inflates past this, so reaching
+        /// it means the block is not metadata.
+        /// </summary>
+        internal const int MaxInflatedMetadata = 1 << 20;
+
         /// <summary>
         /// Copy at most <paramref name="limit"/> bytes, then give up. A
-        /// compressed metadata block that inflates beyond any plausible size is
-        /// a bomb, not a frame.
+        /// compressed block that inflates beyond its limit is a bomb, not a
+        /// frame, and an unbounded copy would follow it until the process ran
+        /// out of memory.
         /// </summary>
         private static void CopyBounded(Stream source, Stream destination, int limit)
         {
             var chunk = new byte[8192];
             var total = 0;
             int read;
-            while ((read = source.Read(chunk, 0, chunk.Length)) > 0) {
+            while ((read = source.Read(chunk, 0, chunk.Length)) > 0)
+            {
                 total += read;
-                if (total > limit) throw new InvalidDataException("HiveMind metadata inflated past its limit.");
+                if (total > limit) throw new InvalidDataException("the compressed block inflates past its size limit");
                 destination.Write(chunk, 0, read);
             }
         }
 
+        /// <summary>
+        /// Inflates one zlib stream (RFC 1950) to at most <paramref name="limit"/>
+        /// bytes, and refuses one that is truncated or corrupt.
+        /// </summary>
+        /// <remarks>
+        /// .NET's inflaters return what they have when the input runs out, and
+        /// read a stream with its checksum cut off as whole, so the header and
+        /// the Adler-32 trailer are checked here: a stream that ends early does
+        /// not end in the checksum of what it inflated to.
+        /// </remarks>
+        internal static byte[] Inflate(byte[] bytes, int limit)
+        {
+            // The shortest zlib stream -- a header, an empty final block, a
+            // checksum -- is 8 bytes.
+            if (bytes.Length < 8) throw new InvalidDataException("the compressed block is too short to be a zlib stream");
+            if ((bytes[0] & 0x0F) != 8 || (bytes[0] >> 4) > 7 || ((bytes[0] << 8) | bytes[1]) % 31 != 0 || (bytes[1] & 0x20) != 0)
+                throw new InvalidDataException("the compressed block has no zlib header");
+            using var buffer = new MemoryStream();
+            // The header is checked above, so what follows it is raw DEFLATE and
+            // the four bytes after that its checksum; netstandard2.1 has no
+            // ZLibStream, and one inflater on every target keeps them alike.
+            using (var source = new MemoryStream(bytes, 2, bytes.Length - 6))
+            using (var inflate = new DeflateStream(source, CompressionMode.Decompress))
+            {
+                CopyBounded(inflate, buffer, limit);
+            }
+            var data = buffer.ToArray();
+            var expected = ((uint)bytes[bytes.Length - 4] << 24) | ((uint)bytes[bytes.Length - 3] << 16)
+                | ((uint)bytes[bytes.Length - 2] << 8) | bytes[bytes.Length - 1];
+            if (Adler32(data) != expected) throw new InvalidDataException("the compressed block is truncated or corrupt");
+            return data;
+        }
+
+        private static uint Adler32(byte[] data)
+        {
+            const uint modulus = 65521;
+            uint a = 1, b = 0;
+            var index = 0;
+            while (index < data.Length)
+            {
+                // 5552 bytes is the most that can be summed before b overflows.
+                var end = Math.Min(index + 5552, data.Length);
+                for (; index < end; index++)
+                {
+                    a += data[index];
+                    b += a;
+                }
+                a %= modulus;
+                b %= modulus;
+            }
+            return (b << 16) | a;
+        }
+
+        /// <summary>
+        /// A frame's metadata or payload, inflated first when the frame says so.
+        /// The encoder chooses per frame whichever of the two is shorter, so a hub
+        /// really does send both. A compressed part that does not inflate -- past
+        /// its limit, truncated or corrupt -- refuses the frame, metadata and
+        /// payload alike, as the reference does; before 0.9.1 such metadata read
+        /// as absent. The clip of a BINARY frame is never compressed, whatever
+        /// the flag says.
+        /// </summary>
         private static JsonObject DecodeWireObject(byte[] bytes, bool compressed, bool required)
         {
-            if (bytes.Length == 0) {
+            if (bytes.Length == 0)
+            {
                 if (required) throw new ThalovantConnectionException("HiveMind binary frame carries no payload.");
                 return new JsonObject();
             }
             var raw = bytes;
-            if (compressed) {
-                try {
-                    using var buffer = new MemoryStream();
-                    // A frame is capped at 255 bytes of metadata on the wire,
-                    // so anything that inflates past this is not metadata --
-                    // it is a decompression bomb, and CopyTo would follow it
-                    // until the process ran out of memory.
-                    const int metadataInflationLimit = 1 << 20;
-#if NET6_0_OR_GREATER
-                    using (var source = new MemoryStream(bytes))
-                    using (var inflate = new ZLibStream(source, CompressionMode.Decompress)) {
-                        CopyBounded(inflate, buffer, metadataInflationLimit);
-                    }
-#else
-                    // netstandard2.1 has no ZLibStream. A zlib stream is a
-                    // two-byte header, raw DEFLATE, then an adler32 checksum, so
-                    // skipping the header leaves exactly what DeflateStream reads.
-                    // Shorter than the zlib header: there is no stream here.
-                    // Returning {} before the `required` check let a non-bin
-                    // frame -- a bus frame included -- reach the transport as an
-                    // empty object, where FromBusPayload dropped it for having
-                    // no type. The event vanished and a matching AskAsync timed
-                    // out with nothing to say why.
-                    if (bytes.Length < 2) {
-                        if (required) {
-                            throw new ThalovantConnectionException(
-                                "HiveMind binary payload is compressed but too short to be a zlib stream.");
-                        }
-                        return new JsonObject();
-                    }
-                    using (var source = new MemoryStream(bytes, 2, bytes.Length - 2))
-                    using (var inflate = new DeflateStream(source, CompressionMode.Decompress)) {
-                        CopyBounded(inflate, buffer, metadataInflationLimit);
-                    }
-#endif
-                    raw = buffer.ToArray();
-                } catch (InvalidDataException error) {
-                    if (required) throw new ThalovantConnectionException($"HiveMind binary payload could not be decompressed: {error.Message}");
-                    return new JsonObject();
+            if (compressed)
+            {
+                try
+                {
+                    raw = Inflate(bytes, required ? MaxInflated : MaxInflatedMetadata);
+                }
+                catch (InvalidDataException error)
+                {
+                    throw new ThalovantConnectionException(
+                        $"HiveMind binary {(required ? "payload" : "metadata")} could not be decompressed: {error.Message}.");
                 }
             }
             try {

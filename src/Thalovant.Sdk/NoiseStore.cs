@@ -25,12 +25,41 @@ namespace Thalovant
     /// existing app-private directory or implement <see cref="IHiveMindNoiseStore"/>
     /// using their platform's secure storage. Pins are never removed automatically.
     /// </summary>
+    /// <remarks>
+    /// A client given no store uses one of these. On .NET 8, for an identity read
+    /// from a file (<see cref="ThalovantIdentity.SourcePath"/>), its folder is
+    /// <c>noise</c> beside that file, so every program that reads the same file
+    /// presents the same key to the hub; the first time that folder is used, the
+    /// key and hub pins this identity had in the shared default folder are copied
+    /// into it (never moved), when they have met this identity's hub. Any other
+    /// identity, or one whose folder cannot be made, uses the shared default,
+    /// <c>LocalApplicationData/Thalovant/noise</c>, as before 0.9.1.
+    /// </remarks>
     public sealed class HiveMindFileNoiseStore : IHiveMindNoiseStore
     {
         private static readonly object StateLock = new object();
-        public string DirectoryPath { get; }
+
+        /// <summary>The folder this store keeps its key and pins in.</summary>
+        public string DirectoryPath
+        {
+            get
+            {
+                lock (StateLock) return _directory;
+            }
+        }
+
+        private string _directory;
         private readonly bool _explicitDirectory;
         private readonly Action<FileStream, byte[]> _writeAndFlush;
+
+#if NET8_0_OR_GREATER
+        /// <summary>For a store beside an identity file: the shared default, used when that folder cannot be made.</summary>
+        private string? _fallback;
+#endif
+
+        /// <summary>For a store beside an identity file: the shared default, whose key it takes on first use.</summary>
+        private string? _adoptFrom;
+
         public HiveMindFileNoiseStore(string? directory = null) : this(directory, WriteAndFlush) { }
 
         // Instance-local I/O seam for interrupted-write tests; production always
@@ -39,29 +68,96 @@ namespace Thalovant
         {
             _writeAndFlush = writeAndFlush;
             _explicitDirectory = directory != null;
-            DirectoryPath = Path.GetFullPath(directory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Thalovant", "noise"));
+            _directory = Path.GetFullPath(directory ?? DefaultDirectory);
         }
+
+        /// <summary>The shared default folder: <c>LocalApplicationData/Thalovant/noise</c>.</summary>
+        internal static string DefaultDirectory =>
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Thalovant", "noise");
+
+        /// <summary>The name of the folder beside an identity file that holds its Noise state.</summary>
+        internal const string BesideIdentityName = "noise";
+
+        /// <summary>The <c>noise</c> folder beside the file <paramref name="identity"/> was read from, or null.</summary>
+        internal static string? BesideIdentity(ThalovantIdentity? identity)
+        {
+            if (identity?.SourcePath is not string source || source.Length == 0) return null;
+            var parent = Path.GetDirectoryName(Path.GetFullPath(source));
+            return string.IsNullOrEmpty(parent) ? null : Path.Combine(parent, BesideIdentityName);
+        }
+
+        /// <summary>
+        /// The store a client given none uses for <paramref name="identity"/>:
+        /// beside its identity file on .NET 8, otherwise the shared default.
+        /// </summary>
+        internal static HiveMindFileNoiseStore ForIdentity(
+            ThalovantIdentity identity, string? legacyDirectory = null, Action<FileStream, byte[]>? writeAndFlush = null)
+        {
+#if NET8_0_OR_GREATER
+            if (BesideIdentity(identity) is string beside)
+            {
+                var legacy = Path.GetFullPath(legacyDirectory ?? DefaultDirectory);
+                var store = new HiveMindFileNoiseStore(beside, writeAndFlush ?? WriteAndFlush);
+                if (!SamePath(store._directory, legacy))
+                {
+                    store._fallback = legacy;
+                    store._adoptFrom = legacy;
+                }
+                return store;
+            }
+#endif
+            return legacyDirectory is null ? new HiveMindFileNoiseStore() : new HiveMindFileNoiseStore(legacyDirectory);
+        }
+
+        internal static bool SamePath(string left, string right)
+        {
+            static string Normal(string path) => Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var comparison = Path.DirectorySeparatorChar == '\\' ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            return string.Equals(Normal(left), Normal(right), comparison);
+        }
+
         private void Prepare()
         {
 #if NET8_0_OR_GREATER
-            if (!Directory.Exists(DirectoryPath)) {
-                if (OperatingSystem.IsWindows()) Directory.CreateDirectory(DirectoryPath);
-                else Directory.CreateDirectory(DirectoryPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            if (!Directory.Exists(_directory))
+            {
+                try
+                {
+                    CreatePrivateDirectory(_directory);
+                }
+                catch (Exception error) when (_fallback != null && (error is IOException || error is UnauthorizedAccessException))
+                {
+                    // An identity in a folder this user cannot write to (/etc,
+                    // say) keeps its key in the shared default, as before.
+                    _directory = _fallback;
+                    _fallback = null;
+                    _adoptFrom = null;
+                    if (!Directory.Exists(_directory)) CreatePrivateDirectory(_directory);
+                }
             }
+            _fallback = null;
 #else
-            if (!_explicitDirectory || !Directory.Exists(DirectoryPath)) throw new ThalovantConnectionException(
+            if (!_explicitDirectory || !Directory.Exists(_directory)) throw new ThalovantConnectionException(
                 "On netstandard2.1 supply an existing app-private Noise directory or a secure IHiveMindNoiseStore.");
 #endif
-            if ((File.GetAttributes(DirectoryPath) & FileAttributes.ReparsePoint) != 0) throw new ThalovantConnectionException("Noise state directory cannot be a symbolic link.");
+            if ((File.GetAttributes(_directory) & FileAttributes.ReparsePoint) != 0) throw new ThalovantConnectionException("Noise state directory cannot be a symbolic link.");
 #if NET8_0_OR_GREATER
-            if (!OperatingSystem.IsWindows() && (File.GetUnixFileMode(DirectoryPath) & (UnixFileMode)63) != 0)
+            if (!OperatingSystem.IsWindows() && (File.GetUnixFileMode(_directory) & (UnixFileMode)63) != 0)
                 throw new ThalovantConnectionException("Noise state directory must have private permissions (chmod 700).");
 #endif
         }
+#if NET8_0_OR_GREATER
+        private static void CreatePrivateDirectory(string path)
+        {
+            if (OperatingSystem.IsWindows()) Directory.CreateDirectory(path);
+            else Directory.CreateDirectory(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+#endif
+
         private FileStream AcquireFileLock()
         {
             Prepare();
-            var path = Path.Combine(DirectoryPath, ".noise.lock");
+            var path = Path.Combine(_directory, ".noise.lock");
             var elapsed = Stopwatch.StartNew();
             while (true) {
                 if (File.Exists(path) && (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
@@ -80,7 +176,9 @@ namespace Thalovant
                 } catch (IOException) when (elapsed.Elapsed < TimeSpan.FromSeconds(5)) { Thread.Sleep(10); }
             }
         }
-        private string PinFile(string nodeId) => Path.Combine(DirectoryPath, "noise-pin-" + Noise.Hex(Noise.Hash(Encoding.UTF8.GetBytes(nodeId))) + ".key");
+        private const string StaticKeyName = "noise-static.key";
+        private static string PinName(string nodeId) => "noise-pin-" + Noise.Hex(Noise.Hash(Encoding.UTF8.GetBytes(nodeId))) + ".key";
+        private string PinFile(string nodeId) => Path.Combine(_directory, PinName(nodeId));
         private static byte[] ReadKey(string file)
         {
             if ((File.GetAttributes(file) & (FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0)
@@ -99,7 +197,7 @@ namespace Thalovant
         }
         private void WriteNew(string file, byte[] key)
         {
-            var temporary = Path.Combine(DirectoryPath, ".noise-" + Guid.NewGuid().ToString("N") + ".tmp");
+            var temporary = Path.Combine(_directory, ".noise-" + Guid.NewGuid().ToString("N") + ".tmp");
             try {
                 using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None)) {
 #if NET8_0_OR_GREATER
@@ -124,14 +222,83 @@ namespace Thalovant
         public byte[] LoadOrCreateStaticKey()
         {
             lock (StateLock) {
-                using var fileLock = AcquireFileLock(); var path = Path.Combine(DirectoryPath, "noise-static.key");
+                using var fileLock = AcquireFileLock(); var path = Path.Combine(_directory, StaticKeyName);
                 if (!File.Exists(path)) WriteNew(path, Noise.RandomKey());
                 return ReadKey(path);
             }
         }
         public byte[]? LoadPin(string nodeId)
         {
-            lock (StateLock) { using var fileLock = AcquireFileLock(); var path = PinFile(nodeId); return File.Exists(path) ? ReadKey(path) : null; }
+            lock (StateLock)
+            {
+                using var fileLock = AcquireFileLock();
+                AdoptLegacyKey(nodeId);
+                var path = PinFile(nodeId);
+                return File.Exists(path) ? ReadKey(path) : null;
+            }
+        }
+
+        /// <summary>
+        /// Copies this identity's key from the shared default folder, once: when
+        /// this folder holds no key yet and the old one holds a key that has met
+        /// the hub <paramref name="nodeId"/> names (a pin for it). The hub pins the
+        /// first key a connection presents, so a device that silently got a new
+        /// key in a new folder would be locked out. The key and the hub pins are
+        /// copied, never moved: another program may still read the old folder.
+        /// Call only while holding <see cref="StateLock"/> and this folder's lock.
+        /// </summary>
+        private void AdoptLegacyKey(string nodeId)
+        {
+            var legacy = _adoptFrom;
+            if (legacy is null) return;
+            if (File.Exists(Path.Combine(_directory, StaticKeyName)))
+            {
+                _adoptFrom = null;
+                return;
+            }
+            byte[] key;
+            var pins = new System.Collections.Generic.List<(string Name, byte[] Key)>();
+            try
+            {
+                if (!Directory.Exists(legacy) || (File.GetAttributes(legacy) & FileAttributes.ReparsePoint) != 0) return;
+                var legacyKey = Path.Combine(legacy, StaticKeyName);
+                var legacyPin = Path.Combine(legacy, PinName(nodeId));
+                // The old key never met this hub: it is not the key the hub pinned
+                // for this identity, so there is nothing to keep.
+                if (!File.Exists(legacyKey) || !File.Exists(legacyPin)) return;
+                key = ReadKey(legacyKey);
+                // This hub's pin must come across: the old key without it would
+                // let the next XX handshake pin whatever answers. When it cannot
+                // be read, nothing is copied and this folder starts afresh.
+                var ownName = PinName(nodeId);
+                pins.Add((ownName, ReadKey(legacyPin)));
+                string[] others;
+                // Best effort, the listing too: this hub's pin is already in hand.
+                try { others = Directory.GetFiles(legacy, "noise-pin-*.key"); }
+                catch (Exception error) when (error is IOException || error is UnauthorizedAccessException) { others = Array.Empty<string>(); }
+                foreach (var pin in others)
+                {
+                    if (string.Equals(Path.GetFileName(pin), ownName, StringComparison.Ordinal)) continue;
+                    // Another hub's pin that cannot be read is not carried over,
+                    // and does not cost this hub the key it already trusts.
+                    try { pins.Add((Path.GetFileName(pin), ReadKey(pin))); }
+                    catch (Exception error) when (error is ThalovantConnectionException || error is IOException || error is UnauthorizedAccessException) { }
+                }
+            }
+            catch (Exception error) when (error is IOException || error is UnauthorizedAccessException || error is ThalovantConnectionException)
+            {
+                // The old folder could not be read: start afresh here, as a new
+                // identity would.
+                return;
+            }
+            // The pins first and the key last. A write here that fails is not
+            // caught: it fails this connection and leaves no key, and the copy is
+            // kept pending, so the next use copies again. Going on would make a
+            // key of this store's own beside the hub's pin, which the hub
+            // refuses, and a folder with a key is one adoption never looks at again.
+            foreach (var (name, value) in pins) WriteNew(Path.Combine(_directory, name), value);
+            WriteNew(Path.Combine(_directory, StaticKeyName), key);
+            _adoptFrom = null;
         }
         public void VerifyOrPin(string nodeId, byte[] publicKey)
         {

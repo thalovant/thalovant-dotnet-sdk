@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
 using System.Linq;
 using System.Text.Json.Nodes;
 
@@ -291,28 +290,20 @@ namespace Thalovant
             return Guid.NewGuid().ToString("N");
         }
 
-        /// <summary>Removes SSML/XML tags, mirroring the sibling SDKs.</summary>
-        public static string StripSsml(string text)
-        {
-            var result = new StringBuilder(text.Length);
-            var insideTag = false;
-            foreach (var character in text)
-            {
-                if (character == '<')
-                {
-                    insideTag = true;
-                }
-                else if (character == '>')
-                {
-                    insideTag = false;
-                }
-                else if (!insideTag)
-                {
-                    result.Append(character);
-                }
-            }
-            return result.ToString();
-        }
+        /// <summary>
+        /// Removes SSML/XML markup from display text, as the sibling SDKs do: a tag
+        /// -- <c>&lt;</c> or <c>&lt;/</c> immediately followed by an ASCII letter,
+        /// then everything up to the next <c>&gt;</c> that is not inside a quoted
+        /// attribute value -- a comment (<c>&lt;!--</c> to <c>--&gt;</c>) or a
+        /// processing instruction (<c>&lt;?</c> to <c>?&gt;</c>).
+        /// </summary>
+        /// <remarks>
+        /// Any other <c>&lt;</c> is text, so "5 &lt; 6 and 7 &gt; 3" survives whole,
+        /// and so does an unclosed tag; entities are left as they are. Linear in
+        /// the length of the text, whatever it holds. Before 0.9.1 everything
+        /// between any <c>&lt;</c> and the next <c>&gt;</c> was dropped.
+        /// </remarks>
+        public static string StripSsml(string text) => ThalovantHome.StripMarkup(text);
 
         /// <summary>
         /// Whether two language tags name the same language: compared

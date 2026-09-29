@@ -372,7 +372,7 @@ namespace Thalovant
             CancellationToken cancellationToken = default)
         {
             options ??= new DeviceLoginOptions();
-            var authorization = await AuthorizeDeviceAsync(options.Scopes, options.ClientName, cancellationToken)
+            var authorization = await AuthorizeDeviceAsync(options.Scopes, options.ClientName, options.ClientId, cancellationToken)
                 .ConfigureAwait(false);
 
             if (options.Prompt is not null)
@@ -435,14 +435,60 @@ namespace Thalovant
         /// with <see cref="ThalovantApiException"/>: it is about to be opened in a
         /// browser.
         /// </remarks>
-        public async Task<DeviceAuthorization> BeginDeviceLoginAsync(
+        public Task<DeviceAuthorization> BeginDeviceLoginAsync(
             IEnumerable<string>? scopes = null,
             string? clientName = null,
             CancellationToken cancellationToken = default)
         {
-            var authorization = await AuthorizeDeviceAsync(scopes, clientName, cancellationToken).ConfigureAwait(false);
+            return BeginDeviceLoginAsync(scopes, clientName, clientId: null, cancellationToken);
+        }
+
+        /// <summary>
+        /// Starts a device sign-in as a registered app: the same as
+        /// <see cref="BeginDeviceLoginAsync(IEnumerable{string}?, string?, CancellationToken)"/>,
+        /// with the app's <c>client_id</c>.
+        /// </summary>
+        /// <remarks>
+        /// <paramref name="clientId"/>, such as
+        /// <see cref="ThalovantHome.HomeAssistantClientId"/>, makes the approval
+        /// page show the platform's own name for the app as verified, with
+        /// <paramref name="clientName"/> as the device's label beside it; approving
+        /// the app again replaces the token it already holds instead of counting a
+        /// second against the plan. Such an app may ask only for its own scopes,
+        /// and an id the API does not know is refused with a 400
+        /// <c>unknown_client</c> (<see cref="ThalovantApiException"/>). Null leaves
+        /// the field out; any other value, an empty one included, is sent as given.
+        /// </remarks>
+        public async Task<DeviceAuthorization> BeginDeviceLoginAsync(
+            IEnumerable<string>? scopes,
+            string? clientName,
+            string? clientId,
+            CancellationToken cancellationToken = default)
+        {
+            var authorization = await AuthorizeDeviceAsync(scopes, clientName, clientId, cancellationToken).ConfigureAwait(false);
             RememberDeviceInterval(authorization.DeviceCode, authorization.Interval, replace: true);
             return authorization;
+        }
+
+        /// <summary>
+        /// Reads a pending device sign-in by its user code, as the person
+        /// approving it sees it: <c>GET /v1/auth/device/codes/{user_code}</c>,
+        /// signed in as that person.
+        /// </summary>
+        /// <remarks>
+        /// Says which app asked and whether the platform vouches for its name
+        /// (<see cref="DeviceLoginRequest.ClientVerified"/>). A code that is
+        /// unknown, expired or already answered is a 404
+        /// (<see cref="ThalovantApiException"/>).
+        /// </remarks>
+        public async Task<DeviceLoginRequest> DescribeDeviceLoginAsync(
+            string userCode,
+            CancellationToken cancellationToken = default)
+        {
+            if (userCode is null) throw new ArgumentNullException(nameof(userCode));
+            var detail = await RequestObjectAsync("GET", "/v1/auth/device/codes/" + Uri.EscapeDataString(userCode), cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+            return DeviceLoginRequest.FromPayload(detail);
         }
 
         /// <summary>
@@ -583,6 +629,7 @@ namespace Thalovant
         private async Task<DeviceAuthorization> AuthorizeDeviceAsync(
             IEnumerable<string>? scopes,
             string? clientName,
+            string? clientId,
             CancellationToken cancellationToken)
         {
             var payload = new JsonObject();
@@ -601,6 +648,12 @@ namespace Thalovant
             if (!string.IsNullOrEmpty(clientName))
             {
                 payload["client_name"] = clientName;
+            }
+            if (clientId != null)
+            {
+                // Sent as given, an empty string included: the API refuses one
+                // (422), which is better than signing in unverified in silence.
+                payload["client_id"] = clientId;
             }
             var grant = await RequestObjectAsync("POST", "/v1/auth/device/authorize", payload, auth: false, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);

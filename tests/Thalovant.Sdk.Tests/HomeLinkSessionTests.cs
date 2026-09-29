@@ -68,7 +68,9 @@ public sealed class HomeLinkSessionTests
             : new HubPeer());
         await using var _ = session;
         session.SettleWindow = TimeSpan.FromSeconds(2);
-        await Assert.ThrowsAsync<ThalovantHubRefusedException>(() => session.ConnectAsync());
+        // As an XX handshake ended, with nothing from the hub: the refusal is of
+        // this client's own key, which is still a refusal.
+        await Assert.ThrowsAsync<ThalovantClientKeyRejectedException>(() => session.ConnectAsync());
         Assert.False(session.Held);
         Assert.False(session.Connected);
         // Refused is a failed attempt: the ladder moved.
@@ -248,6 +250,18 @@ public sealed class HomeLinkSessionTests
     public void ATagRunsFromALetterToTheNextUnquotedGreaterThan(string text, string plain)
     {
         Assert.Equal(plain, ThalovantHome.PlainSpeech(text));
+    }
+
+    [Theory]
+    [InlineData("5 < 6 and 7 > 3", "5 < 6 and 7 > 3")]
+    [InlineData("<speak>Hello <break time=\"1s\"/>there</speak>", "Hello there")]
+    [InlineData("a<!-- note -->b<?pi x?>c", "abc")]
+    [InlineData("<a title='5 > 3'>x</a>", "x")]
+    [InlineData("  keeps  its  spaces  ", "  keeps  its  spaces  ")]
+    public void DisplayTextUsesTheSameTagRule(string text, string display)
+    {
+        // Only the tags go: unlike PlainSpeech, the white space is left alone.
+        Assert.Equal(display, ThalovantContext.StripSsml(text));
     }
 
     [Fact]

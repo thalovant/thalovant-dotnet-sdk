@@ -158,14 +158,14 @@
     "identity": {
       "implementation": {
         "src/Thalovant.Sdk/Identity.cs": "c433f7eb0d918a09aeb3012ffb4cdadcc958a998260cd38878cb740fe42b50c1",
-        "src/Thalovant.Sdk/NoiseStore.cs": "020178a62af346b7aa4d82aff669d56befed7be1c59f6dd45d0debef25a151db",
+        "src/Thalovant.Sdk/NoiseStore.cs": "3f6e8dc9f58673c3e194d0bf543b2ff5f2ab6d6ca83fbdbf3f56460472c6e9a9",
         "src/Thalovant.Sdk/Protocols.cs": "2c951c8d24b2600433c069dcb5248c4b6a1cf1089a982e7f2f20720522c6265d",
         "src/Thalovant.Sdk/Transport.cs": "d56c7265ae249ac4d2e22fd94111b77492064bc300693f089fa4ec9657d6f277"
       },
       "reason": "ThalovantIdentity (Identity.cs) parses and validates identity documents, and FromFile records the file on SourcePath. On .NET 8, a transport given no Noise store uses HiveMindFileNoiseStore.ForIdentity (NoiseStore.cs, Transport.cs): the identity's key lives in a noise folder beside its file, so every program reading one identity presents one key. The first time that folder is used it copies the key and hub pins from the old shared default (LocalApplicationData/Thalovant/noise) when that key has a pin for the hub being dialled, never moving them. An identity from anywhere else keeps the shared default, and so does one whose noise folder does not exist (or cannot be seen) and cannot be created; a noise folder that exists is kept even when it cannot be written, as in the reference. netstandard2.1 is unchanged. KeyFolderTests covers the folder, the copy, the refusal to copy a key that never met the hub or whose pin for it cannot be read, another hub's unreadable pin and an unlistable old folder not stopping the copy, a folder that already has a key, and the fallback.",
       "status": "required",
       "tests": {
-        "tests/Thalovant.Sdk.Tests/KeyFolderTests.cs": "a145a27d9f9cec7263358c11e10fc5b2870f4d6f41026df5cb32ab8acebc5e46",
+        "tests/Thalovant.Sdk.Tests/KeyFolderTests.cs": "487a95f0df40c2f98bd29db592b6a55d00ba96664983b06e19438c3179eac2dd",
         "tests/Thalovant.Sdk.Tests/ModelRoundTripTests.cs": "e95c35c9b6957626925426889a521060185eef9059bc4e5e53f4828b187408c4",
         "tests/Thalovant.Sdk.Tests/ProtocolSelectionTests.cs": "0aa0aa5cddb07743f9363ea71f88c6ea1c76affb305665ce2d93cfafb7654bd3"
       }

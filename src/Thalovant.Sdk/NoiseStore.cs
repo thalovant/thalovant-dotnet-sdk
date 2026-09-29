@@ -90,13 +90,14 @@ namespace Thalovant
         /// The store a client given none uses for <paramref name="identity"/>:
         /// beside its identity file on .NET 8, otherwise the shared default.
         /// </summary>
-        internal static HiveMindFileNoiseStore ForIdentity(ThalovantIdentity identity, string? legacyDirectory = null)
+        internal static HiveMindFileNoiseStore ForIdentity(
+            ThalovantIdentity identity, string? legacyDirectory = null, Action<FileStream, byte[]>? writeAndFlush = null)
         {
 #if NET8_0_OR_GREATER
             if (BesideIdentity(identity) is string beside)
             {
                 var legacy = Path.GetFullPath(legacyDirectory ?? DefaultDirectory);
-                var store = new HiveMindFileNoiseStore(beside, WriteAndFlush);
+                var store = new HiveMindFileNoiseStore(beside, writeAndFlush ?? WriteAndFlush);
                 if (!SamePath(store._directory, legacy))
                 {
                     store._fallback = legacy;
@@ -255,6 +256,8 @@ namespace Thalovant
                 _adoptFrom = null;
                 return;
             }
+            byte[] key;
+            var pins = new System.Collections.Generic.List<(string Name, byte[] Key)>();
             try
             {
                 if (!Directory.Exists(legacy) || (File.GetAttributes(legacy) & FileAttributes.ReparsePoint) != 0) return;
@@ -263,13 +266,12 @@ namespace Thalovant
                 // The old key never met this hub: it is not the key the hub pinned
                 // for this identity, so there is nothing to keep.
                 if (!File.Exists(legacyKey) || !File.Exists(legacyPin)) return;
-                var key = ReadKey(legacyKey);
+                key = ReadKey(legacyKey);
                 // This hub's pin must come across: the old key without it would
                 // let the next XX handshake pin whatever answers. When it cannot
                 // be read, nothing is copied and this folder starts afresh.
                 var ownName = PinName(nodeId);
-                var own = ReadKey(legacyPin);
-                var pins = new System.Collections.Generic.List<(string Name, byte[] Key)> { (ownName, own) };
+                pins.Add((ownName, ReadKey(legacyPin)));
                 string[] others;
                 // Best effort, the listing too: this hub's pin is already in hand.
                 try { others = Directory.GetFiles(legacy, "noise-pin-*.key"); }
@@ -282,16 +284,21 @@ namespace Thalovant
                     try { pins.Add((Path.GetFileName(pin), ReadKey(pin))); }
                     catch (Exception error) when (error is ThalovantConnectionException || error is IOException || error is UnauthorizedAccessException) { }
                 }
-                foreach (var (name, value) in pins) WriteNew(Path.Combine(_directory, name), value);
-                // The key last: a folder with a key is one adoption never looks at again.
-                WriteNew(Path.Combine(_directory, StaticKeyName), key);
-                _adoptFrom = null;
             }
             catch (Exception error) when (error is IOException || error is UnauthorizedAccessException || error is ThalovantConnectionException)
             {
                 // The old folder could not be read: start afresh here, as a new
                 // identity would.
+                return;
             }
+            // The pins first and the key last. A write here that fails is not
+            // caught: it fails this connection and leaves no key, and the copy is
+            // kept pending, so the next use copies again. Going on would make a
+            // key of this store's own beside the hub's pin, which the hub
+            // refuses, and a folder with a key is one adoption never looks at again.
+            foreach (var (name, value) in pins) WriteNew(Path.Combine(_directory, name), value);
+            WriteNew(Path.Combine(_directory, StaticKeyName), key);
+            _adoptFrom = null;
         }
         public void VerifyOrPin(string nodeId, byte[] publicKey)
         {

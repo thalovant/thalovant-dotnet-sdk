@@ -102,6 +102,39 @@ public sealed class KeyFolderTests : IDisposable
     }
 
     [Fact]
+    public void ACopyCutShortBeforeTheKeyFailsAndIsMadeAgain()
+    {
+        var legacy = Path.Combine(_root, "legacy");
+        var old = new HiveMindFileNoiseStore(legacy);
+        var key = old.LoadOrCreateStaticKey();
+        var pin = Noise.RandomKey();
+        old.VerifyOrPin(Hub, pin);
+        var keyText = System.Text.Encoding.ASCII.GetBytes(Noise.Hex(key));
+        var failures = 1;
+        // The pins go in, then writing the copied key fails once (a full disk, say).
+        void Writer(FileStream stream, byte[] bytes)
+        {
+            if (failures > 0 && bytes.AsSpan().SequenceEqual(keyText))
+            {
+                failures--;
+                throw new IOException("No space left on device");
+            }
+            stream.Write(bytes, 0, bytes.Length);
+            stream.Flush(flushToDisk: true);
+        }
+
+        var store = HiveMindFileNoiseStore.ForIdentity(IdentityIn(Path.Combine(_root, "config")), legacy, Writer);
+        // Not a key of its own beside the pin, which the hub would refuse: the
+        // connection fails, and no key is left.
+        Assert.Throws<IOException>(() => store.LoadPin(Hub));
+        Assert.Equal(0, failures);
+        Assert.False(File.Exists(Path.Combine(_root, "config", HiveMindFileNoiseStore.BesideIdentityName, "noise-static.key")));
+        // The next use copies the key the hub pinned.
+        Assert.Equal(pin, store.LoadPin(Hub));
+        Assert.Equal(key, store.LoadOrCreateStaticKey());
+    }
+
+    [Fact]
     public void AKeyWhosePinForThisHubCannotBeReadIsNotCopied()
     {
         var legacy = Path.Combine(_root, "legacy");

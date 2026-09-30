@@ -221,6 +221,15 @@ namespace Thalovant
     /// <summary>The aggregated reply produced by <see cref="ThalovantClient.AskAsync"/>.</summary>
     public sealed class ThalovantReply
     {
+        /// <summary>
+        /// The <c>data.meta</c> key a skill's own <c>speak</c> event may set to
+        /// <c>true</c> to positively assert that it genuinely claimed the request,
+        /// even from the fallback tier. Only a literal boolean <c>true</c> counts;
+        /// thalovant-skillkit's <c>speak_to</c>/<c>emit_speech</c> already thread a
+        /// <c>meta</c> dict (with <c>skill_id</c>) onto every <c>speak</c> message,
+        /// so this is additive to something already there.
+        /// </summary>
+        public const string ThalovantClaimedMetaKey = "thalovant_claimed";
         public string Text { get; }
         public string DisplayText { get; }
         public IReadOnlyList<string> Utterances { get; }
@@ -233,9 +242,23 @@ namespace Thalovant
         public int DroppedMedia { get; internal set; }
         public IReadOnlyList<string> PipelineIds => ContextIdentifiers("pipeline_id");
         public IReadOnlyList<string> SkillIds => ContextIdentifiers("skill_id");
-        /// <summary>Advisory claim status; successful unstamped legacy replies remain claimed.</summary>
+        /// <summary>
+        /// Advisory claim status; successful unstamped legacy replies remain claimed.
+        /// A skill's own asserted claim (<see cref="ThalovantClaimedMetaKey"/> set to
+        /// <c>true</c> on one of its events) is checked first and, when present,
+        /// wins over the fallback-tier heuristic below -- but it can never turn a
+        /// failed or unhandled reply into a claimed one.
+        /// </summary>
         public bool Claimed => Handled && Ok && FailureEvent == null &&
-            (PipelineIds.Count == 0 || PipelineIds.Any(stage => stage.IndexOf("fallback", StringComparison.Ordinal) < 0));
+            (HasAssertedClaim ||
+             PipelineIds.Count == 0 || PipelineIds.Any(stage => stage.IndexOf("fallback", StringComparison.Ordinal) < 0));
+
+        /// <summary>Whether any event carries <see cref="ThalovantClaimedMetaKey"/>: true in its <c>data.meta</c>.</summary>
+        private bool HasAssertedClaim => Events.Any(item =>
+            JsonUtil.AsObject(item.Data["meta"]) is JsonObject meta &&
+            meta[ThalovantClaimedMetaKey] is JsonValue asserted &&
+            asserted.TryGetValue<bool>(out var value) && value);
+
         private IReadOnlyList<string> ContextIdentifiers(string key)
         {
             var seen = new HashSet<string>(StringComparer.Ordinal);

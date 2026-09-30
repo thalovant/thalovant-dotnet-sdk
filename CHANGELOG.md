@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.2 — 2026-09-30
+
+Brings the SDK to the Python reference's 0.9.2. Additive only: a skill that never sets the new meta key is judged exactly as before.
+
+- **A skill may positively claim a fallback-tier answer.** OVOS puts a skill that vocabulary-gates its own narrow answers and the fleet's own generic catch-all in the same priority band (`match_low`, 90-101), so `ThalovantReply.Claimed` could not tell them apart and read every fallback-tier reply as "nothing matched" -- seen live when `thalovant-skill-home` genuinely turned a light off from the fallback tier and a satellite listening without a wake word stayed silent. A skill's own `speak` event may now carry `data.meta["thalovant_claimed"] = true` (thalovant-skillkit's `speak_to`/`emit_speech` already thread a `meta` dict, with `skill_id`, onto that message), and `Claimed` checks it first, before the existing pipeline-tier heuristic. Only a literal boolean `true` counts -- `false`, a string, a number or the key missing are all inert -- and the assertion is checked after the same handled/ok/no-failure gate as before, so it can never turn a failed or unhandled reply into a claimed one. The new `ThalovantReply.ThalovantClaimedMetaKey` constant names the key; no existing member's signature changed.
+- Runs the reference's seven new `reply-claim-vectors.json` cases: an asserted claim on a fallback reply, the fleet's real generic catch-all left unasserted, a `false`/non-bool assertion staying inert, an assertion on a later event still counting, an assertion that cannot rescue a failed reply, and an assertion on a non-fallback reply as a no-op.
+
 ## 0.9.1 — 2026-09-28
 
 Brings the SDK to the Python reference's 0.9.1 (`d33dc2be8b00`). Every addition is new API or a subclass of an existing exception; no signature changed.

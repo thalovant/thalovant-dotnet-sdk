@@ -253,8 +253,16 @@ namespace Thalovant
             (HasAssertedClaim ||
              PipelineIds.Count == 0 || PipelineIds.Any(stage => stage.IndexOf("fallback", StringComparison.Ordinal) < 0));
 
-        /// <summary>Whether any event carries <see cref="ThalovantClaimedMetaKey"/>: true in its <c>data.meta</c>.</summary>
+        /// <summary>
+        /// Whether the skill's own speak event carries
+        /// <see cref="ThalovantClaimedMetaKey"/>: true in its <c>data.meta</c>.
+        /// Scoped to <c>speak</c>/<c>ovos.utterance.speak</c> events only -- a
+        /// correlated event of another kind (such as
+        /// <c>ovos.utterance.handled</c>) that happens to carry the same meta
+        /// shape must not be able to assert a claim.
+        /// </summary>
         private bool HasAssertedClaim => Events.Any(item =>
+            (item.Name == ThalovantEvents.Speak || item.Name == ThalovantEvents.OvosUtteranceSpeak) &&
             JsonUtil.AsObject(item.Data["meta"]) is JsonObject meta &&
             meta[ThalovantClaimedMetaKey] is JsonValue asserted &&
             asserted.TryGetValue<bool>(out var value) && value);

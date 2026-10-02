@@ -46,7 +46,11 @@ Console.WriteLine(reply.Text);
 await client.CloseAsync();
 ```
 
-Keep `result.Identity` secret: it holds the client credentials the hub trusts.
+Keep `result.Identity` secret: it holds the client credentials the hub trusts,
+and the raw hub and client resources carry bootstrap credentials too.
+`result.ToJsonObject()` redacts all of them and is safe to log; only
+`result.ToJsonObject(includeSecrets: true)` returns the credentials in the
+clear, so never log or print that form.
 
 ## Documentation
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.3
+
+- Automated patch release of the unreleased changes on `main` since v0.9.2.
+
 ## 0.9.2 — 2026-09-30
 
 Brings the SDK to the Python reference's 0.9.2. Additive only: a skill that never sets the new meta key is judged exactly as before.

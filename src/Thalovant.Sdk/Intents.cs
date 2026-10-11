@@ -34,6 +34,20 @@ namespace Thalovant
     // describe that answers it has answered: the hub does not know that
     // registration, and the intent simply has no sentences.
     //
+    // The listing without "lang" answers every language the hub loaded, which is
+    // how a client learns them: a hub speaks the languages in its lang and
+    // secondary_langs and lists nothing under any other tag, while it still
+    // answers a person asking in one (in its own language). IntentsAsync then
+    // lists in the hub's language closest to the one asked and says so in
+    // ListedIn.
+    //
+    // A third query names the skills nothing in the manifest can show:
+    //
+    // - ovos.skills.list {} -> ovos.skills.list.response {"ok", "skills":
+    //   [{skill_id, session_id, capabilities, intents}]} (section 10.3). A skill
+    //   declaring the "fallback" capability is offered whatever nothing else
+    //   matched, and registers no sentence to show for it.
+    //
     // A hub whose connection may not publish a type answers hive.policy.denied
     // naming it; that becomes ThalovantPolicyDeniedException at once rather than
     // a timeout. The engines' own manifests (intent.service.adapt.manifest.get
@@ -73,6 +87,14 @@ namespace Thalovant
         /// not a preference. The usual form's listing is taken when it has a
         /// template row, or when the first was empty. See
         /// <see cref="ThalovantContext.UsualForm"/>.
+        /// <para>
+        /// When the usual form has no template row either, the hub did not load
+        /// the language, so the listing without a language is asked once per
+        /// inventory and the hub language closest to the one asked is listed
+        /// instead (see <see cref="ThalovantContext.NearestHubLanguage"/>);
+        /// <see cref="HubIntentInventory.ListedIn"/> names it. A hub that cannot
+        /// answer that listing leaves the result as it was.
+        /// </para>
         /// </summary>
         public bool Nearest { get; set; } = true;
     }
@@ -400,12 +422,30 @@ namespace Thalovant
         }
     }
 
-    /// <summary>A registered fallback handler, sorted by priority then skill id.</summary>
+    /// <summary>
+    /// A skill that answers whatever nothing else matched.
+    /// <para>
+    /// It has no sentences to publish for that -- being offered everything is
+    /// what a fallback is -- so a caller can learn that it exists and nothing
+    /// more. That is still the difference between "no skill handles this" and
+    /// "something will try".
+    /// </para>
+    /// </summary>
     public sealed class HubFallback
     {
         public string SkillId { get; }
-        public long Priority { get; }
-        public HubFallback(string skillId, long priority = 0) { SkillId = skillId; Priority = priority; }
+
+        /// <summary>
+        /// Always null from a hub: no runtime serves it. <c>ovos.skills.list</c>
+        /// says which skills declared the fallback capability and not in what
+        /// order they are tried, and the query that would have carried the order
+        /// (<c>ovos.skills.fallback.list</c>, ovos-core #951) was reverted the
+        /// same day it landed. A number here would be invented, so there is none;
+        /// the list is in skill id order and says nothing about who goes first.
+        /// </summary>
+        public long? Priority { get; }
+
+        public HubFallback(string skillId, long? priority = null) { SkillId = skillId; Priority = priority; }
         public JsonObject ToJsonObject() => new JsonObject { ["skill_id"] = SkillId, ["priority"] = Priority };
     }
 
@@ -432,10 +472,16 @@ namespace Thalovant
         /// <summary>
         /// The tag the hub actually listed each requested language under, in
         /// <see cref="Languages"/> order. Equal to <see cref="Languages"/>
-        /// unless a listing came back with no sentences to carry (empty, or
-        /// keyword rows alone) and the language's usual form answered instead,
-        /// which is the only way the two differ. Callers
-        /// rendering sentences must read them from the tag that answered.
+        /// unless the listing in that language had no sentences to carry (empty,
+        /// or keyword rows alone) and another answered instead: the language's
+        /// usual form (<c>en-CA</c> to <c>en-us</c>), or else one of the
+        /// languages the hub loaded -- the same language in another region
+        /// first, then the hub's own -- because a hub lists nothing under a
+        /// language it did not load and still answers a person speaking it. A
+        /// caller showing these sentences should say which language they are in
+        /// when this differs from what was asked in a way the person would
+        /// notice. Callers rendering sentences must read them from the tag that
+        /// answered.
         /// </summary>
         public IReadOnlyList<string> ListedIn { get; }
 
@@ -525,8 +571,11 @@ namespace Thalovant
             }
             var fallbacks = new JsonArray();
             foreach (var fallback in Fallbacks) fallbacks.Add(fallback.ToJsonObject());
+            var listedIn = new JsonArray();
+            foreach (var language in ListedIn) listedIn.Add(language);
             return new JsonObject
             {
+                ["listed_in"] = listedIn,
                 ["fallbacks"] = fallbacks,
                 ["fallbacks_known"] = FallbacksKnown,
                 ["languages"] = languages,
@@ -577,41 +626,60 @@ namespace Thalovant
     /// </summary>
     internal static class HubIntentQueries
     {
+        /// <summary>The capability a skill announces when it takes what nothing else matched.</summary>
+        internal const string FallbackCapability = "fallback";
+
+        /// <summary>How long to wait for <c>ovos.skills.list</c> inside an inventory before calling the answer unknowable.</summary>
+        internal static readonly TimeSpan FallbackProbeTimeout = TimeSpan.FromMilliseconds(1500);
+
+        /// <summary>
+        /// Which skills answer whatever nothing else matched, read from
+        /// <c>ovos.skills.list</c>; null when the hub could not say (a runtime
+        /// without it, a connection not allowed to ask it, <c>ok: false</c>, or
+        /// no reply). It no longer asks <c>ovos.skills.fallback.list</c>, which no
+        /// hub answers.
+        /// </summary>
         internal static async Task<IReadOnlyList<HubFallback>?> ListFallbacksAsync(ThalovantClient client, TimeSpan timeout, CancellationToken cancellationToken)
         {
             if (timeout <= TimeSpan.Zero || timeout.TotalMilliseconds > int.MaxValue) throw new ArgumentOutOfRangeException(nameof(timeout));
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             deadline.CancelAfter(timeout);
             ThalovantEvent reply;
-            try { reply = await RequestReplyAsync(client, ThalovantEvents.FallbackList, ThalovantEvents.FallbackListResponse, new JsonObject(), null, timeout, deadline.Token).ConfigureAwait(false); }
+            try { reply = await RequestReplyAsync(client, ThalovantEvents.SkillsList, ThalovantEvents.SkillsListResponse, new JsonObject(), null, timeout, deadline.Token).ConfigureAwait(false); }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return null; }
             catch (ThalovantPolicyDeniedException) { return null; }
             catch (ThalovantTimeoutException) { return null; }
-            if (IsRefused(reply.Data) || !(reply.Data["fallbacks"] is JsonArray rows)) return null;
-            var handlers = new List<HubFallback>();
+            if (IsRefused(reply.Data) || !(reply.Data["skills"] is JsonArray rows)) return null;
+            return FallbacksFromSkills(rows);
+        }
+
+        /// <summary>
+        /// The fallback skills in an <c>ovos.skills.list</c> answer, in skill id
+        /// order. Only the hub's own: a row in another session (<c>default</c> is
+        /// where the runtime loads every installed skill) is somebody else's, and
+        /// a row with no session is taken as the hub's. A malformed row is skipped.
+        /// </summary>
+        internal static IReadOnlyList<HubFallback> FallbacksFromSkills(JsonArray rows)
+        {
+            var found = new SortedSet<string>(StringComparer.Ordinal);
             foreach (var item in rows)
             {
-                if (!(item is JsonObject row) || !(row["skill_id"] is JsonValue skillValue) || !skillValue.TryGetValue<string>(out var skill) || string.IsNullOrWhiteSpace(skill)) continue;
-                long priority = 0;
-                if (row["priority"] is JsonValue value)
-                {
-                    if (value.TryGetValue<long>(out var integer)) priority = integer;
-                    else if (value.TryGetValue<bool>(out var boolean)) priority = boolean ? 1 : 0;
-                    else if (value.TryGetValue<double>(out var number))
-                    {
-                        if (double.IsNaN(number) || double.IsInfinity(number) || number < long.MinValue || number >= (double)long.MaxValue) continue;
-                        priority = (long)number;
-                    }
-                }
-                handlers.Add(new HubFallback(skill, priority));
+                if (!(item is JsonObject row) || !(JsonUtil.GetString(row["skill_id"]) is string skill) || string.IsNullOrWhiteSpace(skill)) continue;
+                var session = row["session_id"];
+                if (session is not null && !(JsonUtil.GetString(session) is string sessionId && (sessionId.Length == 0 || sessionId == "default"))) continue;
+                if (!(row["capabilities"] is JsonArray capabilities)) continue;
+                if (capabilities.Any(capability => JsonUtil.GetString(capability) == FallbackCapability)) found.Add(skill.Trim());
             }
-            handlers.Sort((left, right) => left.Priority != right.Priority ? left.Priority.CompareTo(right.Priority) : StringComparer.Ordinal.Compare(left.SkillId, right.SkillId));
-            return handlers;
+            return found.Select(skill => new HubFallback(skill)).ToList();
         }
 
         private static async Task<HubIntentInventory> WithFallbacksAsync(ThalovantClient client, HubIntentInventory inventory, TimeSpan timeout, CancellationToken cancellationToken)
         {
-            var handlers = await ListFallbacksAsync(client, timeout < TimeSpan.FromMilliseconds(1500) ? timeout : TimeSpan.FromMilliseconds(1500), cancellationToken).ConfigureAwait(false);
+            // A runtime without ovos.skills.list never replies, and this runs on
+            // every inventory. A hub that has the handler answers from memory and
+            // a connection not allowed to ask is refused at once, so a short
+            // window is enough, and never longer than the caller asked for.
+            var handlers = await ListFallbacksAsync(client, timeout < FallbackProbeTimeout ? timeout : FallbackProbeTimeout, cancellationToken).ConfigureAwait(false);
             // listedIn carried through: this rebuilds the value to attach
             // the fallback handlers, and dropping it here would lose which
             // tag answered on the very last line of the happy path.
@@ -1050,6 +1118,96 @@ namespace Thalovant
         }
 
         /// <summary>
+        /// The hub's whole manifest, by the language each row was registered in:
+        /// the hub's own spelling, in the order it listed them. <c>SessionLang</c>
+        /// is the language the hub stamped on its reply's session; a request that
+        /// names no language is answered in a session the hub opened in its
+        /// default language. It is a hint, not a promise, so it only ever breaks
+        /// a choice between languages the hub actually listed.
+        /// </summary>
+        private sealed class HubLanguages
+        {
+            internal List<KeyValuePair<string, IReadOnlyList<IntentRegistration>>> ByLang { get; } =
+                new List<KeyValuePair<string, IReadOnlyList<IntentRegistration>>>();
+
+            internal string? SessionLang { get; set; }
+
+            internal IReadOnlyList<IntentRegistration> RowsOf(string tag)
+            {
+                foreach (var pair in ByLang)
+                {
+                    if (string.Equals(pair.Key, tag, StringComparison.Ordinal))
+                    {
+                        return pair.Value;
+                    }
+                }
+                return Array.Empty<IntentRegistration>();
+            }
+        }
+
+        /// <summary>
+        /// <c>ovos.intent.list</c> with no <c>lang</c>: every language the hub
+        /// loaded. Null when the hub refused, failed or did not answer: this is
+        /// only ever asked to improve an answer, and an answer it cannot improve
+        /// stands. Cancellation propagates.
+        /// </summary>
+        private static async Task<HubLanguages?> ListHubLanguagesAsync(
+            ThalovantClient client,
+            IntentListOptions options,
+            CancellationToken cancellationToken)
+        {
+            var data = new JsonObject();
+            if (options.IncludeDefinitions)
+            {
+                data["include_definitions"] = true;
+            }
+            ThalovantEvent reply;
+            try
+            {
+                reply = await RequestReplyAsync(
+                    client,
+                    ThalovantEvents.IntentList,
+                    ThalovantEvents.IntentListResponse,
+                    data,
+                    null,
+                    options.Timeout,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception failure) when (failure is ThalovantTimeoutException || failure is ThalovantRuntimeException)
+            {
+                // ThalovantRuntimeException covers a policy denial too.
+                return null;
+            }
+            if (IsRefused(reply.Data))
+            {
+                return null;
+            }
+            var languages = new HubLanguages();
+            if (reply.Data["intents"] is JsonArray listed)
+            {
+                foreach (var item in listed)
+                {
+                    if (!(item is JsonObject row) || !(IntentRegistration.FromJsonObject(row) is IntentRegistration entry) || entry.Lang.Trim().Length == 0)
+                    {
+                        continue;
+                    }
+                    var index = languages.ByLang.FindIndex(pair => ThalovantContext.SameLanguage(pair.Key, entry.Lang));
+                    if (index < 0)
+                    {
+                        languages.ByLang.Add(new KeyValuePair<string, IReadOnlyList<IntentRegistration>>(entry.Lang, new List<IntentRegistration> { entry }));
+                    }
+                    else
+                    {
+                        ((List<IntentRegistration>)languages.ByLang[index].Value).Add(entry);
+                    }
+                }
+            }
+            var sessionLang = JsonUtil.GetString((reply.Context["session"] as JsonObject)?["lang"]);
+            languages.SessionLang = string.IsNullOrWhiteSpace(sessionLang) ? null : sessionLang;
+            return languages;
+        }
+
+        /// <summary>
         /// Everything the hub can be asked, in each language, grouped by skill.
         /// Asks the intent manifest per language and, unless the runtime attached
         /// definitions to the listing, describes every registration at once. When
@@ -1093,6 +1251,9 @@ namespace Thalovant
             }
 
             var listed = new List<KeyValuePair<string, IReadOnlyList<IntentRegistration>>>();
+            var listedIn = new List<string>(asked.Count);
+            HubLanguages? hubLanguages = null;
+            var hubLanguagesAsked = false;
             try
             {
                 var listOptions = new IntentListOptions { Timeout = options.Timeout, IncludeDefinitions = options.Describe };
@@ -1150,7 +1311,51 @@ namespace Thalovant
                             }
                         }
                     }
-                    listed.Add(new KeyValuePair<string, IReadOnlyList<IntentRegistration>>(tag, rows));
+                    if (options.Nearest && !CanCarrySentences(rows))
+                    {
+                        // Still nothing a person can say: the hub did not load
+                        // this language. A hub loads its lang and secondary_langs
+                        // (en-US and fr-FR on most public hubs) and lists nothing
+                        // under any other tag, so a phone set to Spanish, Japanese
+                        // or German was shown an empty list -- by a hub that
+                        // answered every one of those people, in its own language.
+                        // Measured on all 13 public hubs on 2026-10-11.
+                        //
+                        // The listing without a language names every language the
+                        // hub loaded; list in the closest of them and say so in
+                        // ListedIn. Asked once per inventory, only here, and taken
+                        // only when it has sentences, so it never replaces names
+                        // with fewer names. A hub that cannot answer it leaves the
+                        // result exactly as it was.
+                        if (!hubLanguagesAsked)
+                        {
+                            hubLanguagesAsked = true;
+                            hubLanguages = await ListHubLanguagesAsync(client, listOptions, cancellationToken).ConfigureAwait(false);
+                        }
+                        if (hubLanguages != null)
+                        {
+                            var chosen = ThalovantContext.NearestHubLanguage(lang, hubLanguages.ByLang, hubLanguages.SessionLang);
+                            if (chosen != null)
+                            {
+                                rows = hubLanguages.RowsOf(chosen);
+                                tag = chosen;
+                            }
+                        }
+                    }
+                    // One key per language: en-us asked and en-US chosen for
+                    // another tag are the same listing, and two keys would split
+                    // its phrases.
+                    var existing = listed.FindIndex(pair => ThalovantContext.SameLanguage(pair.Key, tag));
+                    if (existing >= 0)
+                    {
+                        tag = listed[existing].Key;
+                        listed[existing] = new KeyValuePair<string, IReadOnlyList<IntentRegistration>>(tag, rows);
+                    }
+                    else
+                    {
+                        listed.Add(new KeyValuePair<string, IReadOnlyList<IntentRegistration>>(tag, rows));
+                    }
+                    listedIn.Add(tag);
                 }
             }
             catch (ThalovantPolicyDeniedException denied)
@@ -1225,8 +1430,6 @@ namespace Thalovant
                 }
                 intents.Add(intent);
             }
-            var listedIn = new List<string>(listed.Count);
-            foreach (var pair in listed) { listedIn.Add(pair.Key); }
             return await WithFallbacksAsync(client, new HubIntentInventory(asked, Skills(bySkill), HubIntentInventory.SourceIntentManifest, null, null, false, listedIn), options.Timeout, cancellationToken).ConfigureAwait(false);
         }
 
@@ -1328,6 +1531,73 @@ namespace Thalovant
             {
                 return new HubIntent(SkillId, Name, Engine, _phrases, Enabled);
             }
+        }
+    }
+
+    public static partial class ThalovantContext
+    {
+        /// <summary>
+        /// Which of the hub's languages to list in, for a person who asked in
+        /// <paramref name="asked"/>. <paramref name="listed"/> is the hub's manifest
+        /// by language, in the order the hub listed them.
+        /// <para>
+        /// Only a language with an enabled template row (a sentence to show) is a
+        /// candidate. The same language first, by the matcher the rest of OVOS
+        /// uses (<c>de-AT</c> takes <c>de-DE</c>); then the hub's own language,
+        /// <paramref name="hubLang"/>, when the hub listed it; then the language
+        /// with the most sentences, the first listed on a tie. Null when no
+        /// language the hub listed carries a sentence.
+        /// </para>
+        /// <para>
+        /// The hub does not say which language is its own. A person asking in a
+        /// language the hub never loaded is answered all the same -- in the hub's
+        /// language, by its fallback or persona -- so the sentences worth showing
+        /// them are the ones in that language, and the order above is the closest
+        /// this can get to it without inventing a fact.
+        /// </para>
+        /// </summary>
+        public static string? NearestHubLanguage(
+            string asked,
+            IEnumerable<KeyValuePair<string, IReadOnlyList<IntentRegistration>>> listed,
+            string? hubLang = null)
+        {
+            var candidates = new List<string>();
+            var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (var pair in listed)
+            {
+                var count = pair.Value.Count(row => row.Enabled && row.Method == "template");
+                if (count > 0 && !counts.ContainsKey(pair.Key))
+                {
+                    candidates.Add(pair.Key);
+                    counts[pair.Key] = count;
+                }
+            }
+            if (candidates.Count == 0)
+            {
+                return null;
+            }
+            var match = ClosestLanguage(asked, candidates);
+            if (match != null)
+            {
+                return match;
+            }
+            if (!string.IsNullOrWhiteSpace(hubLang))
+            {
+                var own = ClosestLanguage(hubLang!, candidates);
+                if (own != null)
+                {
+                    return own;
+                }
+            }
+            var best = candidates[0];
+            foreach (var candidate in candidates)
+            {
+                if (counts[candidate] > counts[best])
+                {
+                    best = candidate;
+                }
+            }
+            return best;
         }
     }
 }

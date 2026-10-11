@@ -761,7 +761,13 @@ namespace Thalovant
 
         // -- Intents ---------------------------------------------------------
 
-        /// <summary>Registered fallback handlers; null means unavailable, empty means none registered.</summary>
+        /// <summary>
+        /// The skills that answer whatever nothing else matched, read from
+        /// <c>ovos.skills.list</c> (the hub's own skills declaring the
+        /// <c>fallback</c> capability), in skill id order. Null means the hub could
+        /// not say; empty means it said there are none. No priority comes back:
+        /// see <see cref="HubFallback.Priority"/>.
+        /// </summary>
         public Task<IReadOnlyList<HubFallback>?> ListFallbacksAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default) =>
             HubIntentQueries.ListFallbacksAsync(this, timeout ?? TimeSpan.FromSeconds(5), cancellationToken);
 

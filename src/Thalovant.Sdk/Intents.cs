@@ -66,10 +66,13 @@ namespace Thalovant
         public bool Fallback { get; set; } = true;
 
         /// <summary>
-        /// Whether to retry an empty listing once in the language's usual
-        /// form. On by default: a listing that returns nothing from a hub
-        /// which demonstrably answers in that language is a fault, not a
-        /// preference. See <see cref="ThalovantContext.UsualForm"/>.
+        /// Whether to retry once in the language's usual form a listing with
+        /// no enabled template row -- empty, or keyword rows alone, which carry
+        /// no sentences. On by default: a listing with nothing a person can say
+        /// from a hub which demonstrably answers in that language is a fault,
+        /// not a preference. The usual form's listing is taken when it has a
+        /// template row, or when the first was empty. See
+        /// <see cref="ThalovantContext.UsualForm"/>.
         /// </summary>
         public bool Nearest { get; set; } = true;
     }
@@ -429,8 +432,9 @@ namespace Thalovant
         /// <summary>
         /// The tag the hub actually listed each requested language under, in
         /// <see cref="Languages"/> order. Equal to <see cref="Languages"/>
-        /// unless a listing came back empty and the language's usual form
-        /// answered instead, which is the only way the two differ. Callers
+        /// unless a listing came back with no sentences to carry (empty, or
+        /// keyword rows alone) and the language's usual form answered instead,
+        /// which is the only way the two differ. Callers
         /// rendering sentences must read them from the tag that answered.
         /// </summary>
         public IReadOnlyList<string> ListedIn { get; }
@@ -1032,6 +1036,19 @@ namespace Thalovant
 
         // -- the inventory ----------------------------------------------------
 
+        /// <summary>Whether a listing has an enabled template row: the only kind with sentences.</summary>
+        private static bool CanCarrySentences(IReadOnlyList<IntentRegistration> rows)
+        {
+            foreach (var row in rows)
+            {
+                if (row.Enabled && row.Method == MethodTemplate)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         /// <summary>
         /// Everything the hub can be asked, in each language, grouped by skill.
         /// Asks the intent manifest per language and, unless the runtime attached
@@ -1083,7 +1100,7 @@ namespace Thalovant
                 {
                     var rows = await ListIntentsAsync(client, lang, listOptions, cancellationToken).ConfigureAwait(false);
                     var tag = lang;
-                    if (rows.Count == 0 && options.Nearest)
+                    if (options.Nearest && !CanCarrySentences(rows))
                     {
                         // Listing and asking do not agree about languages. The
                         // hub matches an utterance to the closest language it
@@ -1093,14 +1110,40 @@ namespace Thalovant
                         // en-CA and a person is shown an empty hub by the hub
                         // that is answering them.
                         //
-                        // Once only, and only on an empty listing: a hub that
-                        // answered is never asked twice, and a language whose
-                        // usual form is itself has nothing to retry with.
+                        // Not only on an empty listing: on a listing with no
+                        // template row, which can never carry a sentence. The
+                        // Pop Culture hub (2026-10-11) listed five keyword
+                        // intents of one skill under en-CA -- that skill
+                        // registers keyword vocabulary in 63 regional tags --
+                        // and 141 intents with sentences under en-US; five
+                        // names is not an answer a person can use.
+                        //
+                        // Once only: a listing with a template row is never
+                        // asked twice, a language whose usual form is itself
+                        // has nothing to retry with, and the usual form's
+                        // listing is taken only when it can carry sentences
+                        // (or the first was empty), so keyword names are never
+                        // traded for other names.
                         var usual = ThalovantContext.UsualForm(lang);
                         if (usual != null)
                         {
-                            var retried = await ListIntentsAsync(client, usual, listOptions, cancellationToken).ConfigureAwait(false);
-                            if (retried.Count > 0)
+                            IReadOnlyList<IntentRegistration> retried;
+                            try
+                            {
+                                retried = await ListIntentsAsync(client, usual, listOptions, cancellationToken).ConfigureAwait(false);
+                            }
+                            catch (Exception failure) when (rows.Count > 0 && (failure is ThalovantTimeoutException || failure is ThalovantRuntimeException))
+                            {
+                                // A retry never makes the answer worse than the
+                                // first listing. Names the hub already gave
+                                // stand when the usual form times out, is
+                                // refused or answers `ok: false`; only an empty
+                                // first listing lets the failure through,
+                                // exactly as before. Cancellation is neither,
+                                // so it always propagates.
+                                retried = Array.Empty<IntentRegistration>();
+                            }
+                            if (CanCarrySentences(retried) || (retried.Count > 0 && rows.Count == 0))
                             {
                                 rows = retried;
                                 tag = usual;

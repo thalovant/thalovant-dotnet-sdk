@@ -70,6 +70,20 @@ namespace Thalovant.Sdk.Tests
 
             /// <summary>What this hub registered; the observed set unless a test says otherwise.</summary>
             public (string Lang, string SkillId, string IntentName, string[] Samples)[] Registrations { get; set; } = DefaultRegistrations;
+
+            /// <summary>
+            /// Keyword (adapt) registrations per language: listed, never
+            /// described with sentences, exactly as ovos-core lists an
+            /// IntentBuilder intent.
+            /// </summary>
+            public Dictionary<string, (string SkillId, string IntentName)[]> Keywords { get; set; } =
+                new Dictionary<string, (string SkillId, string IntentName)[]>();
+
+            /// <summary>Languages whose <c>ovos.intent.list</c> gets no answer.</summary>
+            public HashSet<string> ListSilentIn { get; } = new HashSet<string>();
+
+            /// <summary>Languages whose <c>ovos.intent.list</c> is answered <c>ok: false</c>.</summary>
+            public HashSet<string> ListFailsIn { get; } = new HashSet<string>();
             public bool Connected { get; private set; }
             public List<(string Type, JsonObject Data, JsonObject Context)> Emitted { get; } =
                 new List<(string Type, JsonObject Data, JsonObject Context)>();
@@ -144,6 +158,15 @@ namespace Thalovant.Sdk.Tests
                     return Task.CompletedTask;
                 }
                 var lang = (string?)data["lang"] ?? "";
+                if (type == ThalovantEvents.IntentList && ListSilentIn.Contains(lang))
+                {
+                    return Task.CompletedTask;
+                }
+                if (type == ThalovantEvents.IntentList && ListFailsIn.Contains(lang))
+                {
+                    Deliver(ThalovantEvents.IntentListResponse, new JsonObject { ["ok"] = false, ["error"] = "listing failed" }, context);
+                    return Task.CompletedTask;
+                }
                 switch (type)
                 {
                     case ThalovantEvents.FallbackList:
@@ -169,6 +192,21 @@ namespace Thalovant.Sdk.Tests
                                 row["definition"] = Definition(registration.SkillId, registration.IntentName, lang, registration.Samples);
                             }
                             rows.Add(row);
+                        }
+                        if (Keywords.TryGetValue(lang, out var keywords))
+                        {
+                            foreach (var (skillId, intentName) in keywords)
+                            {
+                                rows.Add(new JsonObject
+                                {
+                                    ["skill_id"] = skillId,
+                                    ["intent_name"] = intentName,
+                                    ["lang"] = lang,
+                                    ["method"] = "keyword",
+                                    ["enabled"] = true,
+                                    ["session_id"] = "default",
+                                });
+                            }
                         }
                         Deliver(ThalovantEvents.IntentListResponse, new JsonObject { ["ok"] = true, ["intents"] = rows }, context);
                         break;
@@ -833,6 +871,129 @@ namespace Thalovant.Sdk.Tests
             Assert.Equal(
                 new[] { "en-us", "fr-fr" },
                 EmittedOf(hub, ThalovantEvents.IntentList).Select(entry => entry.Data["lang"]!.GetValue<string>()));
+        }
+
+        private const string Scout = "thalovant-skill-source-scout.thalovant";
+
+        private static readonly (string SkillId, string IntentName)[] ScoutKeywords =
+        {
+            (Scout, "SourceScoutTopicIntent"),
+            (Scout, "SourceScoutRealPromptIntent"),
+        };
+
+        private static string[] ListingsAsked(FakeHubBus hub)
+        {
+            return EmittedOf(hub, ThalovantEvents.IntentList).Select(entry => entry.Data["lang"]!.GetValue<string>()).ToArray();
+        }
+
+        [Fact]
+        public async Task ATagWithOnlyKeywordRowsIsListedUnderItsUsualForm()
+        {
+            // Not empty is not the same as answered. The Pop Culture hub on
+            // 2026-10-11: one skill registers its keyword vocabulary in 63
+            // regional tags, every other skill only in en-US. Its en-CA listing
+            // was five keyword rows, which carry no sentences, so a phone in
+            // Toronto was shown five names and nothing it could say -- the
+            // retry in the usual form only ran on an empty listing.
+            var hub = new FakeHubBus
+            {
+                Keywords = { ["en-CA"] = ScoutKeywords, ["en-us"] = ScoutKeywords },
+            };
+            var inventory = await Client(hub).IntentsAsync(new[] { "en-CA" });
+
+            // The usual form has sentences, en-CA has none.
+            Assert.Equal(new[] { "en-us" }, inventory.ListedIn);
+            Assert.True(inventory.HasPhrases);
+            Assert.Equal(new[] { Shadow, Scout, Weather }, inventory.Skills.Select(skill => skill.SkillId));
+            Assert.Equal(new[] { "en-CA", "en-us" }, ListingsAsked(hub));
+        }
+
+        [Fact]
+        public async Task KeywordRowsAreKeptWhenTheUsualFormHasNoSentencesEither()
+        {
+            var hub = new FakeHubBus
+            {
+                Registrations = Array.Empty<(string Lang, string SkillId, string IntentName, string[] Samples)>(),
+                Keywords = { ["en-CA"] = ScoutKeywords, ["en-us"] = ScoutKeywords.Take(1).ToArray() },
+            };
+            var inventory = await Client(hub).IntentsAsync(new[] { "en-CA" });
+
+            // Nothing better to take.
+            Assert.Equal(new[] { "en-CA" }, inventory.ListedIn);
+            Assert.Equal(
+                new[] { "SourceScoutRealPromptIntent", "SourceScoutTopicIntent" },
+                inventory.Intents.Select(intent => intent.Name));
+            Assert.Equal(new[] { "en-CA", "en-us" }, ListingsAsked(hub));
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task AFailedRetryKeepsTheNamesTheFirstListingGave(bool refused)
+        {
+            // A retry never makes the answer worse than the first listing.
+            var hub = new FakeHubBus { Keywords = { ["en-CA"] = ScoutKeywords } };
+            (refused ? hub.ListFailsIn : hub.ListSilentIn).Add("en-us");
+            var inventory = await Client(hub).IntentsAsync(
+                new[] { "en-CA" },
+                new IntentInventoryOptions { Timeout = TimeSpan.FromMilliseconds(200) });
+
+            Assert.Equal(HubIntentInventory.SourceIntentManifest, inventory.Source);
+            Assert.Equal(new[] { "en-CA" }, inventory.ListedIn);
+            Assert.Equal(
+                new[] { "SourceScoutRealPromptIntent", "SourceScoutTopicIntent" },
+                inventory.Intents.Select(intent => intent.Name));
+            Assert.Equal(new[] { "en-CA", "en-us" }, ListingsAsked(hub));
+        }
+
+        [Fact]
+        public async Task AFailedRetryAfterAnEmptyListingStillFailsAsBefore()
+        {
+            var hub = new FakeHubBus
+            {
+                Registrations = Array.Empty<(string Lang, string SkillId, string IntentName, string[] Samples)>(),
+                ListFailsIn = { "en-us" },
+            };
+            var error = await Assert.ThrowsAsync<ThalovantRuntimeException>(() => Client(hub).IntentsAsync(
+                new[] { "en-CA" },
+                new IntentInventoryOptions { Timeout = TimeSpan.FromMilliseconds(200) }));
+            Assert.Contains("listing failed", error.Message);
+        }
+
+        [Fact]
+        public async Task CancellingTheRetryIsNotKeptAsAFailedRetry()
+        {
+            // The first listing's names stand against a timeout or a refusal,
+            // never against the caller giving up.
+            var hub = new FakeHubBus { Keywords = { ["en-CA"] = ScoutKeywords }, ListSilentIn = { "en-us" } };
+            using var cancelled = new CancellationTokenSource();
+            var pending = Client(hub).IntentsAsync(
+                new[] { "en-CA" },
+                new IntentInventoryOptions { Timeout = TimeSpan.FromSeconds(30) },
+                cancelled.Token);
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (EmittedOf(hub, ThalovantEvents.IntentList).Count() < 2 && DateTime.UtcNow < deadline) await Task.Delay(1);
+            // The retry went out before the cancel.
+            Assert.Equal(new[] { "en-CA", "en-us" }, ListingsAsked(hub));
+            cancelled.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+        }
+
+        [Fact]
+        public async Task AListingWithSentencesIsNotRetriedForItsKeywordRows()
+        {
+            var hub = new FakeHubBus
+            {
+                Registrations = DefaultRegistrations
+                    .Where(entry => entry.Lang == "en-us")
+                    .SelectMany(entry => new[] { entry, (Lang: "en-CA", entry.SkillId, entry.IntentName, entry.Samples) })
+                    .ToArray(),
+                Keywords = { ["en-CA"] = ScoutKeywords },
+            };
+            var inventory = await Client(hub).IntentsAsync(new[] { "en-CA" });
+
+            Assert.Equal(new[] { "en-CA" }, ListingsAsked(hub));
+            Assert.Equal(new[] { "en-CA" }, inventory.ListedIn);
         }
 
         /// <summary>

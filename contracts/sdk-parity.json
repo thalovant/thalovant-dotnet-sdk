@@ -18,7 +18,7 @@
     },
     "binary": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "a95e9311b87731bf2424b8027cb8fd96bbf7e812cd57eb16d013032f27fce17f",
+        "src/Thalovant.Sdk/Client.cs": "acccf26f1c665042065fd0dd859f45e3114db5639bc256dda92209e5c6a8b829",
         "src/Thalovant.Sdk/HiveBinary.cs": "3bb5b15b0300fc12c32196d7afdc53ab88c8f445ca1203fbbff53d3c16e72467",
         "src/Thalovant.Sdk/Transport.cs": "d56c7265ae249ac4d2e22fd94111b77492064bc300693f089fa4ec9657d6f277",
         "src/Thalovant.Sdk/Wire.cs": "be690ab4aa60c7d546f15e98199739bc4f672225d35c0f185751352513d86061"
@@ -96,8 +96,8 @@
     },
     "conversation": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "a95e9311b87731bf2424b8027cb8fd96bbf7e812cd57eb16d013032f27fce17f",
-        "src/Thalovant.Sdk/Events.cs": "4815d1bb55e039ea12c2c0692227873cf4d1e5c779059c591a7994e25e73b0a0"
+        "src/Thalovant.Sdk/Client.cs": "acccf26f1c665042065fd0dd859f45e3114db5639bc256dda92209e5c6a8b829",
+        "src/Thalovant.Sdk/Events.cs": "4ed7b9cf6cee4b89ba8f3b509e5ff2be23c46c7bc945bdb5b6b09e829213f54a"
       },
       "reason": "CarryConversation and the client's per-session memory, run against the shared conversation vectors on net8.0 and net9.0.",
       "status": "required",
@@ -130,9 +130,9 @@
     },
     "home-link": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "a95e9311b87731bf2424b8027cb8fd96bbf7e812cd57eb16d013032f27fce17f",
+        "src/Thalovant.Sdk/Client.cs": "acccf26f1c665042065fd0dd859f45e3114db5639bc256dda92209e5c6a8b829",
         "src/Thalovant.Sdk/Errors.cs": "9e24eb63d7b133743999384a2309006adad3651bda4fcc5923bfc65140591890",
-        "src/Thalovant.Sdk/Events.cs": "4815d1bb55e039ea12c2c0692227873cf4d1e5c779059c591a7994e25e73b0a0",
+        "src/Thalovant.Sdk/Events.cs": "4ed7b9cf6cee4b89ba8f3b509e5ff2be23c46c7bc945bdb5b6b09e829213f54a",
         "src/Thalovant.Sdk/Home.cs": "ec1dd73d13308ecf0fa5b1fd1eedb54a98725b6d7d5aa69482c0b2643f69bb45",
         "src/Thalovant.Sdk/Noise.cs": "b6511a953c5af1167a364938f0adcbe434590bc7879f46d0ef42184052e70284",
         "src/Thalovant.Sdk/Session.cs": "442c060fa128e00df22372af40fc3e7975c96bd7947fd49e27927d1e7fc5e9bd",
@@ -190,7 +190,7 @@
     },
     "listing": {
       "implementation": {
-        "src/Thalovant.Sdk/Intents.cs": "41f8bbcbfbf64c2edcda2d9e2064ba6ab9fbf47f160c17f1d37195be5059c31f",
+        "src/Thalovant.Sdk/Intents.cs": "3a90b22bfc0970a093a40d5c665849541bd2d8f4c500b98ec19a3473c571c2b6",
         "src/Thalovant.Sdk/Listing.cs": "a1617d3e3d749abb5472f45101c3eadab8f783c67b4f298a68c7c0591be4dacd"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
@@ -205,8 +205,8 @@
     },
     "mesh": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "a95e9311b87731bf2424b8027cb8fd96bbf7e812cd57eb16d013032f27fce17f",
-        "src/Thalovant.Sdk/Events.cs": "4815d1bb55e039ea12c2c0692227873cf4d1e5c779059c591a7994e25e73b0a0"
+        "src/Thalovant.Sdk/Client.cs": "acccf26f1c665042065fd0dd859f45e3114db5639bc256dda92209e5c6a8b829",
+        "src/Thalovant.Sdk/Events.cs": "4ed7b9cf6cee4b89ba8f3b509e5ff2be23c46c7bc945bdb5b6b09e829213f54a"
       },
       "reason": "OnHive over the five hive kinds, and PropagateAsync/EscalateAsync/BroadcastAsync. Run against the shared mesh vectors.",
       "status": "required",
@@ -220,7 +220,7 @@
     },
     "refusal": {
       "implementation": {
-        "src/Thalovant.Sdk/Client.cs": "a95e9311b87731bf2424b8027cb8fd96bbf7e812cd57eb16d013032f27fce17f",
+        "src/Thalovant.Sdk/Client.cs": "acccf26f1c665042065fd0dd859f45e3114db5639bc256dda92209e5c6a8b829",
         "src/Thalovant.Sdk/Errors.cs": "9e24eb63d7b133743999384a2309006adad3651bda4fcc5923bfc65140591890",
         "src/Thalovant.Sdk/Refusal.cs": "dff4e8b79ceb6816b1386c9079f648e057647f472ae65aaaf5c5a74484d6a8f8"
       },
@@ -237,7 +237,7 @@
     },
     "runtime": {
       "implementation": {
-        "src/Thalovant.Sdk/Events.cs": "4815d1bb55e039ea12c2c0692227873cf4d1e5c779059c591a7994e25e73b0a0",
+        "src/Thalovant.Sdk/Events.cs": "4ed7b9cf6cee4b89ba8f3b509e5ff2be23c46c7bc945bdb5b6b09e829213f54a",
         "src/Thalovant.Sdk/Runtime.cs": "037c680410a2839321bf29e5ee1d318be87989cac0aeb2fb9a80b7faaca40fff",
         "src/Thalovant.Sdk/Transport.cs": "d56c7265ae249ac4d2e22fd94111b77492064bc300693f089fa4ec9657d6f277"
       },
@@ -283,7 +283,8 @@
     "3b0acf7c8b2f03bec95d9e9bba4f82e88c79ad3d98590988852e6c06deb48af0",
     "841f3bbeec23f04c5decae75c9cfd6ea6a397992c7e4d7cd4195dc9dd919cd1a",
     "3f37b7453397f577a1db5cf2db7f709ffa4b09194869e07970d0881239b7a218",
-    "600b10e7e159f6ca9c1d59d7f2a4103c2e1c66a0894b587e0224e4d9c0e66bd1"
+    "600b10e7e159f6ca9c1d59d7f2a4103c2e1c66a0894b587e0224e4d9c0e66bd1",
+    "5b973a65ab583082069afaa67e2baf7257cbc4950a89460c9912851821258d16"
   ],
   "schema_version": 1
 }

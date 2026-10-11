@@ -23,8 +23,19 @@ namespace Thalovant
         public const string QueryTimeout = "hive.query.timeout";
         // The hub runtime's intent manifest (OVOS-INTENT-4 section 10) and the
         // engines' own manifests; see ThalovantClient.IntentsAsync and Intents.cs.
+        //
+        // Which skills answer whatever nothing else matched. ovos-core #951 added
+        // ovos.skills.fallback.list and #988 took it out again the same day, so no
+        // runtime answers it. The names stay so that nothing exported disappears;
+        // the inventory asks SkillsList instead.
         public const string FallbackList = "ovos.skills.fallback.list";
         public const string FallbackListResponse = "ovos.skills.fallback.list.response";
+        // Every skill the runtime loaded and what it declared it can do
+        // (OVOS-INTENT-4 section 10.3): {"ok", "skills": [{skill_id, session_id,
+        // capabilities, intents}]}. A skill whose capabilities include "fallback"
+        // is offered whatever nothing else matched.
+        public const string SkillsList = "ovos.skills.list";
+        public const string SkillsListResponse = "ovos.skills.list.response";
         public const string IntentList = "ovos.intent.list";
         public const string IntentListResponse = "ovos.intent.list.response";
         public const string IntentDescribe = "ovos.intent.describe";

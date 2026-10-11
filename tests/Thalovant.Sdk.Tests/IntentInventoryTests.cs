@@ -62,7 +62,18 @@ namespace Thalovant.Sdk.Tests
                 try { await Task.Delay(delay, cancellationToken); }
                 catch (OperationCanceledException) { CancelledDelayCount++; throw; }
             }
-            public JsonObject FallbackPayload { get; set; } = new JsonObject { ["fallbacks"] = new JsonArray() };
+            /// <summary>
+            /// What <c>ovos.skills.list</c> answers: a hub with no fallback skill by
+            /// default. <c>ovos.skills.fallback.list</c> is never answered: ovos-core
+            /// added it in #951 and took it out again in #988.
+            /// </summary>
+            public JsonObject SkillsPayload { get; set; } = new JsonObject { ["ok"] = true, ["skills"] = new JsonArray() };
+
+            /// <summary>
+            /// The hub's default language, stamped on the session of a reply to a
+            /// listing that named no language -- what a live hub does.
+            /// </summary>
+            public string? HubLang { get; set; }
             public HashSet<string> Silent { get; } = new HashSet<string>();
             public bool DefinitionsInList { get; set; }
             public bool EchoRequestId { get; set; } = true;
@@ -79,10 +90,10 @@ namespace Thalovant.Sdk.Tests
             public Dictionary<string, (string SkillId, string IntentName)[]> Keywords { get; set; } =
                 new Dictionary<string, (string SkillId, string IntentName)[]>();
 
-            /// <summary>Languages whose <c>ovos.intent.list</c> gets no answer.</summary>
+            /// <summary>Languages whose <c>ovos.intent.list</c> gets no answer; "" is the listing without a language.</summary>
             public HashSet<string> ListSilentIn { get; } = new HashSet<string>();
 
-            /// <summary>Languages whose <c>ovos.intent.list</c> is answered <c>ok: false</c>.</summary>
+            /// <summary>Languages whose <c>ovos.intent.list</c> is answered <c>ok: false</c>; "" is the listing without a language.</summary>
             public HashSet<string> ListFailsIn { get; } = new HashSet<string>();
             public bool Connected { get; private set; }
             public List<(string Type, JsonObject Data, JsonObject Context)> Emitted { get; } =
@@ -135,7 +146,7 @@ namespace Thalovant.Sdk.Tests
 
             public virtual Task EmitBusAsync(string type, JsonObject data, JsonObject context, CancellationToken cancellationToken = default)
             {
-                if (type == ThalovantEvents.FallbackList && FallbackDelay > TimeSpan.Zero) return PausedDelay(FallbackDelay, cancellationToken);
+                if (type == ThalovantEvents.SkillsList && FallbackDelay > TimeSpan.Zero) return PausedDelay(FallbackDelay, cancellationToken);
                 if (ForeignFirst) Deliver(ThalovantEvents.PolicyDenied, new JsonObject { ["denied_type"] = type }, new JsonObject { ["request_id"] = "foreign-request" });
                 Record(type, data, context);
                 if (Refuse.Contains(type))
@@ -169,9 +180,40 @@ namespace Thalovant.Sdk.Tests
                 }
                 switch (type)
                 {
-                    case ThalovantEvents.FallbackList:
-                        Deliver(ThalovantEvents.FallbackListResponse, FallbackPayload, context);
+                    case ThalovantEvents.SkillsList:
+                        Deliver(ThalovantEvents.SkillsListResponse, SkillsPayload, context);
                         break;
+                    case ThalovantEvents.IntentList when !data.ContainsKey("lang"):
+                    {
+                        // Every language the hub loaded, in the hub's spelling.
+                        var rows = new JsonArray();
+                        foreach (var registration in Registrations)
+                        {
+                            var parts = registration.Lang.Split('-');
+                            var spelled = parts.Length > 1 ? parts[0] + "-" + parts[1].ToUpperInvariant() : registration.Lang;
+                            var row = new JsonObject
+                            {
+                                ["skill_id"] = registration.SkillId,
+                                ["intent_name"] = registration.IntentName,
+                                ["lang"] = spelled,
+                                ["method"] = "template",
+                                ["enabled"] = true,
+                                ["session_id"] = "default",
+                            };
+                            if ((bool?)data["include_definitions"] == true)
+                            {
+                                row["definition"] = Definition(registration.SkillId, registration.IntentName, spelled, registration.Samples);
+                            }
+                            rows.Add(row);
+                        }
+                        var replyContext = (JsonObject)context.DeepClone();
+                        if (HubLang is not null)
+                        {
+                            replyContext["session"] = new JsonObject { ["session_id"] = "s", ["lang"] = HubLang };
+                        }
+                        Deliver(ThalovantEvents.IntentListResponse, new JsonObject { ["ok"] = true, ["intents"] = rows }, replyContext);
+                        break;
+                    }
                     case ThalovantEvents.IntentList:
                     {
                         var rows = new JsonArray();
@@ -612,10 +654,10 @@ namespace Thalovant.Sdk.Tests
         public async Task FallbackDiscoveryDistinguishesUnknownFromKnownEmpty()
         {
             foreach (var hub in new[] {
-                new FakeHubBus { Silent = { ThalovantEvents.FallbackList } },
-                new FakeHubBus { Refuse = { ThalovantEvents.FallbackList } },
-                new FakeHubBus { FallbackPayload = new JsonObject { ["fallbacks"] = "invalid" } },
-                new FakeHubBus { FallbackPayload = new JsonObject { ["ok"] = false, ["fallbacks"] = new JsonArray() } },
+                new FakeHubBus { Silent = { ThalovantEvents.SkillsList } },
+                new FakeHubBus { Refuse = { ThalovantEvents.SkillsList } },
+                new FakeHubBus { SkillsPayload = new JsonObject { ["ok"] = true, ["skills"] = "invalid" } },
+                new FakeHubBus { SkillsPayload = new JsonObject { ["ok"] = false, ["skills"] = new JsonArray() } },
             }) {
                 var inventory = await Client(hub).IntentsAsync(new[] { "fr-fr" }, new IntentInventoryOptions { Timeout = TimeSpan.FromMilliseconds(30) });
                 Assert.False(inventory.FallbacksKnown); Assert.True(inventory.MayAnswer("de-de"));
@@ -652,19 +694,60 @@ namespace Thalovant.Sdk.Tests
         }
 
         [Fact]
-        public async Task FallbackDiscoverySortsHandlersAndRejectsUnsafePriority()
+        public async Task OnlyTheHubsOwnFallbackSkillsAreListed()
         {
-            var hub = new FakeHubBus { FallbackPayload = JsonNode.Parse("""
-                {"fallbacks":[{"skill_id":"b","priority":20},{"skill_id":"a","priority":20.5},
-                {"skill_id":"true","priority":true},{"skill_id":"default","priority":"42"},
-                {"skill_id":"huge","priority":1e100},{"skill_id":""},false]}
+            // ovos.skills.list names every skill the runtime loaded. A skill
+            // without the fallback capability answers through its intents and is
+            // in the manifest already; one loaded in somebody else's session is
+            // not this hub's; a malformed row is skipped rather than taking the
+            // rest down.
+            var hub = new FakeHubBus { SkillsPayload = JsonNode.Parse("""
+                {"ok":true,"skills":[
+                {"skill_id":"thalovant-skill-memory.thalovant","session_id":"default","capabilities":["fallback","converse"],"intents":0},
+                {"skill_id":"thalovant-skill-weather.thalovant","session_id":"default","capabilities":[],"intents":16},
+                {"skill_id":"someone-elses.fallback","session_id":"another-session","capabilities":["fallback"],"intents":0},
+                {"skill_id":"custos-fallback.thalovant","capabilities":["fallback"]},
+                {"skill_id":"empty-session.thalovant","session_id":"","capabilities":["fallback"]},
+                {"skill_id":"custos-fallback.thalovant","session_id":"default","capabilities":["fallback"]},
+                {"skill_id":"","session_id":"default","capabilities":["fallback"]},
+                {"skill_id":"no-capabilities.thalovant","session_id":"default","capabilities":null},
+                {"skill_id":"numeric-session.thalovant","session_id":7,"capabilities":["fallback"]},
+                "not a row"]}
                 """)!.AsObject() };
             var handlers = await Client(hub).ListFallbacksAsync();
-            Assert.Equal(new[] { "default", "true", "a", "b" }, handlers!.Select(item => item.SkillId));
-            Assert.Equal(new long[] { 0, 1, 20, 20 }, handlers!.Select(item => item.Priority));
+            Assert.Equal(
+                new[] { "custos-fallback.thalovant", "empty-session.thalovant", "thalovant-skill-memory.thalovant" },
+                handlers!.Select(item => item.SkillId));
+            Assert.All(handlers!, item => Assert.Null(item.Priority));
+
             var inventory = await Client(hub).IntentsAsync(new[] { "fr-fr" });
             Assert.True(inventory.FallbacksKnown); Assert.True(inventory.MayAnswer("de-de"));
-            Assert.Equal(4, inventory.ToJsonObject()["fallbacks"]!.AsArray().Count);
+            var serialised = inventory.ToJsonObject()["fallbacks"]!.AsArray();
+            Assert.Equal(3, serialised.Count);
+            Assert.True(serialised[0]!.AsObject().ContainsKey("priority"));
+            Assert.Null(serialised[0]!["priority"]);
+        }
+
+        [Fact]
+        public async Task TheRetiredFallbackQueryIsNeverSent()
+        {
+            // No runtime answers ovos.skills.fallback.list, and asking cost every
+            // inventory a second and a half.
+            var hub = new FakeHubBus();
+            await Client(hub).IntentsAsync(new[] { "en-us" });
+            await Client(hub).ListFallbacksAsync();
+            Assert.Empty(EmittedOf(hub, ThalovantEvents.FallbackList));
+            Assert.Equal(2, EmittedOf(hub, ThalovantEvents.SkillsList).Count());
+            Assert.Equal("ovos.skills.fallback.list", ThalovantEvents.FallbackList);
+            Assert.Equal("ovos.skills.fallback.list.response", ThalovantEvents.FallbackListResponse);
+        }
+
+        [Fact]
+        public void AFallbackBuiltWithAPriorityKeepsIt()
+        {
+            // Compatibility: a caller constructing one still may; the hub never does.
+            Assert.Equal(10, new HubFallback("skill-a", 10).Priority);
+            Assert.Null(new HubFallback("skill-a").Priority);
         }
 
         [Fact]
@@ -883,7 +966,10 @@ namespace Thalovant.Sdk.Tests
 
         private static string[] ListingsAsked(FakeHubBus hub)
         {
-            return EmittedOf(hub, ThalovantEvents.IntentList).Select(entry => entry.Data["lang"]!.GetValue<string>()).ToArray();
+            return EmittedOf(hub, ThalovantEvents.IntentList)
+                .Where(entry => entry.Data.ContainsKey("lang"))
+                .Select(entry => entry.Data["lang"]!.GetValue<string>())
+                .ToArray();
         }
 
         [Fact]
@@ -934,6 +1020,8 @@ namespace Thalovant.Sdk.Tests
             // A retry never makes the answer worse than the first listing.
             var hub = new FakeHubBus { Keywords = { ["en-CA"] = ScoutKeywords } };
             (refused ? hub.ListFailsIn : hub.ListSilentIn).Add("en-us");
+            // "" is the listing without a language: it fails the same way.
+            (refused ? hub.ListFailsIn : hub.ListSilentIn).Add("");
             var inventory = await Client(hub).IntentsAsync(
                 new[] { "en-CA" },
                 new IntentInventoryOptions { Timeout = TimeSpan.FromMilliseconds(200) });
@@ -1306,5 +1394,234 @@ namespace Thalovant.Sdk.Tests
             Assert.Empty(intent.PhrasesFor("de-de"));
             Assert.Empty(new HubIntent(Weather, "x", "adapt").Examples());
         }
-    }
+    
+        // -- A language the hub never loaded --------------------------------
+        //
+        // Measured on all 13 public hubs on 2026-10-11: a hub loads its lang and
+        // secondary_langs (en-US and fr-FR on most) and lists nothing under any
+        // other tag. A phone set to Spanish, Japanese or German asked in its own
+        // language, then its usual form, got nothing twice and showed an empty
+        // list -- while the hub answered those people in its own language.
+
+        /// <summary>The hub's own listing order on Daily Desk and Rewrite Forge: French first.</summary>
+        private static readonly (string Lang, string SkillId, string IntentName, string[] Samples)[] FrenchFirst =
+            DefaultRegistrations.Where(entry => entry.Lang == "fr-fr")
+                .Concat(DefaultRegistrations.Where(entry => entry.Lang == "en-us"))
+                .ToArray();
+
+        private static int HubListingsAsked(FakeHubBus hub)
+        {
+            return EmittedOf(hub, ThalovantEvents.IntentList).Count(entry => !entry.Data.ContainsKey("lang"));
+        }
+
+        [Theory]
+        [InlineData("es-ES")]
+        [InlineData("ja-JP")]
+        [InlineData("de-DE")]
+        public async Task ALanguageTheHubNeverLoadedIsListedInTheHubsOwn(string phone)
+        {
+            var hub = new FakeHubBus { Registrations = FrenchFirst, HubLang = "en-US" };
+            var inventory = await Client(hub).IntentsAsync(new[] { phone });
+
+            Assert.Equal(new[] { phone }, inventory.Languages);
+            // The language the hub answers that person in, though French is listed first.
+            Assert.Equal(new[] { "en-US" }, inventory.ListedIn);
+            Assert.True(inventory.HasPhrases);
+            Assert.Equal(new[] { Shadow, Weather }, inventory.Skills.Select(skill => skill.SkillId));
+            var weather = inventory.Skills[1].Intents[0];
+            Assert.Equal("what is the weather", weather.PhrasesFor(inventory.ListedIn[0])[0]);
+            Assert.Equal(1, HubListingsAsked(hub));
+        }
+
+        [Fact]
+        public async Task TheSameLanguageInAnotherRegionComesFirst()
+        {
+            // en-CA's usual form is en-us; a hub that loaded en-GB has neither.
+            var hub = new FakeHubBus
+            {
+                Registrations = DefaultRegistrations.Where(entry => entry.Lang == "fr-fr")
+                    .Concat(DefaultRegistrations.Where(entry => entry.Lang == "en-us").Select(entry => (Lang: "en-gb", entry.SkillId, entry.IntentName, entry.Samples)))
+                    .ToArray(),
+                HubLang = "fr-FR",
+            };
+            var inventory = await Client(hub).IntentsAsync(new[] { "en-CA" });
+
+            // English before the hub's own French.
+            Assert.Equal(new[] { "en-GB" }, inventory.ListedIn);
+        }
+
+        [Fact]
+        public async Task WithoutASessionHintTheLanguageWithMostSentencesWins()
+        {
+            // Two intents in English, one in French.
+            var inventory = await Client(new FakeHubBus { Registrations = FrenchFirst }).IntentsAsync(new[] { "ja-JP" });
+            Assert.Equal(new[] { "en-US" }, inventory.ListedIn);
+        }
+
+        [Fact]
+        public void NearestHubLanguageOrdersSameLanguageThenTheHubsOwnThenMostSentences()
+        {
+            static KeyValuePair<string, IReadOnlyList<IntentRegistration>> Rows(string lang, string method = "template") =>
+                new KeyValuePair<string, IReadOnlyList<IntentRegistration>>(lang, new[] { new IntentRegistration("s", "i", lang, method) });
+
+            var listed = new[] { Rows("fr-FR"), Rows("en-US") };
+            // A tie goes to the first language listed.
+            Assert.Equal("fr-FR", ThalovantContext.NearestHubLanguage("ja-JP", listed));
+            Assert.Equal("en-US", ThalovantContext.NearestHubLanguage("ja-JP", listed, "en-US"));
+            // A hint the hub never listed is no hint.
+            Assert.Equal("fr-FR", ThalovantContext.NearestHubLanguage("ja-JP", listed, "ko-KR"));
+            Assert.Equal("fr-FR", ThalovantContext.NearestHubLanguage("fr-CA", listed, "en-US"));
+            Assert.Null(ThalovantContext.NearestHubLanguage("ja-JP", new[] { Rows("en-US", "keyword") }));
+            Assert.Null(ThalovantContext.NearestHubLanguage("ja-JP", Array.Empty<KeyValuePair<string, IReadOnlyList<IntentRegistration>>>()));
+            var disabled = new KeyValuePair<string, IReadOnlyList<IntentRegistration>>("en-US", new[] { new IntentRegistration("s", "i", "en-US", "template", enabled: false) });
+            Assert.Null(ThalovantContext.NearestHubLanguage("en-US", new[] { disabled }));
+        }
+
+        [Fact]
+        public async Task ALanguageTheHubLoadedNeverAsksTheWholeManifest()
+        {
+            var hub = new FakeHubBus { HubLang = "en-US" };
+            var inventory = await Client(hub).IntentsAsync(new[] { "fr-fr", "en-us" });
+
+            Assert.Equal(new[] { "fr-fr", "en-us" }, inventory.ListedIn);
+            Assert.Equal(0, HubListingsAsked(hub));
+        }
+
+        [Fact]
+        public async Task TwoLanguagesThatLandOnTheSameHubLanguageShareOneListing()
+        {
+            var hub = new FakeHubBus { HubLang = "en-US" };
+            var inventory = await Client(hub).IntentsAsync(new[] { "en-us", "ja-JP" });
+
+            // One key per language, not en-us and en-US.
+            Assert.Equal(new[] { "en-us", "en-us" }, inventory.ListedIn);
+            var weather = inventory.Intents.First(intent => intent.SkillId == Weather);
+            Assert.Equal(new[] { "en-us" }, weather.Phrases.Keys);
+            Assert.NotEmpty(weather.Phrases["en-us"]);
+        }
+
+        [Fact]
+        public async Task TheHubsOwnListingIsAskedOncePerInventory()
+        {
+            var hub = new FakeHubBus { Registrations = FrenchFirst, HubLang = "en-US" };
+            var inventory = await Client(hub).IntentsAsync(new[] { "es-ES", "ja-JP", "de-DE" });
+
+            Assert.Equal(new[] { "en-US", "en-US", "en-US" }, inventory.ListedIn);
+            Assert.Equal(1, HubListingsAsked(hub));
+        }
+
+        /// <summary>A hub whose connection may not ask the listing without a language.</summary>
+        private sealed class DeniedHubLanguagesHub : FakeHubBus
+        {
+            public override Task EmitBusAsync(string type, JsonObject data, JsonObject context, CancellationToken cancellationToken = default)
+            {
+                if (type == ThalovantEvents.IntentList && !data.ContainsKey("lang"))
+                {
+                    Record(type, data, context);
+                    Deliver(ThalovantEvents.PolicyDenied, new JsonObject { ["denied_type"] = type }, context);
+                    return Task.CompletedTask;
+                }
+                return base.EmitBusAsync(type, data, context, cancellationToken);
+            }
+        }
+
+        [Theory]
+        [InlineData("silent")]
+        [InlineData("refused")]
+        [InlineData("denied")]
+        public async Task AHubThatCannotListItsLanguagesLeavesTheAnswerAsItWas(string failure)
+        {
+            var hub = failure == "denied" ? new DeniedHubLanguagesHub() : new FakeHubBus();
+            hub.Keywords["ja-JP"] = ScoutKeywords;
+            if (failure == "silent") hub.ListSilentIn.Add("");
+            if (failure == "refused") hub.ListFailsIn.Add("");
+            var inventory = await Client(hub).IntentsAsync(
+                new[] { "ja-JP" },
+                new IntentInventoryOptions { Timeout = TimeSpan.FromMilliseconds(200) });
+
+            Assert.Equal(HubIntentInventory.SourceIntentManifest, inventory.Source);
+            Assert.Equal(new[] { "ja-JP" }, inventory.ListedIn);
+            Assert.Equal(
+                new[] { "SourceScoutRealPromptIntent", "SourceScoutTopicIntent" },
+                inventory.Intents.Select(intent => intent.Name));
+            Assert.Equal(1, HubListingsAsked(hub));
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task TheHubsOwnListingAnswersWhenTheUsualFormFails(bool refused)
+        {
+            var hub = new FakeHubBus { Keywords = { ["en-CA"] = ScoutKeywords } };
+            (refused ? hub.ListFailsIn : hub.ListSilentIn).Add("en-us");
+            var inventory = await Client(hub).IntentsAsync(
+                new[] { "en-CA" },
+                new IntentInventoryOptions { Timeout = TimeSpan.FromMilliseconds(200) });
+
+            Assert.Equal(new[] { "en-US" }, inventory.ListedIn);
+            Assert.True(inventory.HasPhrases);
+        }
+
+        [Fact]
+        public async Task AnEmptyHubStaysEmptyRatherThanFailing()
+        {
+            var hub = new FakeHubBus { Registrations = Array.Empty<(string Lang, string SkillId, string IntentName, string[] Samples)>() };
+            var inventory = await Client(hub).IntentsAsync(new[] { "ja-JP" });
+            Assert.Empty(inventory.Skills);
+            Assert.Equal(new[] { "ja-JP" }, inventory.ListedIn);
+        }
+
+        [Fact]
+        public async Task TheHubsOwnListingIsNotAskedWhenNearestIsOff()
+        {
+            var hub = new FakeHubBus();
+            var inventory = await Client(hub).IntentsAsync(new[] { "ja-JP" }, new IntentInventoryOptions { Nearest = false });
+            Assert.Empty(inventory.Skills);
+            var listing = Assert.Single(EmittedOf(hub, ThalovantEvents.IntentList));
+            Assert.Equal("""{"lang":"ja-JP","include_definitions":true}""", listing.Data.ToJsonString());
+        }
+
+        [Fact]
+        public async Task TheHubsOwnListingAsksForDefinitionsOnlyWhenDescribing()
+        {
+            var describing = new FakeHubBus { HubLang = "en-US" };
+            var inventory = await Client(describing).IntentsAsync(new[] { "es-ES" });
+            Assert.True(inventory.HasPhrases);
+            // Definitions came with the listing, so nothing is described.
+            Assert.Empty(EmittedOf(describing, ThalovantEvents.IntentDescribe));
+            var asked = EmittedOf(describing, ThalovantEvents.IntentList).Single(entry => !entry.Data.ContainsKey("lang"));
+            Assert.Equal("""{"include_definitions":true}""", asked.Data.ToJsonString());
+            // No language on the request context either.
+            Assert.False(asked.Context.ContainsKey("lang"));
+
+            var names = new FakeHubBus { HubLang = "en-US" };
+            var named = await Client(names).IntentsAsync(new[] { "es-ES" }, new IntentInventoryOptions { Describe = false });
+            Assert.Equal(new[] { "en-US" }, named.ListedIn);
+            Assert.Equal("{}", EmittedOf(names, ThalovantEvents.IntentList).Single(entry => !entry.Data.ContainsKey("lang")).Data.ToJsonString());
+        }
+
+        [Fact]
+        public async Task CancellingTheHubsOwnListingPropagates()
+        {
+            var hub = new FakeHubBus { ListSilentIn = { "" } };
+            using var cancelled = new CancellationTokenSource();
+            var pending = Client(hub).IntentsAsync(
+                new[] { "ja-JP" },
+                new IntentInventoryOptions { Timeout = TimeSpan.FromSeconds(30) },
+                cancelled.Token);
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (HubListingsAsked(hub) < 1 && DateTime.UtcNow < deadline) await Task.Delay(1);
+            Assert.Equal(1, HubListingsAsked(hub));
+            cancelled.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+        }
+
+        [Fact]
+        public async Task TheSerialisedInventorySaysWhichLanguageItListedIn()
+        {
+            var payload = (await Client(new FakeHubBus { HubLang = "en-US" }).IntentsAsync(new[] { "es-ES" })).ToJsonObject();
+            Assert.Equal("""["es-ES"]""", payload["languages"]!.ToJsonString());
+            Assert.Equal("""["en-US"]""", payload["listed_in"]!.ToJsonString());
+        }
+}
 }

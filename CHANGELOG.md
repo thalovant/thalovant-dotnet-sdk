@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.6
+
+- Automated patch release of the unreleased changes on `main` since v0.9.5.
+
 ## Unreleased
 
 - A quota number spelled as a double is read as a whole count only while it is below 2^63. The check compared it with `long.MaxValue`, which a double rounds up to exactly 2^63, so that one value reached a cast whose result C# leaves unspecified. The count rule's own ceiling (2^53 - 1) already turned the result into 0, so no denial read a wrong number; the helper is now right on its own. A CodeRabbit follow-up of #36.

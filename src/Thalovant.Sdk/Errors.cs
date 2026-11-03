@@ -813,9 +813,19 @@ namespace Thalovant
             return 0;
         }
 
-        private static long WholeInRange(double value) =>
+        /// <summary>
+        /// 2^63, the first whole double past a long. <c>long.MaxValue</c> is not a
+        /// double, and comparing against it rounds it up to exactly this value,
+        /// so <c>value &lt;= long.MaxValue</c> let 2^63 itself reach the cast,
+        /// whose result C# leaves unspecified (long.MinValue on x64 before
+        /// .NET 9, long.MaxValue where the conversion saturates).
+        /// </summary>
+        private const double PastLong = 9223372036854775808d;
+
+        /// <summary>A whole, non-negative double that fits in a long, or 0.</summary>
+        internal static long WholeInRange(double value) =>
             !double.IsNaN(value) && !double.IsInfinity(value) && value == Math.Truncate(value)
-                && value >= 0 && value <= long.MaxValue
+                && value >= 0 && value < PastLong
                 ? (long)value
                 : 0;
 

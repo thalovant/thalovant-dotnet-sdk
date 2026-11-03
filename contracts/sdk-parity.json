@@ -3,7 +3,7 @@
     "api-errors": {
       "implementation": {
         "src/Thalovant.Sdk/ControlPlane.cs": "1265202b37013e905920bcbfd5ad1e40dc7fb1fdef055f876e64e850c449e0b3",
-        "src/Thalovant.Sdk/Errors.cs": "9e24eb63d7b133743999384a2309006adad3651bda4fcc5923bfc65140591890"
+        "src/Thalovant.Sdk/Errors.cs": "59cf588f0089d5f67e7955d1493ed35f06eba02f5c12bb6485e77db2d7e774d3"
       },
       "reason": "ThalovantApiException.Detail and Problem, and ErrorCode under the shared rule, filled by ThalovantControlPlane.ApiError: the one place a non-2xx response becomes an exception, which reads the body as UTF-8, parses it once and keeps the message as it was. Run against the shared api-error vectors on net8.0 and net9.0, each response served with its exact status, Content-Type and bytes through an injected HttpMessageHandler and read back through GetHubAsync.",
       "status": "required",
@@ -41,7 +41,7 @@
     "connection-admission": {
       "implementation": {
         "src/Thalovant.Sdk/ControlPlane.cs": "1265202b37013e905920bcbfd5ad1e40dc7fb1fdef055f876e64e850c449e0b3",
-        "src/Thalovant.Sdk/Errors.cs": "9e24eb63d7b133743999384a2309006adad3651bda4fcc5923bfc65140591890",
+        "src/Thalovant.Sdk/Errors.cs": "59cf588f0089d5f67e7955d1493ed35f06eba02f5c12bb6485e77db2d7e774d3",
         "src/Thalovant.Sdk/Operations.cs": "44a568b2e2c32d75057e9f960129f10241e0103642aeb4726151dd0dd0d7d298"
       },
       "reason": "WaitForAdmissionAsync follows BootstrapIdentityResult.Operation with GET /v1/operations/{id}: ready is admitted; failed and timed_out throw ThalovantAdmissionFailedException with the operation's ErrorCode; a 404 or no operation at all return at once. A 5xx is ridden out, and so is a 429 for ThalovantApiException.RetryAfter -- the body's retry_after_seconds (top level or inside detail), else Retry-After, else RateLimit-Reset -- which is a timeout at once when longer than the time left. A 401 or 403 is thrown as the API's own authentication error, an unreachable API as ThalovantApiUnreachableException, and any other refusal of the wait keeps status, code and detail on ThalovantAdmissionFailedException.ApiError. Every read is bounded by the deadline and every wait is re-waited on a Stopwatch; a links.self on another origin (scheme, host and port) is never fetched. The timeout is ThalovantAdmissionTimeoutException, a ThalovantConnectionException that implements IThalovantTimeout, whose message ends 'it may still admit it later'. Run against the shared admission vectors through a loopback API over the SDK's own HttpClient, with scripted headers, {api_host}/{api_port} links and a closed port for the unreachable case.",
@@ -59,7 +59,7 @@
     "connection-kinds": {
       "implementation": {
         "src/Thalovant.Sdk/ControlPlane.cs": "1265202b37013e905920bcbfd5ad1e40dc7fb1fdef055f876e64e850c449e0b3",
-        "src/Thalovant.Sdk/Errors.cs": "9e24eb63d7b133743999384a2309006adad3651bda4fcc5923bfc65140591890"
+        "src/Thalovant.Sdk/Errors.cs": "59cf588f0089d5f67e7955d1493ed35f06eba02f5c12bb6485e77db2d7e774d3"
       },
       "reason": "CreateClientIdentityOptions.ConnectionType is sent as spec.connection_type; a kind the answer does not echo deletes the client with If-Match and throws ThalovantUnsupportedConnectionTypeException, as a 422 does when its detail or code, or a validation error's loc or msg, names connection_type -- never an echoed input. ThalovantApiException.FromResponse, the one place a failed response becomes an exception, classifies every refusal: ThalovantAuthenticationException (401, 423, 403 Insufficient scopes), ThalovantPlanException (402, 403 plan_limit), ThalovantAlreadyLinkedException with ClientId (409 home_assistant_already_linked), each keeping the api-errors fields. DeleteClientAsync reads the etag when none is given, retries once on 412, and counts 404 as deleted. Run against the shared connection-kinds vectors through a loopback API over the SDK's own HttpClient, recording the requests sent.",
       "status": "required",
@@ -113,7 +113,7 @@
       "implementation": {
         "src/Thalovant.Sdk/ControlPlane.cs": "1265202b37013e905920bcbfd5ad1e40dc7fb1fdef055f876e64e850c449e0b3",
         "src/Thalovant.Sdk/DeviceLogin.cs": "bb9face9dc6cc3c557ff8e57445ddd46161ac291097da5758a5a28809e7f3c6b",
-        "src/Thalovant.Sdk/Errors.cs": "9e24eb63d7b133743999384a2309006adad3651bda4fcc5923bfc65140591890",
+        "src/Thalovant.Sdk/Errors.cs": "59cf588f0089d5f67e7955d1493ed35f06eba02f5c12bb6485e77db2d7e774d3",
         "src/Thalovant.Sdk/Home.cs": "ec1dd73d13308ecf0fa5b1fd1eedb54a98725b6d7d5aa69482c0b2643f69bb45"
       },
       "reason": "BeginDeviceLoginAsync, PollDeviceLoginAsync and RevokeApiTokenAsync in ControlPlane.cs, one request each, sharing the grant parsing and the single token poll with LoginWithBrowserAsync. A slow_down lengthens the per-code interval for good. Revoking the token in use is idempotent: a 401 on its own revoke counts as revoked, and a second revoke sends nothing. An empty scope list is left out of the request. A new BeginDeviceLoginAsync(scopes, clientName, clientId) overload and DeviceLoginOptions.ClientId send client_id only when given; the existing overload is unchanged, since an optional parameter would have broken compiled callers. ThalovantHome.HomeAssistantClientId (Home.cs) holds the id. DescribeDeviceLoginAsync reads GET /v1/auth/device/codes/{user_code}, signed in, into DeviceLoginRequest (DeviceLogin.cs), with ClientVerified true only when a client_id came with it. ThalovantDeviceLoginPendingException carries Interval, and the denied and expired outcomes are ThalovantApiException with the API's 400 (Errors.cs). Run against the shared device-login vectors on net8.0 and net9.0, each answer served by a loopback API over the SDK's own HttpClient with every request checked against its case.",
@@ -131,7 +131,7 @@
     "home-link": {
       "implementation": {
         "src/Thalovant.Sdk/Client.cs": "acccf26f1c665042065fd0dd859f45e3114db5639bc256dda92209e5c6a8b829",
-        "src/Thalovant.Sdk/Errors.cs": "9e24eb63d7b133743999384a2309006adad3651bda4fcc5923bfc65140591890",
+        "src/Thalovant.Sdk/Errors.cs": "59cf588f0089d5f67e7955d1493ed35f06eba02f5c12bb6485e77db2d7e774d3",
         "src/Thalovant.Sdk/Events.cs": "4ed7b9cf6cee4b89ba8f3b509e5ff2be23c46c7bc945bdb5b6b09e829213f54a",
         "src/Thalovant.Sdk/Home.cs": "ec1dd73d13308ecf0fa5b1fd1eedb54a98725b6d7d5aa69482c0b2643f69bb45",
         "src/Thalovant.Sdk/Noise.cs": "b6511a953c5af1167a364938f0adcbe434590bc7879f46d0ef42184052e70284",
@@ -221,14 +221,14 @@
     "refusal": {
       "implementation": {
         "src/Thalovant.Sdk/Client.cs": "acccf26f1c665042065fd0dd859f45e3114db5639bc256dda92209e5c6a8b829",
-        "src/Thalovant.Sdk/Errors.cs": "9e24eb63d7b133743999384a2309006adad3651bda4fcc5923bfc65140591890",
+        "src/Thalovant.Sdk/Errors.cs": "59cf588f0089d5f67e7955d1493ed35f06eba02f5c12bb6485e77db2d7e774d3",
         "src/Thalovant.Sdk/Refusal.cs": "dff4e8b79ceb6816b1386c9079f648e057647f472ae65aaaf5c5a74484d6a8f8"
       },
       "reason": "Refusal.BelongsToAsk() and Refusal.ErrorFor() in src/Thalovant.Sdk/Refusal.cs, applied by AskState.Process() and AskAsync() in Client.cs, which counts asks, queries and fire-and-forget utterances inside the shared grace window -- recorded once connected and immediately before the publish, and kept when that publish throws. ThalovantPolicyDeniedException carries Quota -- read from every numeric shape a JsonValue holds -- and ThalovantUnansweredException is new; both remain ThalovantRuntimeException. Run against the shared refusal vectors plus collector-level cases.",
       "status": "required",
       "tests": {
         "tests/Thalovant.Sdk.Tests/Fixtures/refusal-vectors.json": "6b0f4128f1cc9fd8a54944410ce93c6515bac6cde9257284e313a4fea825bfcb",
-        "tests/Thalovant.Sdk.Tests/RefusalVectorTests.cs": "3490e7964ebd3501647bf12a18aa80c027ef976bfc4e16b5daee65b9b46ee1a7",
+        "tests/Thalovant.Sdk.Tests/RefusalVectorTests.cs": "250c123e27516b6c6c8e5f505a04001826e39facc56a709fa8c39c2515173164",
         "tests/Thalovant.Sdk.Tests/RuntimeTests.cs": "0d7cbbd64ecca8e88882c7caf85a2ddb21285c43f93c52123b54897f50a97b1c"
       },
       "vectors": {

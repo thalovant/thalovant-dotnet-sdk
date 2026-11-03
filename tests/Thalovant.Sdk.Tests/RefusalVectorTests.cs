@@ -129,10 +129,27 @@ namespace Thalovant.Sdk.Tests
             { JsonValue.Create("50")!, 50 },                    // numeric string
             { JsonValue.Create(50.5d)!, 0 },                    // not whole
             { JsonValue.Create(1e20d)!, 0 },                    // past a long
+            { JsonValue.Create(9223372036854775808d)!, 0 },     // 2^63, the first double past a long
             { JsonValue.Create(ulong.MaxValue)!, 0 },           // past a long
             { JsonValue.Create(-5)!, 0 },                       // no policy means this
             { JsonValue.Create(true)!, 0 },                     // not a number at all
         };
+
+        [Theory]
+        [InlineData(0d, 0L)]
+        [InlineData(4503599627370496d, 4503599627370496L)]   // 2^52, whole and in range
+        [InlineData(9223372036854774784d, 9223372036854774784L)] // the largest double below 2^63
+        [InlineData(9223372036854775808d, 0L)]               // 2^63: long.MaxValue rounds to it as a double
+        [InlineData(1.8446744073709552E19d, 0L)]             // 2^64
+        [InlineData(-1d, 0L)]
+        public void AWholeDoubleIsReadOnlyWhileItFitsInALong(double value, long expected)
+        {
+            // The quota's own ceiling (2^53 - 1) hides the boundary from a
+            // policy denial, so it is pinned here, where the helper is used:
+            // comparing with long.MaxValue let exactly 2^63 reach a cast whose
+            // result C# leaves unspecified, and it never came back 0.
+            Assert.Equal(expected, ThalovantPolicyDeniedException.WholeInRange(value));
+        }
 
         [Theory]
         [MemberData(nameof(NumericShapes))]

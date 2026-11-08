@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The README's install line no longer pins `--version 0.7.1`, two minor versions behind: the README ships inside the NuGet package, so the quick start installed an old release. It now installs the latest. Documentation only. A CodeRabbit follow-up of #12.
+
 ## 0.9.6
 
 - Automated patch release of the unreleased changes on `main` since v0.9.5.

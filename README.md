@@ -1,4 +1,4 @@
-<!-- Last Edit: Codex - 2026-11-07 - Motive: Add the canonical Thalovant logo with light and dark theme support. -->
+<!-- Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: Stop pinning the install line to 0.7.1 (CodeRabbit follow-up of #12). -->
 
 <p align="center">
   <picture>
@@ -34,7 +34,7 @@ The full guide lives at <https://docs.thalovant.com/developers/sdks/dotnet/>.
 ## Install
 
 ```bash
-dotnet add package Thalovant.Sdk --version 0.7.1
+dotnet add package Thalovant.Sdk
 ```
 
 ## Quick start

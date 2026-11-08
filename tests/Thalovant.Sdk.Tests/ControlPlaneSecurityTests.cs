@@ -27,6 +27,24 @@ namespace Thalovant.Sdk.Tests
             Assert.Equal(1, launches);
         }
         [Fact]
+        public void DeviceVerificationUrlMayBePlainHttpAsInTheReference()
+        {
+            // The Python reference's _safe_browser_url and the Go port accept
+            // HTTP or HTTPS on any host; a self-hosted control plane may hand
+            // out a plain-HTTP page. AUDIT.md records the decision and its risk.
+            foreach (var url in new[] { "http://example.test/verify", "http://192.168.1.10:3000/activate?code=a", "http://localhost:3000/activate" })
+            {
+                Assert.NotNull(ThalovantControlPlane.DeviceVerificationUri(url));
+                var launches = 0;
+                ThalovantControlPlane.TryOpenBrowser(url, info => {
+                    launches++;
+                    if (info.UseShellExecute) Assert.StartsWith("http://", info.FileName);
+                    else { Assert.Single(info.ArgumentList); Assert.StartsWith("http://", info.ArgumentList[0]); }
+                });
+                Assert.Equal(1, launches);
+            }
+        }
+        [Fact]
         public void OriginalFourParameterConstructorRemainsBinaryCompatible()
         {
             Assert.NotNull(typeof(ThalovantControlPlane).GetConstructor(new[] { typeof(string), typeof(string), typeof(string), typeof(HttpClient) }));

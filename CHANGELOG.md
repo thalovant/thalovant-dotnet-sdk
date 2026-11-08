@@ -28,7 +28,7 @@ Ports the Python reference's 0.11.0 browser sign-in (thalovant/thalovant-python-
   - Its tab waits as long as the sign-in takes, then gets `Signed in to Thalovant. You can close this tab.` or `Sign-in was not completed.`. Closing the listener answers it at once.
   - Every answer carries `Content-Type: text/html; charset=utf-8`, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, `Content-Security-Policy: default-src 'none'` and `X-Content-Type-Options: nosniff`, with a page that loads nothing.
   - After each answer the listener shuts its write side and drains what the browser still sends, for at most 2 s and 1 MiB, so a reset cannot discard the answer.
-  - It holds at most 32 connections, closing the oldest silent one to make room. Connections that never send anything are closed, not waited for. Nothing is logged.
+  - It holds at most 32 connections. To make room it closes an answered one first, then the oldest silent one with nothing waiting; never one whose bytes arrived. Connections that never send anything are closed, not waited for. Nothing is logged.
 - **Outcomes reuse the device-login types, with no status:**
   - Denied in the browser is `ThalovantDeviceAccessDeniedException`.
   - No callback within the timeout (measured with `Stopwatch`, never cut short) is `ThalovantDeviceCodeExpiredException`.
@@ -36,7 +36,7 @@ Ports the Python reference's 0.11.0 browser sign-in (thalovant/thalovant-python-
   - A refused exchange (`400 invalid_grant`) carries the api-errors fields, and a 2xx that is not a JSON object with an `access_token` has no status.
   - An http API that is not loopback is refused before anything is asked or opened, and cancelling closes the port.
 - **The exchange is sent once.** Its body refuses a second write, so a pipeline that resends it fails instead of presenting the code twice: a code presented twice revokes the token the first exchange minted.
-- **Secrets never reach an exception.** The code, the verifier, the state, and any token value a failed answer carries are redacted before the error's message is made, so a message cut to 200 characters keeps no part of one. Redaction is one pass, longest secret first, never inside an existing `[redacted]`, and covers bodies that are JSON of any shape, escaped spellings included. The error is always a new one with no inner exception, and an answer that cannot be read leaves no token on the client.
+- **Secrets never reach an exception.** The code (also as a URL or form spells it), the verifier, the state, and any token value a failed answer carries are redacted before the error's message is made, so a message cut to 200 characters keeps no part of one. A failed answer that is not JSON is withheld, and an answer System.Text.Json cannot read (a lone surrogate escape) is an error rather than a crash. Redaction is one pass, longest secret first, never inside an existing `[redacted]`, and covers bodies that are JSON of any shape, escaped spellings included. The error is always a new one with no inner exception, and an answer that cannot be read leaves no token on the client.
 - **The pieces, public on their own:**
   - `BrowserSignIn.AuthorizationUrl` (parameters in the contract's order, RFC 3986 percent-encoding with upper-case hex and `%20`), `LoopbackRedirectUri` (1024-65535 only), `NewVerifier` (86 characters), `NewState` (192 bits), `ChallengeFor`, `CanOpenBrowser(environment, platform)` and `DefaultDeviceName()`.
   - The constants `SdkClientId`, `DefaultTimeout`, `MaxDeviceNameLength` and `LoopbackCallbackPath`.

@@ -1,6 +1,45 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Port the final browser-login reference (python-sdk #113 at 39e31d8, digest 6dfb3bb31ac7, 119 vectors).
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Answer the CodeRabbit re-review of #54 at b36a198 (11 threads, 1 nitpick).
 
 # Maintenance Report
+
+## 2026-11-08 — CodeRabbit re-review of #54 at `b36a198`
+
+The contract is the final reference (python-sdk `39e31d8`, digest `6dfb3bb31ac7`, 119 vectors). Nothing here changes what a vector observes.
+
+| # | Finding | Outcome |
+| :--- | :--- | :--- |
+| 1 | Origin guarantee vs a caller's own redirecting handler (major) | Wording qualified in QUICK_FACTS and README. The SDK checks every URL it sends to, switches redirects off on every handler it can reach, and refuses an injected `HttpClient` for credential-bearing requests; a caller's terminal handler that follows redirects itself is outside that. |
+| 2 | README: "set" means a non-empty value | Fixed |
+| 3 | Refuse a `0x…` final label | Declined: the reference accepts `example.0x1` (and `0x7f`); reported to the lead |
+| 4 | An unreadable property name escapes as `InvalidOperationException` | Fixed for the configuration, the token answer and a failed exchange; 3 tests |
+| 5 | A caller's handler that buffers the body bypasses the send-once guard (major) | Declined: out of the SDK's reach, and the brief leaves a caller's POST retry policy with the caller; reported to the lead |
+| 6 | Token values in a non-JSON failed answer (major) | Fixed: such a body is withheld; test |
+| 7 | A callback could be evicted before its handler reads it | Fixed: bytes waiting, or first bytes read, protect it; churn test |
+| 8 | Answered rejections never free their slot | Fixed: answered connections are evicted first; test |
+| 9 | Drain the accepted tab before close | Fixed: drained inside the accepted path, so close waits for it, at most `CloseGrace`; test |
+| 10 | Clamp drain reads to the budget | Fixed (`NextDrainRead`); test |
+| 11 | Bind the expected status per input | Fixed |
+| nit | Callback admitted during churn | Added `ACallbackIsNotEvictedWhileSilentConnectionsKeepArriving` |
+| note | Encoded spellings of a code | The code is redacted as a URL or form would spell it too; test |
+
+Writing the tests caught a real bug: the outer redaction scrubbed a one-letter code out of the SDK's own withheld-body marker. The marker is now kept as it is.
+
+### Verification
+
+- `dotnet build --configuration Release`: 0 warnings, 0 errors.
+- `DOTNET_ROLL_FORWARD=Major THALOVANT_CONFORMANCE_OUT=$PWD/contracts/conformance-results.json dotnet test --configuration Release --no-build`: net8.0 929/929, net9.0 929/929.
+- The conformance record is unchanged from `b36a198` and equals the reference (119/119).
+- The 278 browser-login tests passed 10 runs in a row.
+- Mutations that keep answered connections unevictable, or drain the accepted tab after signalling, each fail their test.
+- `dotnet pack … --no-build`: 0.10.0.
+- `check-sdk-parity.py --consumer thalovant-dotnet-sdk`: verified against a clean clone of `39e31d8` and against `main`.
+- Evidence was refreshed for the three changed files only (`BrowserLogin.cs`, `BrowserLoopback.cs`, `BrowserLoginTests.cs`). The digests are unchanged.
+
+### Transparency Report
+
+- **AI Model:** Claude Opus 5.5 (claude-opus-5-5), as a Claude Code agent.
+- **Actions Taken:** read the 11 threads and the review body; checked each against the code and the reference at `39e31d8` (probing it in Python); made the fixes and tests above, with mutation checks; updated the docs; replied on and resolved every thread.
+- **Oversight:** hosted CI and CodeRabbit gate the merge; the platform owner's coordinating agent merges. Nothing was merged, tagged or released.
 
 ## 2026-11-08 — Browser sign-in against the final reference (python-sdk `39e31d8`)
 

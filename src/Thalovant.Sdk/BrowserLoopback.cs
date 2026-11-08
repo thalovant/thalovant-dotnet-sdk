@@ -537,17 +537,20 @@ namespace Thalovant
                     }
                     if (_connections.Count >= MaxConnections)
                     {
-                        // Full: the oldest connection that has sent no request
-                        // makes room. A callback sends its request at once, so a
-                        // flood of silent connections cannot hold the port.
-                        var idle = _connections.FirstOrDefault(connection => !connection.Busy);
-                        if (idle is null)
+                        // Full: make room. First the oldest connection already
+                        // answered (a rejected request draining), then the oldest
+                        // that has sent nothing -- not one with bytes waiting to
+                        // be read, which may be a callback its handler has not
+                        // reached yet. Nothing is evicted once its bytes arrived.
+                        var victim = _connections.FirstOrDefault(connection => connection.State == ConnectionState.Answered)
+                            ?? _connections.FirstOrDefault(connection => connection.State == ConnectionState.Silent && !HasBytesWaiting(connection.Client));
+                        if (victim is null)
                         {
                             Close(client);
                             continue;
                         }
-                        _connections.Remove(idle);
-                        Close(idle.Client);
+                        _connections.Remove(victim);
+                        Close(victim.Client);
                     }
                     var opened = new Connection(client);
                     _connections.Add(opened);
@@ -557,15 +560,49 @@ namespace Thalovant
             }
         }
 
-        /// <summary>One open connection, and whether it has sent its request head.</summary>
+        /// <summary>Where a connection is, for deciding which one makes room.</summary>
+        private enum ConnectionState
+        {
+            /// <summary>Nothing received yet: evictable while no bytes are waiting.</summary>
+            Silent,
+
+            /// <summary>Bytes arrived, or it is the accepted tab: never evicted.</summary>
+            Busy,
+
+            /// <summary>A rejected request already answered, draining: evicted first.</summary>
+            Answered,
+        }
+
+        /// <summary>One open connection, and how far it got.</summary>
         private sealed class Connection
         {
             internal Connection(TcpClient client) => Client = client;
 
             internal TcpClient Client { get; }
 
-            /// <summary>Set once a request head (or too much of one) arrived; never evicted after that.</summary>
-            internal bool Busy { get; set; }
+            /// <summary>Changed under the listener's lock.</summary>
+            internal ConnectionState State { get; set; }
+        }
+
+        /// <summary>Whether bytes have arrived that the connection's handler has not read yet.</summary>
+        private static bool HasBytesWaiting(TcpClient client)
+        {
+            try
+            {
+                return client.Available > 0;
+            }
+            catch (Exception)
+            {
+                return false; // Closed already: nothing worth keeping.
+            }
+        }
+
+        private void Mark(Connection connection, ConnectionState state)
+        {
+            lock (_gate)
+            {
+                connection.State = state;
+            }
         }
 
         /// <summary>One connection: one request, one answer. Its failure is that connection's alone.</summary>
@@ -593,17 +630,10 @@ namespace Thalovant
         {
             var client = connection.Client;
             var stream = client.GetStream();
-            var (head, overrun) = await ReadHeadAsync(client, stream).ConfigureAwait(false);
-            if (head != null || overrun)
-            {
-                lock (_gate)
-                {
-                    connection.Busy = true;
-                }
-            }
+            var (head, overrun) = await ReadHeadAsync(client, stream, () => Mark(connection, ConnectionState.Busy)).ConfigureAwait(false);
             if (overrun)
             {
-                await AnswerAsync(client, stream, ResponseBytes(400, WrongStateText)).ConfigureAwait(false);
+                await AnswerAsync(connection, ResponseBytes(400, WrongStateText)).ConfigureAwait(false);
                 return;
             }
             if (head is null)
@@ -613,7 +643,7 @@ namespace Thalovant
             var request = RequestLine(head);
             if (request is null)
             {
-                await AnswerAsync(client, stream, ResponseBytes(400, WrongStateText)).ConfigureAwait(false);
+                await AnswerAsync(connection, ResponseBytes(400, WrongStateText)).ConfigureAwait(false);
                 return;
             }
             var (status, callback) = Classify(request.Value.Method, request.Value.Target, _state);
@@ -637,7 +667,7 @@ namespace Thalovant
                 {
                     status = 400;
                 }
-                await AnswerAsync(client, stream, ResponseBytes(
+                await AnswerAsync(connection, ResponseBytes(
                     status, status == 404 ? NotFoundText : WrongStateText, headOnly: request.Value.Method == "HEAD")).ConfigureAwait(false);
                 return;
             }
@@ -654,12 +684,15 @@ namespace Thalovant
                 var signedIn = await _answer.Task.ConfigureAwait(false);
                 await WriteAsync(stream, ResponseBytes(200, signedIn ? SignedInText : NotCompletedText)).ConfigureAwait(false);
                 EndSending(client);
+                // Drained before CloseAsync may close the socket: a tab still
+                // sending when it is closed gets a reset, which can take the page
+                // with it. CloseAsync waits for this at most CloseGrace.
+                await DrainAsync(client, stream).ConfigureAwait(false);
             }
             finally
             {
                 _acceptedAnswered.TrySetResult(true);
             }
-            await DrainAsync(client, stream).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -668,7 +701,7 @@ namespace Thalovant
         /// ends, breaks or stays silent for <see cref="RequestReadTimeout"/>
         /// before sending one.
         /// </summary>
-        private static async Task<(byte[]? Head, bool Overrun)> ReadHeadAsync(TcpClient client, NetworkStream stream)
+        private static async Task<(byte[]? Head, bool Overrun)> ReadHeadAsync(TcpClient client, NetworkStream stream, Action heard)
         {
             var limit = MaxRequestHead + HeadEnd.Length;
             var buffer = new byte[FirstReadSize];
@@ -689,6 +722,10 @@ namespace Thalovant
                         if (read <= 0)
                         {
                             return (null, false);
+                        }
+                        if (filled == 0)
+                        {
+                            heard(); // Its first bytes: no longer a connection that makes room.
                         }
                         var from = Math.Max(0, filled - (HeadEnd.Length - 1));
                         filled += read;
@@ -722,12 +759,18 @@ namespace Thalovant
             return -1;
         }
 
-        /// <summary>Sends an answer, shuts the write side, and drains before the connection closes.</summary>
-        private async Task AnswerAsync(TcpClient client, NetworkStream stream, byte[] response)
+        /// <summary>
+        /// Sends a rejection, shuts the write side, and drains before the
+        /// connection closes. Once answered it is the first to make room: its
+        /// tab has what it came for.
+        /// </summary>
+        private async Task AnswerAsync(Connection connection, byte[] response)
         {
+            var stream = connection.Client.GetStream();
             await WriteAsync(stream, response).ConfigureAwait(false);
-            EndSending(client);
-            await DrainAsync(client, stream).ConfigureAwait(false);
+            EndSending(connection.Client);
+            Mark(connection, ConnectionState.Answered);
+            await DrainAsync(connection.Client, stream).ConfigureAwait(false);
         }
 
         private static async Task WriteAsync(NetworkStream stream, byte[] bytes)
@@ -765,9 +808,9 @@ namespace Thalovant
             {
                 try
                 {
-                    while (total <= DrainLimit)
+                    while (total < DrainLimit)
                     {
-                        var read = await stream.ReadAsync(sink, 0, sink.Length, timeout.Token).ConfigureAwait(false);
+                        var read = await stream.ReadAsync(sink, 0, NextDrainRead(total, sink.Length), timeout.Token).ConfigureAwait(false);
                         if (read <= 0)
                         {
                             return;
@@ -781,6 +824,9 @@ namespace Thalovant
                 }
             }
         }
+
+        /// <summary>How much the next drain read may take: never past <see cref="DrainLimit"/>.</summary>
+        internal static int NextDrainRead(int drained, int chunk) => Math.Max(0, Math.Min(chunk, DrainLimit - drained));
 
         private void StopListening()
         {

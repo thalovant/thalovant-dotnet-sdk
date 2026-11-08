@@ -180,6 +180,19 @@ namespace Thalovant
         /// </remarks>
         public static NativeSignInConfig FromPayload(JsonNode? payload)
         {
+            try
+            {
+                return Read(payload);
+            }
+            catch (InvalidOperationException)
+            {
+                // A string System.Text.Json cannot decode (a lone surrogate escape).
+                throw new FormatException("The browser sign-in configuration holds a value that cannot be read.");
+            }
+        }
+
+        private static NativeSignInConfig Read(JsonNode? payload)
+        {
             if (!(payload is JsonObject body))
             {
                 throw new FormatException("The browser sign-in configuration is not an object.");
@@ -873,19 +886,18 @@ namespace Thalovant
                 .ConfigureAwait(false);
             if (statusCode == 404)
             {
-                throw ThalovantApiException.FromResponse(
-                    "This Thalovant API does not offer browser sign-in; sign in with a device login instead.",
-                    statusCode, text, ThalovantApiException.ParseProblem(text));
+                throw Failure(statusCode, text, retryAfter,
+                    "This Thalovant API does not offer browser sign-in; sign in with a device login instead.");
             }
             if (statusCode < 200 || statusCode >= 300)
             {
-                throw ApiError(statusCode, text).WithRetryAfterHeader(retryAfter);
+                throw Failure(statusCode, text, retryAfter);
             }
             try
             {
                 // A 2xx the SDK cannot use is an error with no status, as a token
                 // answer's is: the API did not refuse.
-                return NativeSignInConfig.FromPayload(ThalovantApiException.ParseProblem(text));
+                return NativeSignInConfig.FromPayload(ReadObject(text));
             }
             catch (FormatException error)
             {
@@ -944,7 +956,9 @@ namespace Thalovant
                         "The browser came back without a sign-in code" + (callback.Error is null ? "." : $" ({callback.Error})."),
                         errorCode: callback.Error);
                 }
-                var hidden = new[] { callback.Code, verifier, state };
+                // The code as it arrived, and as a URL or a form would spell it
+                // again (the API mints URL-safe codes, so these are usually it).
+                var hidden = new[] { callback.Code, BrowserSignIn.PercentEncode(callback.Code), WebUtility.UrlEncode(callback.Code), verifier, state };
                 DeviceLoginResult result;
                 try
                 {
@@ -1006,10 +1020,9 @@ namespace Thalovant
                 .ConfigureAwait(false);
             if (statusCode < 200 || statusCode >= 300)
             {
-                var clean = new Redactor(hidden.Concat(TokensIn(text))).ScrubBody(text);
-                throw ApiError(statusCode, clean).WithRetryAfterHeader(retryAfter);
+                throw Failure(statusCode, CleanExchangeBody(text, hidden), retryAfter);
             }
-            var token = ThalovantApiException.ParseProblem(text);
+            var token = ReadObject(text);
             if (token is null)
             {
                 throw new ThalovantApiException("Thalovant API returned an unexpected response shape.");
@@ -1026,6 +1039,62 @@ namespace Thalovant
                 throw new ThalovantApiException("Thalovant API returned an unexpected response shape.");
             }
             return AcceptDeviceToken(token);
+        }
+
+        /// <summary>What a failed exchange's body becomes when it is not JSON.</summary>
+        internal const string WithheldBody = "[withheld: the token exchange's answer was not JSON]";
+
+        /// <summary>
+        /// A failed exchange's body as an error may keep it. JSON has every one of
+        /// <paramref name="hidden"/>, and every token value it carries, taken out.
+        /// Anything else is withheld whole: it cannot be searched for a token it
+        /// does not name, and the api-errors fields come from JSON alone, so the
+        /// reference's error keeps nothing of such a body either.
+        /// </summary>
+        internal static string CleanExchangeBody(string text, IEnumerable<string?> hidden)
+        {
+            if (text.Length == 0)
+            {
+                return text;
+            }
+            return Redactor.IsJson(text) ? new Redactor(hidden.Concat(TokensIn(text))).ScrubBody(text) : WithheldBody;
+        }
+
+        /// <summary>
+        /// <see cref="ThalovantApiException.ParseProblem"/>, with a body that cannot
+        /// be read (a property name System.Text.Json cannot decode) read as no
+        /// object, so an answer like that is an error rather than an
+        /// <see cref="InvalidOperationException"/>.
+        /// </summary>
+        private static JsonObject? ReadObject(string text)
+        {
+            try
+            {
+                return ThalovantApiException.ParseProblem(text);
+            }
+            catch (InvalidOperationException)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// The error for a failure status, as <see cref="ApiError(int, string)"/>
+        /// builds it; for a body whose values cannot be read, the status alone.
+        /// </summary>
+        internal static ThalovantApiException Failure(int statusCode, string body, TimeSpan? retryAfter, string? message = null)
+        {
+            try
+            {
+                var error = message is null
+                    ? ApiError(statusCode, body)
+                    : ThalovantApiException.FromResponse(message, statusCode, body, ThalovantApiException.ParseProblem(body));
+                return error.WithRetryAfterHeader(retryAfter);
+            }
+            catch (InvalidOperationException)
+            {
+                return new ThalovantApiException(message ?? FormatRequestFailed(statusCode, null), statusCode).WithRetryAfterHeader(retryAfter);
+            }
         }
 
         /// <summary>
@@ -1116,9 +1185,13 @@ namespace Thalovant
             var message = redactor.Scrub(error.Message);
             if (error.StatusCode is int statusCode)
             {
-                var clean = redactor.ScrubBody(error.Body ?? error.Problem?.ToJsonString() ?? "");
-                return ThalovantApiException.FromResponse(message, statusCode, clean, ThalovantApiException.ParseProblem(clean))
-                    .WithRetryAfterHeader(error.RetryAfter);
+                var source = error.Body ?? error.Problem?.ToJsonString() ?? "";
+                // The withheld marker is the SDK's own text and holds no secret:
+                // scrubbing it could only mangle it (a one-letter code matches
+                // inside "exchange").
+                var clean = source == WithheldBody ? WithheldBody
+                    : source.Length == 0 || Redactor.IsJson(source) ? redactor.ScrubBody(source) : WithheldBody;
+                return Failure(statusCode, clean, error.RetryAfter, message);
             }
             if (error is ThalovantApiUnreachableException)
             {
@@ -1225,6 +1298,20 @@ namespace Thalovant
                         string.Join("|", values.Select(System.Text.RegularExpressions.Regex.Escape)),
                         System.Text.RegularExpressions.RegexOptions.CultureInvariant,
                         TimeSpan.FromSeconds(2));
+            }
+
+            /// <summary>Whether <paramref name="text"/> is JSON of any shape.</summary>
+            internal static bool IsJson(string text)
+            {
+                try
+                {
+                    using var document = JsonDocument.Parse(text);
+                    return true;
+                }
+                catch (JsonException)
+                {
+                    return false;
+                }
             }
 
             /// <summary><paramref name="text"/> with every secret replaced by <see cref="Marker"/>.</summary>

@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Final browser-login reference (python-sdk 39e31d8, digest 6dfb3bb31ac7, 119 vectors).
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Qualify the origin guarantee for a caller's own handler (CodeRabbit re-review of #54).
 
 # Quick facts: thalovant-dotnet-sdk
 
@@ -13,6 +13,6 @@ Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Final browser-login reference 
 | Browser sign-in API | `GET /v1/auth/native/config`, `POST {token_endpoint}` (thalovant-api #501, live); a config 404 falls back to device login only in `InteractiveLoginAsync` with `LoginMethod.Auto`; `BrowserLoginAsync` and `LoginMethod.Browser` throw it |
 | Parity | consumer of the Python reference; acknowledges `57c7e71f6456` and the final candidate `6dfb3bb31ac7` (python-sdk #113 at `39e31d8`) in `contracts/sdk-parity.json` |
 | Conformance | `contracts/conformance-results.json`, written by `THALOVANT_CONFORMANCE_OUT=... dotnet test`; browser-login: 119 cases |
-| Request origin | every control-plane request is refused off the API's origin (`ThalovantControlPlane.RequireApiOrigin`) |
+| Request origin | every URL the SDK sends to is refused off the API's origin (`ThalovantControlPlane.RequireApiOrigin`), and a redirect is an error, not followed: the SDK switches automatic redirects off on every handler it can reach and refuses an injected `HttpClient` for credential-bearing requests. A terminal `HttpMessageHandler` of the caller's own that follows redirects by itself is outside both |
 | Chat apps (`/v1/bridges`) | not covered (`chat-apps` not applicable); see the Python, Node, Go or Rust SDK or the MCP server |
 | Release | merge to `main` with release-relevant changes -> `auto-release.yml` |

@@ -467,6 +467,83 @@ public sealed class BrowserLoginTests
         Assert.Equal(new[] { "GET /v1/auth/native/config", "POST /v2/sign-in/exchange" }, api.Requests);
     }
 
+    /// <summary>One browser sign-in against <paramref name="api"/>, played to its callback, and the error it ends with.</summary>
+    private static async Task<(ThalovantApiException Error, ThalovantControlPlane Plane)> FailedSignInAsync(Api api, string code = "c")
+    {
+        var plane = new ThalovantControlPlane(apiUrl: api.Url);
+        var (opened, handOver) = Opened();
+        var task = plane.BrowserLoginAsync(new BrowserLoginOptions { OpenBrowser = false, Prompt = handOver });
+        var (port, state, _) = Parts(await opened.WaitAsync(Patience));
+        await BrowserTab.SendAsync(port, "GET", $"/callback?code={code}&state={state}");
+        return (await Assert.ThrowsAnyAsync<ThalovantApiException>(() => task.WaitAsync(Patience)), plane);
+    }
+
+    [Fact]
+    public async Task ATokenAnswerWhoseNamesCannotBeReadIsAnErrorWithNoStatus()
+    {
+        // System.Text.Json cannot decode a lone surrogate escape in a property name.
+        using var api = new Api(_ => new TinyResponse(200, "application/json",
+            """{"\uD800":1,"access_token":"tvpat_surrogate_key","token_id":"t"}"""));
+        var (error, plane) = await FailedSignInAsync(api);
+        Assert.Equal(typeof(ThalovantApiException), error.GetType());
+        Assert.Null(error.StatusCode);
+        Assert.Null(plane.AccessToken);
+    }
+
+    [Fact]
+    public async Task AFailedExchangeWhoseValuesCannotBeReadKeepsItsStatus()
+    {
+        using var api = new Api(_ => new TinyResponse(400, "application/json", """{"detail":"\uD800","code":"\uDC00"}"""));
+        var (error, _) = await FailedSignInAsync(api);
+        Assert.Equal(400, error.StatusCode);
+        Assert.Null(error.ErrorCode);
+    }
+
+    [Fact]
+    public async Task AConfigurationThatCannotBeReadIsUnusableAndAutoTurnsToADeviceLogin()
+    {
+        using var api = new Api(overrides: request => request.Path == "/v1/auth/native/config"
+            ? new TinyResponse(200, "application/json", """{"\uD800":1,"authorization_endpoint":"https://dash.thalovant.com/authorize"}""")
+            : null);
+        var plane = new ThalovantControlPlane(apiUrl: api.Url);
+        var browser = await Assert.ThrowsAsync<ThalovantApiException>(() => plane.BrowserLoginAsync(new BrowserLoginOptions { OpenBrowser = false }));
+        Assert.Null(browser.StatusCode);
+        // Auto: not usable, so a device login (this API answers it with a 599).
+        await Assert.ThrowsAnyAsync<ThalovantApiException>(() => plane.InteractiveLoginAsync(new InteractiveLoginOptions
+        {
+            Environment = new Dictionary<string, string> { ["DISPLAY"] = ":0" },
+            Platform = "linux",
+            Opener = _ => { },
+            Output = TextWriter.Null,
+        }));
+        Assert.Contains("POST /v1/auth/device/authorize", api.Requests);
+        // And a value that cannot be read is unusable, not a crash.
+        var unreadable = JsonNode.Parse(ConfigBody.Replace("https://dash.thalovant.com/authorize", "\\uD800", StringComparison.Ordinal));
+        Assert.Throws<FormatException>(() => NativeSignInConfig.FromPayload(unreadable));
+    }
+
+    [Fact]
+    public async Task AFailedExchangeBodyThatIsNotJsonIsWithheld()
+    {
+        // Text cannot be searched for a token it does not name.
+        using var api = new Api(_ => new TinyResponse(400, "text/plain", "invalid_grant; access_token=tvpat_leaked_plain"));
+        var (error, _) = await FailedSignInAsync(api);
+        Assert.Equal(400, error.StatusCode);
+        Assert.Equal(ThalovantControlPlane.WithheldBody, error.Body);
+        Assert.Null(error.Problem);
+        Assert.DoesNotContain("tvpat_leaked_plain", error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TheCodeIsRedactedAsAUrlWouldSpellItToo()
+    {
+        // A code that needs encoding arrives as a%2Bb and may be echoed that way.
+        using var api = new Api(_ => new TinyResponse(400, "application/json", """{"detail":"bad code a%2Bb, a+b or a%2bb"}"""));
+        var (error, _) = await FailedSignInAsync(api, code: "a%2Bb");
+        Assert.Equal("bad code [redacted], [redacted] or a%2bb", error.Detail);
+        Assert.Equal("a%2Bb", BrowserSignIn.PercentEncode("a+b"));
+    }
+
     [Fact]
     public async Task AMessageCutToLengthKeepsNoPartOfASecret()
     {
@@ -903,7 +980,9 @@ public sealed class BrowserLoginTests
             }
             await sending.WaitAsync(Patience);
             var line = Encoding.ASCII.GetString(data.ToArray()).Split("\r\n")[0];
-            Assert.Contains(line, new[] { "HTTP/1.1 400 Bad Request", "HTTP/1.1 404 Not Found" });
+            // The oversized head never reaches its end within the limit (400); the
+            // unread body is behind a POST, which is not served (404).
+            Assert.Equal(kind == "oversized head" ? "HTTP/1.1 400 Bad Request" : "HTTP/1.1 404 Not Found", line);
             Assert.True(ended is null, $"the connection ended with {ended}");
         }
         finally
@@ -940,6 +1019,136 @@ public sealed class BrowserLoginTests
         Assert.Equal(TimeSpan.FromSeconds(2), LoopbackListener.DefaultDrainTimeout);
         Assert.Equal(1024 * 1024, LoopbackListener.DrainLimit);
         Assert.Equal(TimeSpan.FromSeconds(2), new LoopbackListener("s").DrainTimeout);
+        // No read goes past the 1 MiB budget: the last one is cut to what is left.
+        Assert.Equal(64 * 1024, LoopbackListener.NextDrainRead(0, 64 * 1024));
+        Assert.Equal(10, LoopbackListener.NextDrainRead(LoopbackListener.DrainLimit - 10, 64 * 1024));
+        Assert.Equal(0, LoopbackListener.NextDrainRead(LoopbackListener.DrainLimit, 64 * 1024));
+    }
+
+    [Fact]
+    public async Task AnAcceptedTabStillSendingWhenTheListenerClosesGetsItsPage()
+    {
+        // The tab keeps sending after its head. Closing right after the answer
+        // must drain it first, or the reset takes the page with it.
+        var listener = new LoopbackListener("the-state");
+        var port = listener.Start();
+        using var client = new TcpClient();
+        await client.ConnectAsync(IPAddress.Loopback, port);
+        var stream = client.GetStream();
+        var sending = Task.Run(async () =>
+        {
+            try
+            {
+                await stream.WriteAsync(Encoding.ASCII.GetBytes("GET /callback?code=c&state=the-state HTTP/1.1\r\n\r\n"));
+                await stream.WriteAsync(new byte[512 * 1024]);
+            }
+            catch (IOException)
+            {
+            }
+        });
+        Assert.NotNull(await listener.WaitAsync(Patience, CancellationToken.None));
+        listener.Finish(true);
+        // Closing waits for the accepted tab to be drained, at most CloseGrace,
+        // as the reference's close() waits for the accepted task. This tab does
+        // not close its side until it has read, so the wait runs its course.
+        var closing = Stopwatch.StartNew();
+        await listener.CloseAsync();
+        Assert.True(closing.Elapsed >= TimeSpan.FromMilliseconds(500), $"closing did not wait for the drain ({closing.Elapsed})");
+        Assert.True(closing.Elapsed < LoopbackListener.CloseGrace + TimeSpan.FromSeconds(3), $"closing waited {closing.Elapsed}");
+        // Read only now, as a slow tab would: a socket closed with the tab's
+        // bytes unread sends a reset, and macOS then drops the page.
+        var data = new MemoryStream();
+        Exception? ended = null;
+        try
+        {
+            await stream.CopyToAsync(data).WaitAsync(Patience);
+        }
+        catch (IOException error)
+        {
+            ended = error;
+        }
+        await sending.WaitAsync(Patience);
+        Assert.True(ended is null, $"the connection ended with {ended}");
+        Assert.Contains("Signed in to Thalovant.", Encoding.UTF8.GetString(data.ToArray()), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AnsweredRejectionsStillDrainingMakeRoomForTheCallback()
+    {
+        // Thirty-two complete requests that were answered, and whose tabs keep
+        // the connection open while the listener drains them.
+        var listener = new LoopbackListener("s");
+        var port = listener.Start();
+        var held = new List<TcpClient>();
+        try
+        {
+            for (var index = 0; index < LoopbackListener.MaxConnections; index++)
+            {
+                var client = new TcpClient();
+                await client.ConnectAsync(IPAddress.Loopback, port);
+                await client.GetStream().WriteAsync(Encoding.ASCII.GetBytes("GET /favicon.ico HTTP/1.1\r\n\r\n"));
+                held.Add(client);
+            }
+            foreach (var client in held)
+            {
+                // The 404 ends (the listener shut its side); ours stays open.
+                var answer = new MemoryStream();
+                await client.GetStream().CopyToAsync(answer).WaitAsync(Patience);
+                Assert.StartsWith("HTTP/1.1 404 ", Encoding.ASCII.GetString(answer.ToArray()), StringComparison.Ordinal);
+            }
+            await UntilAsync(() => listener.ConnectionCount == LoopbackListener.MaxConnections, "the answered connections were not held");
+            await Task.Delay(50);
+            var tab = BrowserTab.SendAsync(port, "GET", "/callback?code=c&state=s");
+            Assert.NotNull(await listener.WaitAsync(Patience, CancellationToken.None));
+            listener.Finish(true);
+            Assert.Contains("Signed in to Thalovant.", (await tab.WaitAsync(Patience)).Body, StringComparison.Ordinal);
+        }
+        finally
+        {
+            foreach (var client in held) client.Dispose();
+            await listener.CloseAsync();
+        }
+    }
+
+    [Fact]
+    public async Task ACallbackIsNotEvictedWhileSilentConnectionsKeepArriving()
+    {
+        var listener = new LoopbackListener("s");
+        var port = listener.Start();
+        var silent = new List<TcpClient>();
+        async Task<bool> OpenSilentAsync()
+        {
+            var client = new TcpClient();
+            silent.Add(client);
+            try
+            {
+                await client.ConnectAsync(IPAddress.Loopback, port);
+                return true;
+            }
+            catch (SocketException)
+            {
+                return false; // The callback was accepted: the port stopped listening.
+            }
+        }
+        try
+        {
+            for (var index = 0; index < LoopbackListener.MaxConnections; index++) await OpenSilentAsync();
+            await UntilAsync(() => listener.ConnectionCount == LoopbackListener.MaxConnections, "the listener did not fill");
+            // The callback arrives, and silent connections keep coming after it.
+            var tab = BrowserTab.SendAsync(port, "GET", "/callback?code=c&state=s");
+            for (var index = 0; index < 2 * LoopbackListener.MaxConnections && !tab.IsCompleted; index++)
+            {
+                if (!await OpenSilentAsync()) break;
+            }
+            Assert.NotNull(await listener.WaitAsync(Patience, CancellationToken.None));
+            listener.Finish(true);
+            Assert.Contains("Signed in to Thalovant.", (await tab.WaitAsync(Patience)).Body, StringComparison.Ordinal);
+        }
+        finally
+        {
+            foreach (var client in silent) client.Dispose();
+            await listener.CloseAsync();
+        }
     }
 
     [Fact]

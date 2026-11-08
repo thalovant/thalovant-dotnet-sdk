@@ -230,6 +230,7 @@ public sealed class BrowserLoginVectorTests
     {
         var vector = Case("sign_ins", name);
         var call = vector["call"]!.AsObject();
+        var opened = 0;
         var (produced, api) = await SignInAsync(vector, (plane, handOver) =>
         {
             var options = new BrowserLoginOptions
@@ -238,12 +239,14 @@ public sealed class BrowserLoginVectorTests
                 DeviceName = (string?)call["device_name"],
                 OpenBrowser = false,
                 Prompt = handOver,
-                Opener = _ => throw new InvalidOperationException("the browser was opened"),
+                // Counted, not thrown: the opener runs on a thread whose failures are ignored.
+                Opener = _ => Interlocked.Increment(ref opened),
             };
             if (Timeout(call) is TimeSpan timeout) options.Timeout = timeout;
             return plane.BrowserLoginAsync(options);
         });
         Record("sign_ins", name, produced);
+        Assert.Equal(0, Volatile.Read(ref opened));
         Assert.Empty(api.Mismatches);
         Assert.True(api.AllUsed, $"not every exchange was used: {string.Join(", ", api.Sent)}");
         Same(vector["expect"]!, produced, name);

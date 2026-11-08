@@ -1,6 +1,49 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in (PKCE on a loopback redirect), the browser-login parity binding, 0.10.0.
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Answer the CodeRabbit review on #54 (16 threads, 2 nitpicks).
 
 # Maintenance Report
+
+## 2026-11-08 — CodeRabbit review on #54 (browser sign-in)
+
+Each finding was checked against the code, the porting brief and the committed reference (`e3999cb`) before acting. A finding that would change what the shared vectors or the porting brief fix was answered as the cross-SDK contract and reported to the lead rather than diverged on.
+
+| # | Finding | Outcome |
+| :--- | :--- | :--- |
+| 1 | AUDIT test counts 836 vs 837 | Fixed: the audit names the revision and the counts (846 now, 837 at `5cd79dd`) |
+| 2 | General Open says "None recorded" | Fixed: it points at the browser sign-in Open list |
+| 3 | QUICK_FACTS: "a 404 means device login" | Fixed: only `LoginMethod.Auto` falls back; `BrowserLoginAsync` and `LoginMethod.Browser` throw |
+| 4 | README example used an undeclared `cancellationToken` | Fixed |
+| 5 | Docs said Android and iOS "never" | Docs fixed to the brief (they follow the rule for elsewhere, and a phone sets no display variable); code unchanged; `APhoneFollowsTheRuleForEverywhereElse` pins it |
+| 6 | "Always printed" ignores `Prompt` | Fixed in README, FAQ and the `BrowserLoginAsync`/`OpenBrowser` docs |
+| 7 | Reject a host such as `https://%/authorize` | Declined: the brief's unusable list is the contract and the reference accepts it; reported to the lead |
+| 8 | The page's `error` can carry the state | Fixed: an error containing the state or verifier is dropped; test |
+| 9 | A token in a failed exchange's body | Fixed: token values are redacted too; test |
+| 10 | A caller's handler could follow a redirect | Declined: the SDK-wide transport policy for every credential-bearing request (redirects off on every handler it can reach, 3xx an error, injected `HttpClient` refused) |
+| 11 | Non-object JSON bodies kept escaped secrets | Fixed: JSON of any shape is rewritten from its clean values; test |
+| 12 | Unbounded silent connections | Fixed: at most 32, the oldest silent one closed to make room, lazy buffers; test |
+| 13 | "Pending" page after the 60 s answer wait | Declined: the brief fixes "Sign-in was not completed." for that case; reported to the lead |
+| 14 | Test slept instead of waiting for the accept | Fixed: it waits on `LoopbackListener.ConnectionCount` |
+| 15 | "Cannot be relayed" is categorical | Fixed in README, CHANGELOG, FAQ and the XML docs: a forwarded callback address still relays; reported to the lead for the shared wording |
+| 16 | Token kept before the result is read | Fixed in the browser path (device login left as it is); test |
+| nit | Opener check on the custom-prompt vector path | Fixed: counted, asserted zero |
+| nit | A non-default token path | Fixed: `TheTokenPathTheConfigurationNamesIsTheOneUsed` (the shared vectors are not edited) |
+
+Writing the test for row 9 showed a real bug: secrets were replaced one after another, so a one-letter code also matched inside an earlier `[redacted]`. Redaction is now one pass, longest first (`AShortSecretNeverCutsIntoAnotherOnesMarker`).
+
+The live API (thalovant-api #501) was checked once through `BrowserLoginAsync` with `OpenBrowser = false` and a 2 s timeout. `GET https://api.thalovant.com/v1/auth/native/config` read as usable, and the URL was built against `https://dash.thalovant.com/authorize` with `client_id=thalovant-sdk`. It expired as expected: nothing was opened and no token was minted.
+
+### Verification
+
+- `dotnet build --configuration Release`: 0 warnings, 0 errors.
+- `DOTNET_ROLL_FORWARD=Major THALOVANT_CONFORMANCE_OUT=$PWD/contracts/conformance-results.json dotnet test --configuration Release --no-build`: net8.0 846/846, net9.0 846/846. The conformance record is byte-identical to the one committed at `5cd79dd`.
+- The 195 browser-login tests passed 10 runs in a row on net9.0.
+- `dotnet pack … --no-build`: `Thalovant.Sdk.0.10.0.nupkg` and `.snupkg`.
+- `check-sdk-parity.py --consumer thalovant-dotnet-sdk`: verified against a fresh clone of the Python PR head (`e3999cb`) and of Python `main` (`44b6e2b`). The `browser-login` evidence hashes were refreshed for the four changed files after the suite was re-run. The reference digests are as they were: the lead sends the final candidate.
+
+### Transparency Report
+
+- **AI Model:** Claude Opus 5.5 (claude-opus-5-5), as a Claude Code agent.
+- **Actions Taken:** read the 16 threads and the review body; checked each against the code, the brief and the reference (probing the reference in Python); made the fixes and tests above; corrected the docs; checked the live configuration once; replied on and resolved every thread.
+- **Oversight:** hosted CI and CodeRabbit gate the merge; the platform owner's coordinating agent merges. Nothing was merged, tagged or released.
 
 ## 2026-11-08 — Browser sign-in (`browser-login`, 0.10.0)
 

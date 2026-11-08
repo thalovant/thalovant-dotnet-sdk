@@ -261,6 +261,15 @@ public sealed class BrowserLoginTests
     }
 
     [Fact]
+    public void AShortSecretNeverCutsIntoAnotherOnesMarker()
+    {
+        // One pass, the longest first: a one-letter code must not be found
+        // again inside the "[redacted]" a longer secret left.
+        var clean = ThalovantControlPlane.WithoutSecrets(new ThalovantApiException("tvpat_secret then c"), "c", "tvpat_secret");
+        Assert.Equal("[redacted] then [redacted]", clean.Message);
+    }
+
+    [Fact]
     public async Task ACleartextApiIsRefusedBeforeAnythingIsAskedOrOpened()
     {
         var opened = 0;
@@ -315,6 +324,105 @@ public sealed class BrowserLoginTests
         // Each method's own default: 300 s for the browser, 15 minutes for a device login.
         Assert.Null(interactive.Timeout);
         Assert.Equal(TimeSpan.FromMinutes(15), new DeviceLoginOptions().Timeout);
+    }
+
+    [Fact]
+    public async Task AnErrorTheTabSendsNeverCarriesTheStateOut()
+    {
+        using var api = new Api();
+        var plane = new ThalovantControlPlane(apiUrl: api.Url);
+        var (opened, handOver) = Opened();
+        var task = plane.BrowserLoginAsync(new BrowserLoginOptions { OpenBrowser = false, Prompt = handOver });
+        var (port, state, _) = Parts(await opened.WaitAsync(Patience));
+        // A tab with the right state that sends that state back as its error.
+        var answer = await BrowserTab.SendAsync(port, "GET", $"/callback?state={state}&error={state}");
+        Assert.Contains("Sign-in was not completed.", answer.Body, StringComparison.Ordinal);
+        var error = await Assert.ThrowsAsync<ThalovantApiException>(() => task.WaitAsync(Patience));
+        Assert.Null(error.StatusCode);
+        Assert.Null(error.ErrorCode);
+        Assert.DoesNotContain(state, error.ToString(), StringComparison.Ordinal);
+        Assert.Equal(new[] { "GET /v1/auth/native/config" }, api.Requests);
+    }
+
+    [Fact]
+    public async Task ATokenAFailedExchangeCarriesNeverReachesTheError()
+    {
+        using var api = new Api(_ => new TinyResponse(400, "application/json",
+            """{"detail":"invalid_grant, issued tvpat_leaked_token","access_token":"tvpat_leaked_token","nested":{"refresh_token":"tvprt_leaked"}}"""));
+        var plane = new ThalovantControlPlane(apiUrl: api.Url);
+        var (opened, handOver) = Opened();
+        var task = plane.BrowserLoginAsync(new BrowserLoginOptions { OpenBrowser = false, Prompt = handOver });
+        var (port, state, _) = Parts(await opened.WaitAsync(Patience));
+        await BrowserTab.SendAsync(port, "GET", $"/callback?code=c&state={state}");
+        var error = await Assert.ThrowsAsync<ThalovantApiException>(() => task.WaitAsync(Patience));
+        Assert.Equal(400, error.StatusCode);
+        Assert.Equal("invalid_grant, issued [redacted]", error.Detail);
+        var shown = string.Join("\n", error.Message, error.ToString(), error.Body, error.Problem?.ToJsonString(), error.Detail);
+        Assert.DoesNotContain("tvpat_leaked_token", shown, StringComparison.Ordinal);
+        Assert.DoesNotContain("tvprt_leaked", shown, StringComparison.Ordinal);
+        Assert.Null(plane.AccessToken);
+    }
+
+    [Fact]
+    public async Task AnEchoThatIsNotAnObjectIsCleanedToo()
+    {
+        // Every character spelled as a JSON escape, so a plain text search finds nothing.
+        static string Escaped(string text) => string.Concat(text.Select(character => $"\\u{(int)character:x4}"));
+        string? verifier = null;
+        using var api = new Api(body =>
+        {
+            verifier = (string)body["code_verifier"]!;
+            return new TinyResponse(422, "application/json", $"[\"{Escaped((string)body["code"]!)}\",\"{Escaped(verifier)}\"]");
+        });
+        var plane = new ThalovantControlPlane(apiUrl: api.Url);
+        var (opened, handOver) = Opened();
+        var task = plane.BrowserLoginAsync(new BrowserLoginOptions { OpenBrowser = false, Prompt = handOver });
+        var (port, state, _) = Parts(await opened.WaitAsync(Patience));
+        await BrowserTab.SendAsync(port, "GET", $"/callback?code=secret-code-value&state={state}");
+        var error = await Assert.ThrowsAsync<ThalovantApiException>(() => task.WaitAsync(Patience));
+        Assert.Equal(422, error.StatusCode);
+        Assert.DoesNotContain(Escaped("secret-code-value"), error.Body!, StringComparison.Ordinal);
+        Assert.DoesNotContain(verifier!, error.Body!, StringComparison.Ordinal);
+        Assert.Equal(new[] { "[redacted]", "[redacted]" }, JsonNode.Parse(error.Body!)!.AsArray().Select(item => (string)item!).ToArray());
+    }
+
+    [Fact]
+    public async Task AnAnswerThatCannotBeReadKeepsNoToken()
+    {
+        // A lone surrogate in a scope cannot be read as a string.
+        using var api = new Api(_ => new TinyResponse(200, "application/json",
+            """{"access_token":"tvpat_surrogate","token_type":"bearer","scopes":["\uD800"],"token_id":"tok-surrogate"}"""));
+        var plane = new ThalovantControlPlane(apiUrl: api.Url);
+        var (opened, handOver) = Opened();
+        var task = plane.BrowserLoginAsync(new BrowserLoginOptions { OpenBrowser = false, Prompt = handOver });
+        var (port, state, _) = Parts(await opened.WaitAsync(Patience));
+        var answer = await BrowserTab.SendAsync(port, "GET", $"/callback?code=c&state={state}");
+        Assert.Contains("Sign-in was not completed.", answer.Body, StringComparison.Ordinal);
+        var error = await Assert.ThrowsAsync<ThalovantApiException>(() => task.WaitAsync(Patience));
+        Assert.Null(error.StatusCode);
+        // The caller was told it failed, so the client must not hold the token either.
+        Assert.Null(plane.AccessToken);
+        Assert.Null(plane.TokenId);
+    }
+
+    [Fact]
+    public async Task TheTokenPathTheConfigurationNamesIsTheOneUsed()
+    {
+        var config = JsonNode.Parse(ConfigBody)!.AsObject();
+        config["token_endpoint"] = "/v2/sign-in/exchange";
+        using var api = new Api(overrides: request => request.Path switch
+        {
+            "/v1/auth/native/config" => new TinyResponse(200, "application/json", config.ToJsonString()),
+            "/v2/sign-in/exchange" => new TinyResponse(200, "application/json", TokenBody),
+            _ => null,
+        });
+        var plane = new ThalovantControlPlane(apiUrl: api.Url);
+        var (opened, handOver) = Opened();
+        var task = plane.BrowserLoginAsync(new BrowserLoginOptions { OpenBrowser = false, Prompt = handOver });
+        var (port, state, _) = Parts(await opened.WaitAsync(Patience));
+        await BrowserTab.SendAsync(port, "GET", $"/callback?code=c&state={state}");
+        Assert.Equal("tok-unit", (await task.WaitAsync(Patience)).TokenId);
+        Assert.Equal(new[] { "GET /v1/auth/native/config", "POST /v2/sign-in/exchange" }, api.Requests);
     }
 
     // -- the listener's own edges ---------------------------------------------
@@ -380,7 +488,7 @@ public sealed class BrowserLoginTests
             using var second = new TcpClient();
             await first.ConnectAsync(IPAddress.Loopback, port);
             await second.ConnectAsync(IPAddress.Loopback, port);
-            await Task.Delay(100);
+            await UntilAsync(() => listener.ConnectionCount == 2, "the listener never took both connections in");
             var request = Encoding.ASCII.GetBytes("GET /callback?code=c&state=the-state-of-this-sign-in HTTP/1.1\r\n\r\n");
             await first.GetStream().WriteAsync(request);
             var accepted = await listener.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
@@ -398,11 +506,64 @@ public sealed class BrowserLoginTests
         }
     }
 
+    /// <summary>Waits for <paramref name="condition"/>, failing after <see cref="Patience"/>.</summary>
+    private static async Task UntilAsync(Func<bool> condition, string because)
+    {
+        var clock = Stopwatch.StartNew();
+        while (!condition())
+        {
+            Assert.True(clock.Elapsed < Patience, because);
+            await Task.Delay(10);
+        }
+    }
+
     private static async Task<string> ReadToEndAsync(TcpClient client)
     {
         var data = new MemoryStream();
         await client.GetStream().CopyToAsync(data).WaitAsync(Patience);
         return Encoding.UTF8.GetString(data.ToArray());
+    }
+
+    [Fact]
+    public async Task AFloodOfSilentConnectionsCannotCrowdOutTheCallback()
+    {
+        var listener = new LoopbackListener("s");
+        var port = listener.Start();
+        var silent = new List<TcpClient>();
+        try
+        {
+            for (var index = 0; index < LoopbackListener.MaxConnections + 8; index++)
+            {
+                var client = new TcpClient();
+                await client.ConnectAsync(IPAddress.Loopback, port);
+                silent.Add(client);
+            }
+            // Never more than the bound: the oldest silent ones were closed to make room.
+            await UntilAsync(() => listener.ConnectionCount == LoopbackListener.MaxConnections, "the listener did not settle at its bound");
+            Assert.True(await ClosedByTheListenerAsync(silent[0]), "the oldest silent connection was not closed");
+            var answer = BrowserTab.SendAsync(port, "GET", "/callback?code=c&state=s");
+            Assert.NotNull(await listener.WaitAsync(Patience, CancellationToken.None));
+            listener.Finish(true);
+            Assert.Contains("Signed in to Thalovant.", (await answer.WaitAsync(Patience)).Body, StringComparison.Ordinal);
+        }
+        finally
+        {
+            foreach (var client in silent) client.Dispose();
+            await listener.CloseAsync();
+        }
+    }
+
+    /// <summary>Whether the other end closed this connection: a read that ends, or one that is reset.</summary>
+    private static async Task<bool> ClosedByTheListenerAsync(TcpClient client)
+    {
+        try
+        {
+            return await client.GetStream().ReadAsync(new byte[1]).AsTask().WaitAsync(Patience) == 0;
+        }
+        catch (IOException)
+        {
+            return true;
+        }
     }
 
     [Fact]
@@ -518,9 +679,26 @@ public sealed class BrowserLoginTests
     {
         var expected = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : OperatingSystem.IsLinux() ? "linux" : null;
         if (expected != null) Assert.Equal(expected, BrowserSignIn.PlatformName());
-        // Neither Android nor iOS is a desktop: auto picks a device login there.
+        // Neither Android nor iOS is macos or windows, so the rule asks for a
+        // display variable (the porting brief maps Android to linux), and a
+        // phone sets none: auto picks a device login there.
         Assert.False(BrowserSignIn.CanOpenBrowser(new Dictionary<string, string>(), "android"));
         Assert.False(BrowserSignIn.CanOpenBrowser(new Dictionary<string, string>(), "ios"));
+    }
+
+    [Theory]
+    [InlineData("android")]
+    [InlineData("ios")]
+    public void APhoneFollowsTheRuleForEverywhereElse(string platform)
+    {
+        // As Linux and the BSDs do: only a display variable would make it a desktop.
+        foreach (var display in new[] { "DISPLAY", "WAYLAND_DISPLAY" })
+        {
+            var desktop = new Dictionary<string, string> { [display] = ":0" };
+            Assert.True(BrowserSignIn.CanOpenBrowser(desktop, platform));
+            Assert.Equal(BrowserSignIn.CanOpenBrowser(desktop, "linux"), BrowserSignIn.CanOpenBrowser(desktop, platform));
+        }
+        Assert.False(BrowserSignIn.CanOpenBrowser(new Dictionary<string, string> { ["DISPLAY"] = "" }, platform));
     }
 
     [Fact]

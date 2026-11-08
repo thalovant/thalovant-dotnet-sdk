@@ -9,6 +9,7 @@ using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
@@ -53,8 +54,8 @@ namespace Thalovant
 
         /// <summary>
         /// Whether to open the system browser at the consent page. The URL is
-        /// always shown as well, because opening a browser can fail without a
-        /// word. False only shows it.
+        /// printed as well (or handed to <see cref="Prompt"/>), because opening a
+        /// browser can fail without a word. False only shows it.
         /// </summary>
         public bool OpenBrowser { get; set; } = true;
 
@@ -95,7 +96,7 @@ namespace Thalovant
         /// </summary>
         public string? DeviceName { get; set; }
 
-        /// <summary>Whether to open the system browser, for either method. The URL or the code is always shown as well.</summary>
+        /// <summary>Whether to open the system browser, for either method. The URL or the code is printed as well.</summary>
         public bool OpenBrowser { get; set; } = true;
 
         /// <summary>
@@ -335,10 +336,13 @@ namespace Thalovant
     /// </summary>
     /// <remarks>
     /// <see cref="ThalovantControlPlane.BrowserLoginAsync"/> puts them
-    /// together. A loopback redirect cannot be relayed: the browser that
-    /// approves hands the code to its own computer, never to whoever sent the
-    /// link, which a device code read off one screen and typed into another
-    /// cannot promise.
+    /// together. The browser that approves hands the code to a listener on its
+    /// own computer, so a sign-in link forwarded to somebody else gives the
+    /// sender nothing unless that person also sends back the address their
+    /// browser was redirected to. A device code, read off one screen and typed
+    /// into another, needs no such second step. PKCE binds the code to the
+    /// verifier this process holds; it does not stop a forwarded callback
+    /// address.
     /// </remarks>
     public static class BrowserSignIn
     {
@@ -513,9 +517,11 @@ namespace Thalovant
         /// or <c>unix</c>.
         /// </summary>
         /// <remarks>
-        /// Android and iOS are named before the desktop they resemble, so that
-        /// <see cref="LoginMethod.Auto"/> picks a device login there: an app on
-        /// either signs in through its own flow. A Darwin without
+        /// Android and iOS are named before the desktop they resemble. Neither is
+        /// <c>macos</c> or <c>windows</c>, so the browser rule asks them for a
+        /// display variable, as the porting brief has it, and a phone sets none:
+        /// <see cref="LoginMethod.Auto"/> picks a device login there, and an app
+        /// on either signs in through its own flow. A Darwin without
         /// <c>/usr/bin/open</c> is not a Mac (iOS under Unity reports OSX).
         /// </remarks>
         internal static string PlatformName()
@@ -655,13 +661,16 @@ namespace Thalovant
         /// dashboard's consent page, and waits for the browser to come back to
         /// <c>http://127.0.0.1:&lt;port&gt;/callback</c>. The browser that
         /// approves hands the code to its own computer, so a sign-in link sent to
-        /// somebody else delivers nothing to the sender.
+        /// somebody else gives the sender nothing unless that person also sends
+        /// back the address their browser was redirected to.
         /// </para>
         /// <para>
-        /// The URL is always printed as well as opened (<c>Opening your browser
-        /// to sign in to Thalovant. If it does not open, visit:</c> and the URL);
-        /// pass <see cref="BrowserLoginOptions.Prompt"/> to present it yourself,
-        /// and <see cref="BrowserLoginOptions.OpenBrowser"/> false to only show it.
+        /// The URL is printed as well as opened (<c>Opening your browser to sign
+        /// in to Thalovant. If it does not open, visit:</c> and the URL), because
+        /// opening a browser can fail without a word. Pass
+        /// <see cref="BrowserLoginOptions.Prompt"/> to present it yourself: it then
+        /// receives the URL in place of the print, and showing it is up to it.
+        /// <see cref="BrowserLoginOptions.OpenBrowser"/> false only shows it.
         /// A tab that answers with another sign-in's <c>state</c> is turned away
         /// and the wait goes on.
         /// </para>
@@ -849,7 +858,13 @@ namespace Thalovant
                 }
                 if (callback.Code is null)
                 {
+                    // The page's error is whatever the tab sent with the right
+                    // state; it must not carry that state, or the verifier, out.
                     var code = ProblemCode(callback.Error);
+                    if (code != null && (code.IndexOf(state, StringComparison.Ordinal) >= 0 || code.IndexOf(verifier, StringComparison.Ordinal) >= 0))
+                    {
+                        code = null;
+                    }
                     throw new ThalovantApiException(
                         "The browser came back without a sign-in code" + (code is null ? "." : $" ({code})."),
                         errorCode: code);
@@ -866,8 +881,11 @@ namespace Thalovant
                     // revoke the token a first exchange minted (RFC 9700). The
                     // copy thrown carries no inner exception, so the original --
                     // whose body may echo the code and the verifier -- does not
-                    // ride along.
-                    throw WithoutSecrets(error, callback.Code, verifier, state);
+                    // ride along. A token the failed answer carries anyway is
+                    // taken out with them.
+                    var hidden = new List<string?> { callback.Code, verifier, state };
+                    hidden.AddRange(TokensIn(error.Body));
+                    throw WithoutSecrets(error, hidden.ToArray());
                 }
                 listener.Finish(true);
                 return result;
@@ -916,7 +934,67 @@ namespace Thalovant
             {
                 throw new ThalovantApiException("Thalovant API returned an unexpected response shape.");
             }
+            try
+            {
+                // Everything the result reads, read before the token is kept: a
+                // value that cannot be read (a lone surrogate in a scope) must not
+                // leave this client holding a token its caller was told failed.
+                _ = DeviceLoginResult.FromToken(token, JsonUtil.GetString(token["access_token"]) ?? "");
+            }
+            catch (Exception error) when (error is InvalidOperationException || error is FormatException)
+            {
+                throw new ThalovantApiException("Thalovant API returned an unexpected response shape.");
+            }
             return AcceptDeviceToken(token);
+        }
+
+        /// <summary>
+        /// The token values a failed exchange's body carries anyway, under
+        /// <c>access_token</c>, <c>refresh_token</c>, <c>id_token</c> or
+        /// <c>token</c> at any depth, so that they can be taken out of the error.
+        /// </summary>
+        internal static IEnumerable<string> TokensIn(string? body)
+        {
+            var found = new List<string>();
+            if (string.IsNullOrWhiteSpace(body))
+            {
+                return found;
+            }
+            void Visit(JsonElement element)
+            {
+                switch (element.ValueKind)
+                {
+                    case JsonValueKind.Object:
+                        foreach (var property in element.EnumerateObject())
+                        {
+                            if (property.Value.ValueKind == JsonValueKind.String
+                                && (property.Name == "access_token" || property.Name == "refresh_token"
+                                    || property.Name == "id_token" || property.Name == "token"))
+                            {
+                                var value = property.Value.GetString();
+                                if (!string.IsNullOrEmpty(value)) found.Add(value!);
+                            }
+                            Visit(property.Value);
+                        }
+                        break;
+                    case JsonValueKind.Array:
+                        foreach (var item in element.EnumerateArray())
+                        {
+                            Visit(item);
+                        }
+                        break;
+                }
+            }
+            try
+            {
+                using var document = JsonDocument.Parse(body!);
+                Visit(document.RootElement);
+            }
+            catch (Exception error) when (error is JsonException || error is InvalidOperationException)
+            {
+                // Not JSON, or a string that cannot be read: nothing to name.
+            }
+            return found;
         }
 
         /// <summary>Shows the sign-in URL (opening a browser can fail without a word), then opens it.</summary>
@@ -957,65 +1035,100 @@ namespace Thalovant
         /// <remarks>
         /// An API that echoes a request back (a FastAPI 422 lists each field's
         /// <c>input</c>) would otherwise hand the code and the verifier to
-        /// whoever logs the error. The same error comes back when there is
-        /// nothing to take out; otherwise a copy of the same kind, with no inner
-        /// exception.
+        /// whoever logs the error. A body that is JSON of any shape -- an object,
+        /// an array, a bare string -- is read and written back from its clean
+        /// values, so a secret spelled with JSON escapes cannot survive in the
+        /// raw text either. The same error comes back when there is nothing to
+        /// take out; otherwise a copy of the same kind, with no inner exception.
         /// </remarks>
         internal static ThalovantApiException WithoutSecrets(ThalovantApiException error, params string?[] hidden)
         {
-            var values = hidden.Where(value => !string.IsNullOrEmpty(value)).Select(value => value!).ToArray();
+            var values = hidden.Where(value => !string.IsNullOrEmpty(value)).Select(value => value!).Distinct(StringComparer.Ordinal)
+                .OrderByDescending(value => value.Length).ToArray();
+            // One pass over every secret at once, the longest first: replacing
+            // them one after another would find a short one (a one-letter code)
+            // inside the "[redacted]" an earlier one left.
+            var secrets = values.Length == 0
+                ? null
+                : new System.Text.RegularExpressions.Regex(
+                    string.Join("|", values.Select(System.Text.RegularExpressions.Regex.Escape)),
+                    System.Text.RegularExpressions.RegexOptions.CultureInvariant,
+                    TimeSpan.FromSeconds(2));
             var changed = false;
             string Scrub(string text)
             {
-                var clean = text;
-                foreach (var value in values)
-                {
-                    clean = clean.Replace(value, "[redacted]");
-                }
+                var clean = secrets is null ? text : secrets.Replace(text, "[redacted]");
                 if (clean != text)
                 {
                     changed = true;
                 }
                 return clean;
             }
-            JsonNode? ScrubNode(JsonNode? node)
+            void Write(JsonElement element, Utf8JsonWriter writer)
             {
-                switch (node)
+                switch (element.ValueKind)
                 {
-                    case JsonObject map:
-                        var copy = new JsonObject();
-                        foreach (var pair in map)
+                    case JsonValueKind.Object:
+                        writer.WriteStartObject();
+                        foreach (var property in element.EnumerateObject())
                         {
-                            copy[Scrub(pair.Key)] = ScrubNode(pair.Value);
+                            writer.WritePropertyName(Scrub(property.Name));
+                            Write(property.Value, writer);
                         }
-                        return copy;
-                    case JsonArray list:
-                        var items = new JsonArray();
-                        foreach (var item in list)
+                        writer.WriteEndObject();
+                        break;
+                    case JsonValueKind.Array:
+                        writer.WriteStartArray();
+                        foreach (var item in element.EnumerateArray())
                         {
-                            items.Add(ScrubNode(item));
+                            Write(item, writer);
                         }
-                        return items;
-                    case JsonValue value when value.TryGetValue<string>(out var text):
-                        return JsonValue.Create(Scrub(text));
+                        writer.WriteEndArray();
+                        break;
+                    case JsonValueKind.String:
+                        writer.WriteStringValue(Scrub(element.GetString()!));
+                        break;
                     default:
-                        return node?.DeepClone();
+                        element.WriteTo(writer);
+                        break;
+                }
+            }
+            string ScrubBody(string text)
+            {
+                try
+                {
+                    using var document = JsonDocument.Parse(text);
+                    var before = changed;
+                    changed = false;
+                    using var buffer = new MemoryStream();
+                    using (var writer = new Utf8JsonWriter(buffer))
+                    {
+                        Write(document.RootElement, writer);
+                    }
+                    var rewritten = changed;
+                    changed = before || rewritten;
+                    // Written back only when a value was taken out: otherwise the
+                    // body stays exactly as the API sent it.
+                    return rewritten ? Encoding.UTF8.GetString(buffer.ToArray()) : Scrub(text);
+                }
+                catch (Exception failure) when (failure is JsonException || failure is InvalidOperationException)
+                {
+                    return Scrub(text); // Not JSON (or unreadable as it): plain text.
                 }
             }
 
             var message = Scrub(error.Message);
-            var problem = ScrubNode(error.Problem) as JsonObject;
-            var body = error.Body is null ? null : Scrub(error.Body);
+            var source = error.Body ?? error.Problem?.ToJsonString();
+            var body = source is null ? null : ScrubBody(source);
             if (!changed)
             {
                 return error;
             }
             if (error.StatusCode is int statusCode)
             {
-                // A body that parsed is written back from its clean copy, so a
-                // secret spelled with JSON escapes cannot survive in the raw text.
-                var cleanBody = problem is null ? body ?? "" : problem.ToJsonString();
-                return ThalovantApiException.FromResponse(message, statusCode, cleanBody, problem).WithRetryAfterHeader(error.RetryAfter);
+                var clean = body ?? "";
+                return ThalovantApiException.FromResponse(message, statusCode, clean, ThalovantApiException.ParseProblem(clean))
+                    .WithRetryAfterHeader(error.RetryAfter);
             }
             return new ThalovantApiException(message);
         }

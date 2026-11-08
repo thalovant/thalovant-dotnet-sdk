@@ -1,4 +1,4 @@
-<!-- Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Document browser sign-in (BrowserLoginAsync, InteractiveLoginAsync) for 0.10.0. -->
+<!-- Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in docs: CodeRabbit review on #54 (relay wording, Prompt, mobile rule, example). -->
 
 <p align="center">
   <picture>
@@ -79,8 +79,11 @@ clear, so never log or print that form.
 On a machine with a browser, sign a person in through it. The SDK listens on
 `127.0.0.1` on a port the system picks, opens the consent page, and the browser
 that approves hands the code back to this computer (PKCE on a loopback
-redirect, RFC 8252). Unlike a device code, the link cannot be relayed to
-somebody else.
+redirect, RFC 8252). A sign-in link forwarded to somebody else gives the
+sender nothing unless that person also sends back the address their browser
+was redirected to; a device code needs no such second step. PKCE binds the
+code to the verifier this program holds, but it does not stop somebody from
+forwarding that whole callback address, so treat it as a secret too.
 
 ```csharp
 var api = new ThalovantControlPlane();
@@ -99,16 +102,16 @@ await api.BrowserLoginAsync(new BrowserLoginOptions
     OpenBrowser = true,              // false only prints the URL
     Timeout = TimeSpan.FromMinutes(5),
     Prompt = url => Console.WriteLine(url), // replaces the printed prompt
-}, cancellationToken);
+}); // a CancellationToken may follow the options
 
 await api.RevokeApiTokenAsync(); // signs out, as after a device login
 ```
 
 | What | How |
 | :--- | :--- |
-| Chooser (`LoginMethod.Auto`) | the browser when this machine can show one and `GET /v1/auth/native/config` answers; never with `CI`, `SSH_CONNECTION` or `SSH_TTY` set; Windows and macOS yes; Linux and the BSDs only with `DISPLAY` or `WAYLAND_DISPLAY`; Android and iOS never. Otherwise `LoginWithBrowserAsync` (a device login), the device name as its `client_name` |
-| Fallback | a 404 (an API without browser sign-in), any other failure, an unusable answer or a cleartext API URL means a device login, before anything is opened. Once the browser is opened, its outcome stands |
-| The URL | always printed as well (`Opening your browser to sign in to Thalovant. If it does not open, visit:` and the URL); the browser opens on a background thread (`ShellExecute`, `open` or `xdg-open`), and `Opener` replaces it |
+| Chooser (`LoginMethod.Auto`) | the browser when this machine can show one and `GET /v1/auth/native/config` answers; never with `CI`, `SSH_CONNECTION` or `SSH_TTY` set; Windows and macOS yes; anywhere else (Linux, the BSDs, Android, iOS) only with `DISPLAY` or `WAYLAND_DISPLAY`, which a phone does not set. Otherwise `LoginWithBrowserAsync` (a device login), the device name as its `client_name` |
+| Fallback | in `LoginMethod.Auto` only: a 404 (an API without browser sign-in), any other failure, an unusable answer or a cleartext API URL means a device login, before anything is opened. `BrowserLoginAsync` and `LoginMethod.Browser` throw them instead. Once the browser is opened, its outcome stands |
+| The URL | printed as well (`Opening your browser to sign in to Thalovant. If it does not open, visit:` and the URL), unless `Prompt` is given: it receives the URL in place of the print, so showing it is then up to the callback. The browser opens on a background thread (`ShellExecute`, `open` or `xdg-open`), and `Opener` replaces it |
 | Result | the `DeviceLoginResult` a device login returns; the token is kept on `AccessToken` and `TokenId`, and `ai_disclosure` stays in `Raw` |
 | Denied, timed out | `ThalovantDeviceAccessDeniedException`, `ThalovantDeviceCodeExpiredException` (300 s by default), with no status |
 | Refused exchange | `ThalovantApiException` with `StatusCode` 400 and `Detail` `invalid_grant`; start a new sign-in, never reuse a code |
@@ -119,7 +122,8 @@ on. The pieces are public for a caller that runs its own flow:
 `BrowserSignIn.AuthorizationUrl`, `LoopbackRedirectUri`, `NewVerifier`,
 `NewState`, `ChallengeFor`, `CanOpenBrowser` and `DefaultDeviceName`, and
 `NativeSignInConfig.FromPayload`. An app on a phone signs in through its own
-flow (`NativeSignIn.Begin` and `CompleteNativeSignInAsync`).
+flow (`NativeSignIn.Begin` and `CompleteNativeSignInAsync`); forcing
+`LoginMethod.Browser` there is not supported.
 
 ### Durable memory
 

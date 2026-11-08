@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Record the browser sign-in decisions and open items (0.10.0).
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in: CodeRabbit review on #54 (counts, open items, hardening, declined items).
 
 # Audit
 
@@ -18,7 +18,7 @@ Known issues, technical debt and review decisions, each tied to the code and the
 
 ## Browser sign-in (2026-11-08, 0.10.0)
 
-Evidence: `dotnet test -c Release -f net9.0` 836 passed, 0 failed; the net8.0 test build 836 passed on the 9.0 runtime (`DOTNET_ROLL_FORWARD=Major`); all 98 `browser-login-vectors.json` case digests in `contracts/conformance-results.json` equal the reference's.
+Evidence, at the commit that answers the CodeRabbit review on #54: `DOTNET_ROLL_FORWARD=Major dotnet test --configuration Release --no-build` 846 passed, 0 failed, on each of net8.0 (on the 9.0 runtime) and net9.0; the first push (`5cd79dd`) had 837 on each, before the nine tests added for the review. All 98 `browser-login-vectors.json` case digests in `contracts/conformance-results.json` equal the reference's (`e3999cb`), unchanged by the review fixes.
 
 ### Decisions
 
@@ -32,6 +32,14 @@ Evidence: `dotnet test -c Release -f net9.0` 836 passed, 0 failed; the net8.0 te
 - **An HTTP timeout on the configuration request is a fallback, not an error, in `Auto`.** `InteractiveLoginAsync` treats an `OperationCanceledException` that the caller's token did not cause as "the configuration fails". The caller's own cancellation still propagates.
 - **Secrets are redacted on a copy with no inner exception.** `ThalovantControlPlane.WithoutSecrets` rebuilds the error through `ThalovantApiException.FromResponse`, so the kind (for example `ThalovantAuthenticationException`), `ErrorCode`, `Detail` and `RetryAfter` survive, and writes `Body` back from the clean problem so an escaped spelling cannot survive. Tests: `BrowserLoginTests.AnEchoedCodeAndVerifierNeverReachTheError`, `ARedactedErrorKeepsItsKindAndItsFields`; a mutation that skips redaction fails both.
 
+- **Connections are bounded (CodeRabbit on #54).** `LoopbackListener.AcceptLoopAsync` holds at most `MaxConnections` (32) open; when full it closes the oldest connection that has sent no request head, and a read buffer starts at 1 KiB and grows only as a head arrives. Neither is in the reference, which has no bound; neither changes what any vector observes. Test: `BrowserLoginTests.AFloodOfSilentConnectionsCannotCrowdOutTheCallback`.
+- **Redaction is one pass, and covers token values and every JSON shape (CodeRabbit on #54).** `WithoutSecrets` replaces all secrets with one alternation, longest first; replacing them one after another let a one-letter code match inside an earlier `[redacted]` (found by the new test). A body that is JSON of any shape is rewritten from its clean values, so escaped spellings go too, and the token values a failed exchange's body carries (`TokensIn`: `access_token`, `refresh_token`, `id_token`, `token` at any depth) are redacted with the code, verifier and state. Tests: `AShortSecretNeverCutsIntoAnotherOnesMarker`, `AnEchoThatIsNotAnObjectIsCleanedToo`, `ATokenAFailedExchangeCarriesNeverReachesTheError`.
+- **The page's `error` is not a code when it carries a secret (CodeRabbit on #54).** `RunBrowserLoginAsync` drops an `error` that contains the state or the verifier before it becomes `ErrorCode` or the message. The committed reference (`e3999cb`) would pass it through; its work in progress restricts the code to RFC 6749 errors, which covers this too. Test: `AnErrorTheTabSendsNeverCarriesTheStateOut`.
+- **The result is read before the token is kept (CodeRabbit on #54).** `ExchangeBrowserCodeAsync` builds the `DeviceLoginResult` before `AcceptDeviceToken` installs the token, so an answer it cannot read is an error with no status and leaves no token. Device login (`AcceptDeviceToken`, `ControlPlane.cs`) has the same order and is left exactly as it is, as the porting brief asks. Test: `AnAnswerThatCannotBeReadKeepsNoToken`.
+- **Declined: rejecting an authorization host such as `%` (CodeRabbit on #54).** The porting brief lists every way a configuration is unusable, and the reference's `_usable_authorization_endpoint` accepts `https://%/authorize`. A stricter host rule here would make this SDK refuse a configuration every other SDK accepts; it belongs in the reference and its vectors first. Reported to the lead.
+- **Declined: a "pending" page when the 60-second answer wait expires (CodeRabbit on #54).** The porting brief fixes that a timeout while the tab waits shows `Sign-in was not completed.`, and the vectors' `pages` hold only the two texts. Reported to the lead.
+- **Declined in this change: redirect control for a caller's own handler (CodeRabbit on #54).** The exchange goes through the SDK's one request path, as every credential-bearing request does (device token, password login, `CompleteNativeSignInAsync`): automatic redirects are switched off on every handler the SDK can reach (`HttpClientHandler`, `SocketsHttpHandler`, `DelegatingHandler` chains), a 3xx is an error, and an injected `HttpClient` is refused for credential-bearing requests. A terminal `HttpMessageHandler` of the caller's own is the caller's transport for all of them; `HttpClient` has no per-request redirect switch to enforce more. Changing that is an SDK-wide transport decision in `ControlPlane.cs`, not part of this capability.
+
 ### Open
 
 - **net8.0 not run on a .NET 8 runtime locally.** The workstation has only the 9.0 runtime, so the net8.0 test build ran with `DOTNET_ROLL_FORWARD=Major`; CI runs net8.0 and net9.0 on ubuntu-latest and windows-latest.
@@ -41,7 +49,7 @@ Evidence: `dotnet test -c Release -f net9.0` 836 passed, 0 failed; the net8.0 te
 
 ## Open
 
-- None recorded.
+- Browser sign-in has open items of its own: see [Browser sign-in (2026-11-08, 0.10.0) → Open](#open) above (net8.0 runtime, Windows timing, `ai_disclosure`, docs.thalovant.com). Nothing else is recorded.
 
 ## Chat apps not covered (2026-11-03)
 

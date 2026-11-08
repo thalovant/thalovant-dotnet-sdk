@@ -112,6 +112,16 @@ namespace Thalovant
         /// <summary>The largest request head read; a callback's is a few hundred bytes.</summary>
         internal const int MaxRequestHead = 16 * 1024;
 
+        /// <summary>
+        /// The most connections held open at once. A browser opens a handful; a
+        /// local process opening many silent ones gets its oldest closed instead
+        /// of crowding out the callback (<see cref="AcceptLoopAsync"/>).
+        /// </summary>
+        internal const int MaxConnections = 32;
+
+        /// <summary>The first read buffer of a connection; it grows only as a head arrives.</summary>
+        private const int FirstReadSize = 1024;
+
         /// <summary>How long one connection may take to send its request head.</summary>
         internal static readonly TimeSpan RequestReadTimeout = TimeSpan.FromSeconds(10);
 
@@ -134,7 +144,8 @@ namespace Thalovant
             new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource<bool> _acceptedAnswered =
             new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly HashSet<TcpClient> _connections = new HashSet<TcpClient>();
+        /// <summary>Open connections, oldest first.</summary>
+        private readonly List<Connection> _connections = new List<Connection>();
         private readonly HashSet<Task> _handlers = new HashSet<Task>();
         private TcpListener? _listener;
         private Task? _acceptLoop;
@@ -149,6 +160,18 @@ namespace Thalovant
 
         /// <summary>How long an accepted tab waits for <see cref="Finish"/> before it is told the sign-in was not completed.</summary>
         internal TimeSpan AnswerTimeout { get; set; } = DefaultAnswerTimeout;
+
+        /// <summary>How many connections are open now; never more than <see cref="MaxConnections"/>.</summary>
+        internal int ConnectionCount
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _connections.Count;
+                }
+            }
+        }
 
         /// <summary>The bound address, once started: always <c>127.0.0.1</c>.</summary>
         internal IPEndPoint? LocalEndpoint { get; private set; }
@@ -261,7 +284,7 @@ namespace Thalovant
             Task[] handlers;
             lock (_gate)
             {
-                connections = _connections.ToArray();
+                connections = _connections.Select(connection => connection.Client).ToArray();
                 handlers = _handlers.ToArray();
             }
             foreach (var connection in connections)
@@ -483,19 +506,45 @@ namespace Thalovant
                         Close(client);
                         continue;
                     }
-                    _connections.Add(client);
+                    if (_connections.Count >= MaxConnections)
+                    {
+                        // Full: the oldest connection that has sent no request
+                        // makes room. A callback sends its request at once, so a
+                        // flood of silent connections cannot hold the port.
+                        var idle = _connections.FirstOrDefault(connection => !connection.Busy);
+                        if (idle is null)
+                        {
+                            Close(client);
+                            continue;
+                        }
+                        _connections.Remove(idle);
+                        Close(idle.Client);
+                    }
+                    var opened = new Connection(client);
+                    _connections.Add(opened);
                     _handlers.RemoveWhere(handler => handler.IsCompleted);
-                    _handlers.Add(Task.Run(() => HandleAsync(client)));
+                    _handlers.Add(Task.Run(() => HandleAsync(opened)));
                 }
             }
         }
 
+        /// <summary>One open connection, and whether it has sent its request head.</summary>
+        private sealed class Connection
+        {
+            internal Connection(TcpClient client) => Client = client;
+
+            internal TcpClient Client { get; }
+
+            /// <summary>Set once a request head (or too much of one) arrived; never evicted after that.</summary>
+            internal bool Busy { get; set; }
+        }
+
         /// <summary>One connection: one request, one answer. Its failure is that connection's alone.</summary>
-        private async Task HandleAsync(TcpClient client)
+        private async Task HandleAsync(Connection connection)
         {
             try
             {
-                await ServeAsync(client).ConfigureAwait(false);
+                await ServeAsync(connection).ConfigureAwait(false);
             }
             catch (Exception)
             {
@@ -505,16 +554,24 @@ namespace Thalovant
             {
                 lock (_gate)
                 {
-                    _connections.Remove(client);
+                    _connections.Remove(connection);
                 }
-                Close(client);
+                Close(connection.Client);
             }
         }
 
-        private async Task ServeAsync(TcpClient client)
+        private async Task ServeAsync(Connection connection)
         {
+            var client = connection.Client;
             var stream = client.GetStream();
             var (head, overrun) = await ReadHeadAsync(client, stream).ConfigureAwait(false);
+            if (head != null || overrun)
+            {
+                lock (_gate)
+                {
+                    connection.Busy = true;
+                }
+            }
             if (overrun)
             {
                 await AnswerAsync(client, stream, 400, WrongStateText).ConfigureAwait(false);
@@ -590,7 +647,7 @@ namespace Thalovant
         private static async Task<(byte[]? Head, bool Overrun)> ReadHeadAsync(TcpClient client, NetworkStream stream)
         {
             var limit = MaxRequestHead + HeadEnd.Length;
-            var buffer = new byte[limit];
+            var buffer = new byte[FirstReadSize];
             var filled = 0;
             using (var timeout = new CancellationTokenSource(RequestReadTimeout))
             // Closing the socket is what ends a pending read on every runtime.
@@ -600,7 +657,11 @@ namespace Thalovant
                 {
                     while (filled < limit)
                     {
-                        var read = await stream.ReadAsync(buffer, filled, limit - filled, timeout.Token).ConfigureAwait(false);
+                        if (filled == buffer.Length)
+                        {
+                            Array.Resize(ref buffer, Math.Min(limit, buffer.Length * 4));
+                        }
+                        var read = await stream.ReadAsync(buffer, filled, buffer.Length - filled, timeout.Token).ConfigureAwait(false);
                         if (read <= 0)
                         {
                             return (null, false);

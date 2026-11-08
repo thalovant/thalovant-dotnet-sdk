@@ -5,6 +5,8 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -46,9 +48,10 @@ namespace Thalovant
 
         /// <summary>
         /// What the consent page and the token show, at most
-        /// <see cref="BrowserSignIn.MaxDeviceNameLength"/> code points. Null or
-        /// empty is <see cref="BrowserSignIn.DefaultDeviceName()"/>
-        /// (<c>thalovant-dotnet-sdk on &lt;hostname&gt;</c>).
+        /// <see cref="BrowserSignIn.MaxDeviceNameLength"/> code points. Null is
+        /// <see cref="BrowserSignIn.DefaultDeviceName()"/>
+        /// (<c>thalovant-dotnet-sdk on &lt;hostname&gt;</c>); an empty string sends
+        /// no name, and keeps the hostname off the consent page.
         /// </summary>
         public string? DeviceName { get; set; }
 
@@ -91,8 +94,8 @@ namespace Thalovant
 
         /// <summary>
         /// Names this machine on the consent page (a device login's
-        /// <c>client_name</c>). Null or empty is
-        /// <see cref="BrowserSignIn.DefaultDeviceName()"/>.
+        /// <c>client_name</c>). Null is <see cref="BrowserSignIn.DefaultDeviceName()"/>;
+        /// an empty string sends none to either method.
         /// </summary>
         public string? DeviceName { get; set; }
 
@@ -134,7 +137,8 @@ namespace Thalovant
     /// </remarks>
     public sealed class NativeSignInConfig
     {
-        private NativeSignInConfig(string authorizationEndpoint, string tokenEndpoint, string sdkClientId, string? deviceAuthorizationEndpoint)
+        /// <summary>Unchecked: <see cref="FromPayload"/> is the way in; tests build one past its rules.</summary>
+        internal NativeSignInConfig(string authorizationEndpoint, string tokenEndpoint, string sdkClientId, string? deviceAuthorizationEndpoint)
         {
             AuthorizationEndpoint = authorizationEndpoint;
             TokenEndpoint = tokenEndpoint;
@@ -161,12 +165,16 @@ namespace Thalovant
         /// <remarks>
         /// Unusable: a payload that is not an object; an
         /// <c>authorization_endpoint</c> that is not https (or http on
-        /// <c>localhost</c>, <c>127.0.0.1</c> or <c>::1</c>), has no host, carries
-        /// credentials, a query (or a bare <c>?</c>), a fragment, white space,
-        /// control characters or a port no browser can open; a
-        /// <c>token_endpoint</c> that is not a path on the API (one leading
-        /// <c>/</c>, not <c>//</c>, no <c>?</c>, <c>#</c>, <c>\</c> or white
-        /// space); an <c>sdk_client_id</c> that is not 1-64 characters of
+        /// <c>localhost</c>, <c>127.0.0.1</c> or <c>::1</c>), carries credentials,
+        /// a query (or a bare <c>?</c>), a fragment, white space, control
+        /// characters, port 0 or a port above 65535, or a host that, as written,
+        /// is not an IPv6 address between brackets, an IPv4 address (which a
+        /// numeric last label must be) or a DNS name of ASCII labels (letters,
+        /// digits, inner hyphens, 1-63 characters each, 253 in all; an
+        /// international name in its <c>xn--</c> form); a <c>token_endpoint</c>
+        /// that is not a path on the API (one leading <c>/</c>, not <c>//</c>,
+        /// every <c>%</c> followed by two hex digits, and no <c>:</c>, <c>?</c>,
+        /// <c>#</c>, <c>\</c> or white space); an <c>sdk_client_id</c> that is not 1-64 characters of
         /// <c>[A-Za-z0-9._-]</c>; or <c>code_challenge_methods_supported</c>
         /// without <c>S256</c>. Other members are ignored.
         /// </remarks>
@@ -206,9 +214,11 @@ namespace Thalovant
             char.IsWhiteSpace(character) || character < 32 || (character >= 127 && character <= 159);
 
         /// <summary>
-        /// https, or http on a loopback host while developing; a host; no
-        /// credentials, query, fragment, white space or control characters; a
-        /// port from 0 to 65535 if any. Split as Python's <c>urlsplit</c> splits it.
+        /// https, or http on a loopback host while developing; a host a browser
+        /// can reach (<see cref="RealHost"/>); no credentials, query, fragment,
+        /// white space or control characters; a port from 1 to 65535 if any.
+        /// Split as Python's <c>urlsplit</c> splits it, from the string as given:
+        /// <see cref="Uri.Host"/> may hand an international name back in Unicode.
         /// </summary>
         private static bool UsableAuthorizationEndpoint(string value)
         {
@@ -275,6 +285,10 @@ namespace Thalovant
                 var portColon = netloc.IndexOf(':');
                 host = portColon < 0 ? netloc : netloc.Substring(0, portColon);
                 port = portColon < 0 ? "" : netloc.Substring(portColon + 1);
+                if (!RealHost(host.ToLowerInvariant()))
+                {
+                    return false;
+                }
             }
             if (host.Length == 0 || !UsablePort(port))
             {
@@ -288,21 +302,57 @@ namespace Thalovant
             return lowered == "localhost" || lowered == "127.0.0.1" || lowered == "::1";
         }
 
-        /// <summary>An IPv6 literal, or an IPvFuture one (<c>v1.x</c>), as the brackets of a URL may hold.</summary>
-        private static bool BracketedHost(string host)
+        /// <summary>Between brackets, only an IPv6 address.</summary>
+        private static bool BracketedHost(string host) =>
+            IPAddress.TryParse(host, out var address) && address.AddressFamily == AddressFamily.InterNetworkV6;
+
+        /// <summary>
+        /// Whether a host written without brackets names something a browser can
+        /// reach: an IPv4 address in its four-part decimal form, or a DNS name of
+        /// ASCII labels -- letters, digits and inner hyphens, 1-63 characters each,
+        /// at most 253 in all. A numeric last label must make an IPv4 address, as a
+        /// browser reads one. <c>%</c>, <c>_</c>, an empty label (a trailing dot
+        /// included) and a non-ASCII host are not hosts here.
+        /// </summary>
+        private static bool RealHost(string host)
         {
-            if (host.StartsWith("v", StringComparison.Ordinal))
+            if (DottedQuad(host))
             {
-                var dot = host.IndexOf('.');
-                return dot > 1 && dot < host.Length - 1 && host.Substring(1, dot - 1).All(IsHex);
+                return true;
             }
-            return IPAddress.TryParse(host, out var address) && address.AddressFamily == AddressFamily.InterNetworkV6;
+            var labels = host.Split('.');
+            var last = labels[labels.Length - 1];
+            if (last.Length > 0 && last.All(char.IsDigit))
+            {
+                return false; // Numeric like an IPv4 address, and not one.
+            }
+            return host.Length <= 253 && labels.All(DnsLabel);
+        }
+
+        private static bool DnsLabel(string label) =>
+            label.Length >= 1 && label.Length <= 63
+            && label[0] != '-' && label[label.Length - 1] != '-'
+            && label.All(character => (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || character == '-');
+
+        /// <summary>
+        /// Four decimal parts from 0 to 255, without leading zeros, as Python's
+        /// <c>ipaddress</c> reads IPv4. <see cref="IPAddress.TryParse(string, out IPAddress)"/>
+        /// also takes <c>127.1</c> and <c>0x7f.0.0.1</c>, which are not this.
+        /// </summary>
+        private static bool DottedQuad(string host)
+        {
+            var parts = host.Split('.');
+            return parts.Length == 4 && parts.All(part =>
+                part.Length >= 1 && part.Length <= 3
+                && part.All(character => character >= '0' && character <= '9')
+                && (part.Length == 1 || part[0] != '0')
+                && int.Parse(part, CultureInfo.InvariantCulture) <= 255);
         }
 
         private static bool IsHex(char character) =>
             (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f') || (character >= 'A' && character <= 'F');
 
-        /// <summary>None, or ASCII digits naming 0 to 65535.</summary>
+        /// <summary>None, or ASCII digits naming 1 to 65535: no browser can open port 0.</summary>
         private static bool UsablePort(string port)
         {
             if (port.Length == 0)
@@ -314,14 +364,40 @@ namespace Thalovant
                 return false;
             }
             var digits = port.TrimStart('0');
-            return digits.Length <= 5 && (digits.Length == 0 || int.Parse(digits, CultureInfo.InvariantCulture) <= 65535);
+            return digits.Length >= 1 && digits.Length <= 5 && int.Parse(digits, CultureInfo.InvariantCulture) <= 65535;
         }
 
-        /// <summary>A path on the API: one leading slash, no query, fragment, backslash or white space.</summary>
-        private static bool UsableTokenEndpoint(string value) =>
-            value.StartsWith("/", StringComparison.Ordinal)
-            && !value.StartsWith("//", StringComparison.Ordinal)
-            && !value.Any(character => character == '?' || character == '#' || character == '\\' || Unsafe(character));
+        /// <summary>
+        /// A path on the API: one leading slash, every <c>%</c> followed by two hex
+        /// digits, and no colon, query, fragment, backslash or white space.
+        /// </summary>
+        /// <remarks>
+        /// No colon anywhere: a URL joiner can read what follows the slash as a URL
+        /// of its own (<c>/https://collector.example/token</c>,
+        /// <c>/collector.example:443/token</c>), and the exchange carries the code
+        /// and the verifier. A broken escape (<c>/v1/%zz</c>) is caught here, while
+        /// a device login can still stand in, not after somebody approved.
+        /// </remarks>
+        private static bool UsableTokenEndpoint(string value)
+        {
+            if (!value.StartsWith("/", StringComparison.Ordinal) || value.StartsWith("//", StringComparison.Ordinal))
+            {
+                return false;
+            }
+            for (var index = 0; index < value.Length; index++)
+            {
+                var character = value[index];
+                if (character == ':' || character == '?' || character == '#' || character == '\\' || Unsafe(character))
+                {
+                    return false;
+                }
+                if (character == '%' && !(index + 2 < value.Length && IsHex(value[index + 1]) && IsHex(value[index + 2])))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
 
         private static bool UsableClientId(string value) =>
             value.Length >= 1 && value.Length <= 64
@@ -336,13 +412,11 @@ namespace Thalovant
     /// </summary>
     /// <remarks>
     /// <see cref="ThalovantControlPlane.BrowserLoginAsync"/> puts them
-    /// together. The browser that approves hands the code to a listener on its
-    /// own computer, so a sign-in link forwarded to somebody else gives the
-    /// sender nothing unless that person also sends back the address their
-    /// browser was redirected to. A device code, read off one screen and typed
-    /// into another, needs no such second step. PKCE binds the code to the
-    /// verifier this process holds; it does not stop a forwarded callback
-    /// address.
+    /// together. The browser that approves hands the code to its own computer's
+    /// <c>127.0.0.1</c>, so a link or code sent to someone on another computer
+    /// delivers nothing to the sender. That is all it promises: a forwarded
+    /// callback port (<c>ssh -L</c>, a port-forwarding tool) or another user of
+    /// the same computer can still complete a sign-in.
     /// </remarks>
     public static class BrowserSignIn
     {
@@ -660,9 +734,11 @@ namespace Thalovant
         /// <c>127.0.0.1</c> on a port the system picks, opens the browser at the
         /// dashboard's consent page, and waits for the browser to come back to
         /// <c>http://127.0.0.1:&lt;port&gt;/callback</c>. The browser that
-        /// approves hands the code to its own computer, so a sign-in link sent to
-        /// somebody else gives the sender nothing unless that person also sends
-        /// back the address their browser was redirected to.
+        /// approves hands the code to its own computer, so a link or code sent to
+        /// someone on another computer delivers nothing to the sender -- which a
+        /// device code, read off one screen and typed in anywhere, cannot promise.
+        /// A forwarded callback port or another user of the same computer is
+        /// another matter.
         /// </para>
         /// <para>
         /// The URL is printed as well as opened (<c>Opening your browser to sign
@@ -743,7 +819,9 @@ namespace Thalovant
             {
                 throw new ArgumentOutOfRangeException(nameof(options), method, "The login method must be Auto, Browser or Device.");
             }
-            var name = string.IsNullOrEmpty(options.DeviceName) ? BrowserSignIn.DefaultDeviceName() : options.DeviceName!;
+            // Only a missing name asks for the default: an empty one is the
+            // caller's way of sending none, here and to a device login.
+            var name = options.DeviceName ?? BrowserSignIn.DefaultDeviceName();
             NativeSignInConfig? config = null;
             if (method == LoginMethod.Browser)
             {
@@ -842,7 +920,9 @@ namespace Thalovant
                     BrowserSignIn.ChallengeFor(verifier),
                     state,
                     scopes,
-                    string.IsNullOrEmpty(deviceName) ? BrowserSignIn.DefaultDeviceName() : deviceName,
+                    // Only null asks for the default: an empty name keeps the
+                    // hostname off the consent page.
+                    deviceName ?? BrowserSignIn.DefaultDeviceName(),
                     config.SdkClientId);
                 PresentBrowserLogin(url, prompt, openBrowser, opener, output);
                 var callback = await listener.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
@@ -858,34 +938,26 @@ namespace Thalovant
                 }
                 if (callback.Code is null)
                 {
-                    // The page's error is whatever the tab sent with the right
-                    // state; it must not carry that state, or the verifier, out.
-                    var code = ProblemCode(callback.Error);
-                    if (code != null && (code.IndexOf(state, StringComparison.Ordinal) >= 0 || code.IndexOf(verifier, StringComparison.Ordinal) >= 0))
-                    {
-                        code = null;
-                    }
+                    // callback.Error is one of RFC 6749's codes or nothing: a value
+                    // the page chose could be the state or a code.
                     throw new ThalovantApiException(
-                        "The browser came back without a sign-in code" + (code is null ? "." : $" ({code})."),
-                        errorCode: code);
+                        "The browser came back without a sign-in code" + (callback.Error is null ? "." : $" ({callback.Error})."),
+                        errorCode: callback.Error);
                 }
+                var hidden = new[] { callback.Code, verifier, state };
                 DeviceLoginResult result;
                 try
                 {
-                    result = await ExchangeBrowserCodeAsync(config, callback.Code, verifier, redirectUri, cancellationToken)
+                    result = await ExchangeBrowserCodeAsync(config, callback.Code, verifier, redirectUri, hidden, cancellationToken)
                         .ConfigureAwait(false);
                 }
                 catch (ThalovantApiException error)
                 {
                     // A code is single-use: retrying the exchange would only
-                    // revoke the token a first exchange minted (RFC 9700). The
-                    // copy thrown carries no inner exception, so the original --
-                    // whose body may echo the code and the verifier -- does not
-                    // ride along. A token the failed answer carries anyway is
-                    // taken out with them.
-                    var hidden = new List<string?> { callback.Code, verifier, state };
-                    hidden.AddRange(TokensIn(error.Body));
-                    throw WithoutSecrets(error, hidden.ToArray());
+                    // revoke the token a first exchange minted (RFC 9700). Always
+                    // a new error, with no inner exception: the transport's own
+                    // can carry the request, and with it the code and the verifier.
+                    throw WithoutSecrets(error, hidden.Concat(TokensIn(error.Body)).ToArray());
                 }
                 listener.Finish(true);
                 return result;
@@ -906,13 +978,18 @@ namespace Thalovant
         /// object, or has no <c>access_token</c>, is an error with no status --
         /// the API did not refuse, its answer could not be used -- and any other
         /// failure carries the api-errors fields (<c>invalid_grant</c> for every
-        /// way an exchange fails).
+        /// way an exchange fails). A failed answer has every one of
+        /// <paramref name="hidden"/>, and any token it carries, taken out before
+        /// the error's message is made of it: the message is cut to 200
+        /// characters, and a cut could keep part of a secret no later pass finds.
+        /// The request is sent once (<see cref="SendExchangeOnceAsync"/>).
         /// </remarks>
         private async Task<DeviceLoginResult> ExchangeBrowserCodeAsync(
             NativeSignInConfig config,
             string code,
             string verifier,
             string redirectUri,
+            IReadOnlyList<string> hidden,
             CancellationToken cancellationToken)
         {
             NativeSignIn.RequireSecureTokenExchange(ApiUrl);
@@ -923,11 +1000,14 @@ namespace Thalovant
                 ["client_id"] = config.SdkClientId,
                 ["redirect_uri"] = redirectUri,
             };
-            var (statusCode, text, retryAfter) = await SendAsync("POST", config.TokenEndpoint, body, null, auth: false, cancellationToken)
+            // The configuration already refuses a token endpoint that could leave
+            // the API, and BuildRequest refuses any request off the API's origin.
+            var (statusCode, text, retryAfter) = await SendExchangeOnceAsync(config.TokenEndpoint, body, cancellationToken)
                 .ConfigureAwait(false);
             if (statusCode < 200 || statusCode >= 300)
             {
-                throw ApiError(statusCode, text).WithRetryAfterHeader(retryAfter);
+                var clean = new Redactor(hidden.Concat(TokensIn(text))).ScrubBody(text);
+                throw ApiError(statusCode, clean).WithRetryAfterHeader(retryAfter);
             }
             var token = ThalovantApiException.ParseProblem(text);
             if (token is null)
@@ -1015,122 +1095,213 @@ namespace Thalovant
             }
         }
 
-        /// <summary>The consent page's <c>error</c>, when it reads as a machine code (<c>[A-Za-z0-9_.:-]{1,80}</c>).</summary>
-        private static string? ProblemCode(string? error)
-        {
-            if (string.IsNullOrEmpty(error) || error!.Length > 80)
-            {
-                return null;
-            }
-            return error.All(character => (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z')
-                || (character >= '0' && character <= '9') || character == '_' || character == '.' || character == ':' || character == '-')
-                ? error
-                : null;
-        }
-
         /// <summary>
-        /// <paramref name="error"/>, with every one of <paramref name="hidden"/>
-        /// taken out of its message, its body and its problem, keys included.
+        /// A new error like <paramref name="error"/>, with every one of
+        /// <paramref name="hidden"/> taken out of its message, its body and its
+        /// problem, keys included.
         /// </summary>
         /// <remarks>
         /// An API that echoes a request back (a FastAPI 422 lists each field's
-        /// <c>input</c>) would otherwise hand the code and the verifier to
-        /// whoever logs the error. A body that is JSON of any shape -- an object,
-        /// an array, a bare string -- is read and written back from its clean
-        /// values, so a secret spelled with JSON escapes cannot survive in the
-        /// raw text either. The same error comes back when there is nothing to
-        /// take out; otherwise a copy of the same kind, with no inner exception.
+        /// <c>input</c>) would otherwise hand the code and the verifier to whoever
+        /// logs the error. Always a new object, never <paramref name="error"/>
+        /// itself, and with no inner exception: a transport's own exception can
+        /// keep the request, its body (the code and the verifier) included. The
+        /// kind, the status, <see cref="ThalovantApiException.ErrorCode"/>,
+        /// <see cref="ThalovantApiException.Detail"/> and
+        /// <see cref="ThalovantApiException.RetryAfter"/> are kept.
         /// </remarks>
         internal static ThalovantApiException WithoutSecrets(ThalovantApiException error, params string?[] hidden)
         {
-            var values = hidden.Where(value => !string.IsNullOrEmpty(value)).Select(value => value!).Distinct(StringComparer.Ordinal)
-                .OrderByDescending(value => value.Length).ToArray();
-            // One pass over every secret at once, the longest first: replacing
-            // them one after another would find a short one (a one-letter code)
-            // inside the "[redacted]" an earlier one left.
-            var secrets = values.Length == 0
-                ? null
-                : new System.Text.RegularExpressions.Regex(
-                    string.Join("|", values.Select(System.Text.RegularExpressions.Regex.Escape)),
-                    System.Text.RegularExpressions.RegexOptions.CultureInvariant,
-                    TimeSpan.FromSeconds(2));
-            var changed = false;
-            string Scrub(string text)
+            var redactor = new Redactor(hidden);
+            var message = redactor.Scrub(error.Message);
+            if (error.StatusCode is int statusCode)
             {
-                var clean = secrets is null ? text : secrets.Replace(text, "[redacted]");
-                if (clean != text)
-                {
-                    changed = true;
-                }
-                return clean;
+                var clean = redactor.ScrubBody(error.Body ?? error.Problem?.ToJsonString() ?? "");
+                return ThalovantApiException.FromResponse(message, statusCode, clean, ThalovantApiException.ParseProblem(clean))
+                    .WithRetryAfterHeader(error.RetryAfter);
             }
-            void Write(JsonElement element, Utf8JsonWriter writer)
+            if (error is ThalovantApiUnreachableException)
             {
-                switch (element.ValueKind)
-                {
-                    case JsonValueKind.Object:
-                        writer.WriteStartObject();
-                        foreach (var property in element.EnumerateObject())
-                        {
-                            writer.WritePropertyName(Scrub(property.Name));
-                            Write(property.Value, writer);
-                        }
-                        writer.WriteEndObject();
-                        break;
-                    case JsonValueKind.Array:
-                        writer.WriteStartArray();
-                        foreach (var item in element.EnumerateArray())
-                        {
-                            Write(item, writer);
-                        }
-                        writer.WriteEndArray();
-                        break;
-                    case JsonValueKind.String:
-                        writer.WriteStringValue(Scrub(element.GetString()!));
-                        break;
-                    default:
-                        element.WriteTo(writer);
-                        break;
-                }
+                // Still "the API was out of reach", without the transport's exception.
+                return new ThalovantApiUnreachableException(message, null!);
             }
-            string ScrubBody(string text)
+            return new ThalovantApiException(message, errorCode: error.ErrorCode);
+        }
+
+        /// <summary>
+        /// <c>POST</c> of the exchange, sent once. A pipeline that resends a
+        /// request body -- <c>SocketsHttpHandler</c> retrying a request whose
+        /// reused connection failed, or a retry policy in a caller's handler --
+        /// would present the code twice, and a code presented twice revokes the
+        /// token the first presentation minted (RFC 9700). The body refuses to be
+        /// written a second time, so such a resend fails instead, as an error with
+        /// no status.
+        /// </summary>
+        private async Task<(int StatusCode, string Body, TimeSpan? RetryAfter)> SendExchangeOnceAsync(
+            string path, JsonObject body, CancellationToken cancellationToken)
+        {
+            // BuildRequest's checks first: the API's origin, https or explicit
+            // loopback for a request with a body, no uncontrolled HttpClient.
+            using var request = BuildRequest("POST", path, body, null, auth: false);
+            request.Content?.Dispose();
+            request.Content = new SingleUseContent(Encoding.UTF8.GetBytes(body.ToJsonString()));
+            HttpResponseMessage response;
+            try
             {
+                response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is ExchangeResentException || exception.InnerException is ExchangeResentException)
+            {
+                throw new ThalovantApiException("The token exchange was about to be sent a second time; it is sent once. Start a new sign-in.");
+            }
+            catch (HttpRequestException exception)
+            {
+                throw new ThalovantApiUnreachableException($"Thalovant API request failed: {exception.Message}", exception);
+            }
+            using (response)
+            {
+                var bytes = response.Content is null
+                    ? Array.Empty<byte>()
+                    : await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+                return ((int)response.StatusCode, DecodeBody(bytes), RetryAfterHeader(response));
+            }
+        }
+
+        /// <summary>A second attempt to write the exchange's body.</summary>
+        private sealed class ExchangeResentException : InvalidOperationException
+        {
+            internal ExchangeResentException()
+                : base("The token exchange's body is written once and never resent.")
+            {
+            }
+        }
+
+        /// <summary>JSON that can be written to the wire once.</summary>
+        private sealed class SingleUseContent : HttpContent
+        {
+            private readonly byte[] _bytes;
+            private int _written;
+
+            internal SingleUseContent(byte[] bytes)
+            {
+                _bytes = bytes;
+                Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
+            }
+
+            protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+            {
+                if (Interlocked.Exchange(ref _written, 1) != 0)
+                {
+                    throw new ExchangeResentException();
+                }
+                return stream.WriteAsync(_bytes, 0, _bytes.Length);
+            }
+
+            protected override bool TryComputeLength(out long length)
+            {
+                length = _bytes.Length;
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// Takes secrets out of text: every one at once, the longest first, and
+        /// never inside a <c>[redacted]</c> already there, so redacting twice
+        /// changes nothing. A one-after-another replacement found a one-letter
+        /// code inside the marker an earlier secret left.
+        /// </summary>
+        internal sealed class Redactor
+        {
+            internal const string Marker = "[redacted]";
+            private readonly System.Text.RegularExpressions.Regex? _secrets;
+
+            internal Redactor(IEnumerable<string?> hidden)
+            {
+                var values = hidden.Where(value => !string.IsNullOrEmpty(value)).Select(value => value!)
+                    .Distinct(StringComparer.Ordinal).OrderByDescending(value => value.Length).ToArray();
+                _secrets = values.Length == 0
+                    ? null
+                    : new System.Text.RegularExpressions.Regex(
+                        string.Join("|", values.Select(System.Text.RegularExpressions.Regex.Escape)),
+                        System.Text.RegularExpressions.RegexOptions.CultureInvariant,
+                        TimeSpan.FromSeconds(2));
+            }
+
+            /// <summary><paramref name="text"/> with every secret replaced by <see cref="Marker"/>.</summary>
+            internal string Scrub(string text)
+            {
+                if (_secrets is null)
+                {
+                    return text;
+                }
+                var parts = text.Split(new[] { Marker }, StringSplitOptions.None);
+                return string.Join(Marker, parts.Select(part => _secrets.Replace(part, Marker)));
+            }
+
+            /// <summary>
+            /// A body with every secret taken out. JSON of any shape -- an object,
+            /// an array, a bare string -- is read and written back from its clean
+            /// values, keys included, so an escaped spelling goes too; a body with
+            /// nothing to take out is returned exactly as sent. Anything else is
+            /// scrubbed as text.
+            /// </summary>
+            internal string ScrubBody(string text)
+            {
+                if (_secrets is null || text.Length == 0)
+                {
+                    return text;
+                }
                 try
                 {
                     using var document = JsonDocument.Parse(text);
-                    var before = changed;
-                    changed = false;
+                    var changed = false;
+                    string Clean(string value)
+                    {
+                        var clean = Scrub(value);
+                        changed |= clean != value;
+                        return clean;
+                    }
+                    void Write(JsonElement element, Utf8JsonWriter writer)
+                    {
+                        switch (element.ValueKind)
+                        {
+                            case JsonValueKind.Object:
+                                writer.WriteStartObject();
+                                foreach (var property in element.EnumerateObject())
+                                {
+                                    writer.WritePropertyName(Clean(property.Name));
+                                    Write(property.Value, writer);
+                                }
+                                writer.WriteEndObject();
+                                break;
+                            case JsonValueKind.Array:
+                                writer.WriteStartArray();
+                                foreach (var item in element.EnumerateArray())
+                                {
+                                    Write(item, writer);
+                                }
+                                writer.WriteEndArray();
+                                break;
+                            case JsonValueKind.String:
+                                writer.WriteStringValue(Clean(element.GetString()!));
+                                break;
+                            default:
+                                element.WriteTo(writer);
+                                break;
+                        }
+                    }
                     using var buffer = new MemoryStream();
                     using (var writer = new Utf8JsonWriter(buffer))
                     {
                         Write(document.RootElement, writer);
                     }
-                    var rewritten = changed;
-                    changed = before || rewritten;
-                    // Written back only when a value was taken out: otherwise the
-                    // body stays exactly as the API sent it.
-                    return rewritten ? Encoding.UTF8.GetString(buffer.ToArray()) : Scrub(text);
+                    return changed ? Encoding.UTF8.GetString(buffer.ToArray()) : Scrub(text);
                 }
                 catch (Exception failure) when (failure is JsonException || failure is InvalidOperationException)
                 {
-                    return Scrub(text); // Not JSON (or unreadable as it): plain text.
+                    return Scrub(text); // Not JSON, or not readable as it: plain text.
                 }
             }
-
-            var message = Scrub(error.Message);
-            var source = error.Body ?? error.Problem?.ToJsonString();
-            var body = source is null ? null : ScrubBody(source);
-            if (!changed)
-            {
-                return error;
-            }
-            if (error.StatusCode is int statusCode)
-            {
-                var clean = body ?? "";
-                return ThalovantApiException.FromResponse(message, statusCode, clean, ThalovantApiException.ParseProblem(clean))
-                    .WithRetryAfterHeader(error.RetryAfter);
-            }
-            return new ThalovantApiException(message);
         }
     }
 }

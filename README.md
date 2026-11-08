@@ -1,4 +1,4 @@
-<!-- Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in docs: CodeRabbit review on #54 (relay wording, Prompt, mobile rule, example). -->
+<!-- Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in docs for the final reference (python-sdk 39e31d8): wording, device name, origin, configuration rules. -->
 
 <p align="center">
   <picture>
@@ -78,12 +78,11 @@ clear, so never log or print that form.
 
 On a machine with a browser, sign a person in through it. The SDK listens on
 `127.0.0.1` on a port the system picks, opens the consent page, and the browser
-that approves hands the code back to this computer (PKCE on a loopback
-redirect, RFC 8252). A sign-in link forwarded to somebody else gives the
-sender nothing unless that person also sends back the address their browser
-was redirected to; a device code needs no such second step. PKCE binds the
-code to the verifier this program holds, but it does not stop somebody from
-forwarding that whole callback address, so treat it as a secret too.
+that approves hands the code back to this computer's `127.0.0.1` (PKCE on a
+loopback redirect, RFC 8252). So a link or code sent to someone on another
+computer delivers nothing to the sender, which a device code cannot promise.
+That is all it promises: a forwarded callback port (`ssh -L`, a port-forwarding
+tool) or another user of the same computer can still complete a sign-in.
 
 ```csharp
 var api = new ThalovantControlPlane();
@@ -98,7 +97,7 @@ await api.InteractiveLoginAsync(new InteractiveLoginOptions { Method = LoginMeth
 await api.BrowserLoginAsync(new BrowserLoginOptions
 {
     Scopes = new[] { "hubs:read", "clients:write" }, // none: the API's default
-    DeviceName = "Build agent",      // default: thalovant-dotnet-sdk on <hostname>
+    DeviceName = "Build agent",      // null: thalovant-dotnet-sdk on <hostname>; "": none
     OpenBrowser = true,              // false only prints the URL
     Timeout = TimeSpan.FromMinutes(5),
     Prompt = url => Console.WriteLine(url), // replaces the printed prompt
@@ -112,7 +111,9 @@ await api.RevokeApiTokenAsync(); // signs out, as after a device login
 | Chooser (`LoginMethod.Auto`) | the browser when this machine can show one and `GET /v1/auth/native/config` answers; never with `CI`, `SSH_CONNECTION` or `SSH_TTY` set; Windows and macOS yes; anywhere else (Linux, the BSDs, Android, iOS) only with `DISPLAY` or `WAYLAND_DISPLAY`, which a phone does not set. Otherwise `LoginWithBrowserAsync` (a device login), the device name as its `client_name` |
 | Fallback | in `LoginMethod.Auto` only: a 404 (an API without browser sign-in), any other failure, an unusable answer or a cleartext API URL means a device login, before anything is opened. `BrowserLoginAsync` and `LoginMethod.Browser` throw them instead. Once the browser is opened, its outcome stands |
 | The URL | printed as well (`Opening your browser to sign in to Thalovant. If it does not open, visit:` and the URL), unless `Prompt` is given: it receives the URL in place of the print, so showing it is then up to the callback. The browser opens on a background thread (`ShellExecute`, `open` or `xdg-open`), and `Opener` replaces it |
-| Result | the `DeviceLoginResult` a device login returns; the token is kept on `AccessToken` and `TokenId`, and `ai_disclosure` stays in `Raw` |
+| Result | the `DeviceLoginResult` a device login returns; the token is kept on `AccessToken` and `TokenId`, and `ai_disclosure` stays in `Raw`. The exchange is sent once, and never leaves the API's origin; no control-plane request does |
+| Configuration | unusable (a device login in `Auto`, an error otherwise) when the dashboard address is not https (or loopback http), has no real host as written (an IPv6 literal in brackets, a dotted-quad IPv4 address or ASCII DNS labels, `xn--` for an international name), or names port 0; or when the token endpoint is not a plain path on the API (a `:` or a broken `%` escape included) |
+| The tab | waits as long as the sign-in takes, then says `Signed in to Thalovant. You can close this tab.` or `Sign-in was not completed.` |
 | Denied, timed out | `ThalovantDeviceAccessDeniedException`, `ThalovantDeviceCodeExpiredException` (300 s by default), with no status |
 | Refused exchange | `ThalovantApiException` with `StatusCode` 400 and `Detail` `invalid_grant`; start a new sign-in, never reuse a code |
 | Secrets | the code, the verifier, the state and the token never appear in an exception; cancelling closes the port |

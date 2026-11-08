@@ -237,10 +237,52 @@ public sealed class BrowserLoginTests
     }
 
     [Fact]
-    public void AnErrorWithNothingSecretInItIsKeptAsItWas()
+    public void ARedactedErrorIsAlwaysANewOneWithNothingRidingAlong()
     {
+        // Even with nothing to take out: the original can carry the transport's
+        // exception, and that can keep the request.
         var error = ThalovantControlPlane.ApiError(400, """{"detail":"invalid_grant"}""");
-        Assert.Same(error, ThalovantControlPlane.WithoutSecrets(error, "nc_code", "verifier", null, ""));
+        var clean = ThalovantControlPlane.WithoutSecrets(error, "nc_code", "verifier", null, "");
+        Assert.NotSame(error, clean);
+        Assert.Equal(400, clean.StatusCode);
+        Assert.Equal("invalid_grant", clean.Detail);
+        Assert.Null(clean.InnerException);
+        var unreachable = new ThalovantApiUnreachableException("Thalovant API request failed: reset", new System.Net.Http.HttpRequestException("body: nc_code"));
+        var bare = ThalovantControlPlane.WithoutSecrets(unreachable, "nc_code");
+        Assert.IsType<ThalovantApiUnreachableException>(bare);
+        Assert.Null(bare.InnerException);
+        Assert.Null(bare.StatusCode);
+    }
+
+    [Fact]
+    public void ScrubbingIsOnePassLongestFirstAndLeavesItsMarkerAlone()
+    {
+        var redactor = new ThalovantControlPlane.Redactor(new[] { "abc", "abcdef", "c" });
+        Assert.Equal("xx-[redacted]-[redacted]-[redacted]", redactor.Scrub("xx-abc-abcdef-[redacted]"));
+        var once = redactor.ScrubBody("""{"seen:abcdef":["c",{"deep":"abc"}]}""");
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse("""{"seen:[redacted]":["[redacted]",{"deep":"[redacted]"}]}"""), JsonNode.Parse(once)));
+        Assert.Equal(once, redactor.ScrubBody(once));
+        Assert.Equal("nothing hidden", new ThalovantControlPlane.Redactor(Array.Empty<string>()).Scrub("nothing hidden"));
+        // A body with nothing to take out is kept exactly as sent.
+        Assert.Equal("{ \"detail\" : \"invalid_grant\" }", redactor.ScrubBody("{ \"detail\" : \"invalid_grant\" }"));
+    }
+
+    [Fact]
+    public void EverySecretIsWrittenTheSameWayPercentEncoded()
+    {
+        // The verifier and the state are base64url and the API mints codes
+        // URL-safe: nothing in one needs encoding, so a URL or a form repeats
+        // it as it is, and the redaction finds it.
+        for (var round = 0; round < 200; round++)
+        {
+            foreach (var secret in new[] { BrowserSignIn.NewVerifier(), BrowserSignIn.NewState() })
+            {
+                Assert.Equal(secret, BrowserSignIn.PercentEncode(secret));
+                Assert.Equal(secret, Uri.EscapeDataString(secret));
+                var echoed = $"echo: {BrowserSignIn.PercentEncode(secret)} and {System.Net.WebUtility.UrlEncode(secret)}";
+                Assert.DoesNotContain(secret, new ThalovantControlPlane.Redactor(new[] { secret }).Scrub(echoed), StringComparison.Ordinal);
+            }
+        }
     }
 
     [Fact]
@@ -425,6 +467,147 @@ public sealed class BrowserLoginTests
         Assert.Equal(new[] { "GET /v1/auth/native/config", "POST /v2/sign-in/exchange" }, api.Requests);
     }
 
+    [Fact]
+    public async Task AMessageCutToLengthKeepsNoPartOfASecret()
+    {
+        string? verifier = null;
+        // The verifier starts ten characters before the message's 200-character cut.
+        using var api = new Api(body =>
+        {
+            verifier = (string)body["code_verifier"]!;
+            return new TinyResponse(400, "application/json", new JsonObject { ["detail"] = new string('a', 190) + verifier }.ToJsonString());
+        });
+        var plane = new ThalovantControlPlane(apiUrl: api.Url);
+        var (opened, handOver) = Opened();
+        var task = plane.BrowserLoginAsync(new BrowserLoginOptions { OpenBrowser = false, Prompt = handOver });
+        var (port, state, _) = Parts(await opened.WaitAsync(Patience));
+        await BrowserTab.SendAsync(port, "GET", $"/callback?code=c&state={state}");
+        var error = await Assert.ThrowsAsync<ThalovantApiException>(() => task.WaitAsync(Patience));
+        Assert.Equal(400, error.StatusCode);
+        Assert.Equal(new string('a', 190) + "[redacted]", error.Detail);
+        var prefix = verifier!.Substring(0, 10);
+        foreach (var shown in new[] { error.Message, error.ToString(), error.Detail!, error.Problem!.ToJsonString(), error.Body! })
+        {
+            Assert.DoesNotContain(prefix, shown, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>A transport the test scripts: the configuration, then whatever <paramref name="exchange"/> does.</summary>
+    private sealed class ScriptedHandler : System.Net.Http.HttpMessageHandler
+    {
+        private readonly Func<System.Net.Http.HttpRequestMessage, Task<System.Net.Http.HttpResponseMessage>> _exchange;
+
+        internal ScriptedHandler(Func<System.Net.Http.HttpRequestMessage, Task<System.Net.Http.HttpResponseMessage>> exchange) => _exchange = exchange;
+
+        internal List<string> Requests { get; } = new();
+
+        protected override Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            lock (Requests) Requests.Add($"{request.Method} {request.RequestUri!.AbsolutePath}");
+            if (request.RequestUri!.AbsolutePath == "/v1/auth/native/config")
+            {
+                return Task.FromResult(new System.Net.Http.HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new System.Net.Http.StringContent(ConfigBody, Encoding.UTF8, "application/json"),
+                });
+            }
+            return _exchange(request);
+        }
+    }
+
+    [Fact]
+    public async Task ATransportFailureDuringTheExchangeCarriesNothingOfTheRequest()
+    {
+        // A transport whose own exception repeats the request body.
+        string? sent = null;
+        var handler = new ScriptedHandler(async request =>
+        {
+            sent = await request.Content!.ReadAsStringAsync();
+            throw new System.Net.Http.HttpRequestException("connection reset after " + sent);
+        });
+        var plane = new ThalovantControlPlane(handler, apiUrl: "https://api.example.test");
+        var (opened, handOver) = Opened();
+        var task = plane.BrowserLoginAsync(new BrowserLoginOptions { OpenBrowser = false, Prompt = handOver });
+        var (port, state, _) = Parts(await opened.WaitAsync(Patience));
+        await BrowserTab.SendAsync(port, "GET", $"/callback?code=transport-code&state={state}");
+        var error = await Assert.ThrowsAsync<ThalovantApiUnreachableException>(() => task.WaitAsync(Patience));
+        Assert.Null(error.StatusCode);
+        Assert.Null(error.InnerException);
+        var verifier = (string)JsonNode.Parse(sent!)!["code_verifier"]!;
+        foreach (var secret in new[] { "transport-code", verifier, state })
+        {
+            Assert.DoesNotContain(secret, error.ToString(), StringComparison.Ordinal);
+        }
+        Assert.Contains("[redacted]", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TheExchangeIsWrittenOnceEvenIfThePipelineResendsIt()
+    {
+        // A pipeline that writes the request body twice, as a retry on a failed
+        // reused connection would: presenting a code twice revokes the token the
+        // first presentation minted, so the second write must fail instead.
+        var written = 0;
+        var handler = new ScriptedHandler(async request =>
+        {
+            await request.Content!.CopyToAsync(new MemoryStream());
+            Interlocked.Increment(ref written);
+            await request.Content.CopyToAsync(new MemoryStream());
+            Interlocked.Increment(ref written);
+            return new System.Net.Http.HttpResponseMessage(HttpStatusCode.OK) { Content = new System.Net.Http.StringContent(TokenBody) };
+        });
+        var plane = new ThalovantControlPlane(handler, apiUrl: "https://api.example.test");
+        var (opened, handOver) = Opened();
+        var task = plane.BrowserLoginAsync(new BrowserLoginOptions { OpenBrowser = false, Prompt = handOver });
+        var (port, state, _) = Parts(await opened.WaitAsync(Patience));
+        await BrowserTab.SendAsync(port, "GET", $"/callback?code=nc_resend_code&state={state}");
+        var error = await Assert.ThrowsAsync<ThalovantApiException>(() => task.WaitAsync(Patience));
+        Assert.Null(error.StatusCode);
+        Assert.Contains("sent once", error.Message, StringComparison.Ordinal);
+        Assert.Equal(1, written);
+        Assert.Null(plane.AccessToken);
+    }
+
+    [Theory]
+    [InlineData("/https://elsewhere.example/v1/x")]
+    [InlineData("/elsewhere.example:443/v1/x")]
+    [InlineData("https://elsewhere.example/v1/x")]
+    [InlineData("//elsewhere.example/v1/x")]
+    [InlineData("/{collector}/v1/x")]
+    public void NoRequestLeavesTheApiOrigin(string path)
+    {
+        // The path is appended to the API's address, so none of these can name
+        // another authority here; whatever comes out is on the API's origin.
+        using var collector = new TinyHttpServer(_ => new TinyResponse(599, "application/json", "{}"));
+        var plane = new ThalovantControlPlane(apiUrl: "https://api.example.test", accessToken: "tvpat_must_stay_home");
+        using var request = plane.BuildRequest("POST", path.Replace("{collector}", collector.Url), new JsonObject { ["code"] = "c" });
+        Assert.True(ThalovantControlPlane.SameOrigin(request.RequestUri!.AbsoluteUri, plane.ApiUrl), request.RequestUri.AbsoluteUri);
+        Assert.Equal("api.example.test", request.RequestUri.Host);
+    }
+
+    [Fact]
+    public void ARequestOffTheApiOriginIsRefusedWithNoStatus()
+    {
+        // The guard every request passes through, BuildRequest included.
+        foreach (var url in new[] { "https://elsewhere.example/v1/x", "http://api.example.test/v1/x", "https://api.example.test:8443/v1/x" })
+        {
+            var error = Assert.Throws<ThalovantApiException>(() => ThalovantControlPlane.RequireApiOrigin(new Uri(url), "https://api.example.test/"));
+            Assert.Null(error.StatusCode);
+            Assert.Contains("origin", error.Message, StringComparison.Ordinal);
+        }
+        ThalovantControlPlane.RequireApiOrigin(new Uri("https://API.example.test:443/v1/x"), "https://api.example.test/");
+    }
+
+    [Fact]
+    public async Task AnOrdinaryApiPathStillReachesTheApi()
+    {
+        using var api = new Api();
+        var plane = new ThalovantControlPlane(apiUrl: api.Url);
+        var config = await plane.RequestObjectAsync("GET", "/v1/auth/native/config", auth: false);
+        Assert.Equal("thalovant-sdk", (string)config["sdk_client_id"]!);
+        Assert.Equal(new[] { "GET /v1/auth/native/config" }, api.Requests);
+    }
+
     // -- the listener's own edges ---------------------------------------------
 
     [Fact]
@@ -592,7 +775,7 @@ public sealed class BrowserLoginTests
     [Fact]
     public async Task AConnectionThatClosesOrBreaksBeforeItsAnswerChangesNothing()
     {
-        var listener = new LoopbackListener("the-state") { AnswerTimeout = TimeSpan.FromMilliseconds(50) };
+        var listener = new LoopbackListener("the-state");
         var port = listener.Start();
         try
         {
@@ -611,9 +794,12 @@ public sealed class BrowserLoginTests
             }
             Assert.Null(await listener.WaitAsync(TimeSpan.FromMilliseconds(100), CancellationToken.None));
             // Neither was accepted, so this sign-in's own answer still is.
-            var answer = await BrowserTab.SendAsync(port, "GET", "/callback?code=c&state=the-state");
+            var tab = BrowserTab.SendAsync(port, "GET", "/callback?code=c&state=the-state");
+            Assert.NotNull(await listener.WaitAsync(Patience, CancellationToken.None));
+            listener.Finish(true);
+            var answer = await tab.WaitAsync(Patience);
             Assert.Equal(200, answer.Status);
-            Assert.Contains("Sign-in was not completed.", answer.Body, StringComparison.Ordinal);
+            Assert.Contains("Signed in to Thalovant.", answer.Body, StringComparison.Ordinal);
         }
         finally
         {
@@ -622,21 +808,138 @@ public sealed class BrowserLoginTests
     }
 
     [Fact]
-    public async Task ATabWhoseAnswerNeverComesIsToldTheSignInWasNotCompleted()
+    public async Task TheAcceptedTabWaitsAsLongAsTheSignInTakes()
     {
-        var listener = new LoopbackListener("the-state") { AnswerTimeout = TimeSpan.FromMilliseconds(50) };
+        // The page says how the sign-in ended, so it is written once it has,
+        // however long the exchange took: no deadline of its own.
+        var listener = new LoopbackListener("the-state");
         var port = listener.Start();
         try
         {
-            var answer = await BrowserTab.SendAsync(port, "GET", "/callback?code=c&state=the-state");
-            Assert.Equal(200, answer.Status);
-            Assert.Contains("Sign-in was not completed.", answer.Body, StringComparison.Ordinal);
-            Assert.NotNull(await listener.WaitAsync(TimeSpan.Zero, CancellationToken.None));
+            var clock = Stopwatch.StartNew();
+            var tab = BrowserTab.SendAsync(port, "GET", "/callback?code=c&state=the-state");
+            Assert.NotNull(await listener.WaitAsync(Patience, CancellationToken.None));
+            await Task.Delay(300);
+            Assert.False(tab.IsCompleted);
+            listener.Finish(true);
+            Assert.Contains("Signed in to Thalovant. You can close this tab.", (await tab.WaitAsync(Patience)).Body, StringComparison.Ordinal);
+            Assert.True(clock.Elapsed >= TimeSpan.FromMilliseconds(300));
         }
         finally
         {
             await listener.CloseAsync();
         }
+    }
+
+    [Fact]
+    public async Task ClosingTheListenerAnswersATabThatIsStillWaiting()
+    {
+        var listener = new LoopbackListener("the-state");
+        var port = listener.Start();
+        var tab = BrowserTab.SendAsync(port, "GET", "/callback?code=c&state=the-state");
+        Assert.NotNull(await listener.WaitAsync(Patience, CancellationToken.None));
+        await listener.CloseAsync();
+        Assert.Contains("Sign-in was not completed.", (await tab.WaitAsync(Patience)).Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AHeadRequestGetsTheHeadersAndNoBody()
+    {
+        var listener = new LoopbackListener("the-state");
+        var port = listener.Start();
+        try
+        {
+            using var client = new TcpClient();
+            await client.ConnectAsync(IPAddress.Loopback, port);
+            await client.GetStream().WriteAsync(Encoding.ASCII.GetBytes("HEAD /callback?code=c&state=the-state HTTP/1.1\r\n\r\n"));
+            var raw = await ReadToEndAsync(client);
+            var split = raw.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+            var head = raw.Substring(0, split);
+            Assert.StartsWith("HTTP/1.1 404 ", head, StringComparison.Ordinal);
+            Assert.Equal("", raw.Substring(split + 4));
+            Assert.Contains("Content-Type: text/html; charset=utf-8", head, StringComparison.Ordinal);
+            // What a GET would have carried.
+            var length = int.Parse(Regex.Match(head, @"Content-Length: (\d+)").Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+            Assert.Equal(LoopbackListener.ResponseBytes(404, LoopbackListener.NotFoundText).Length - LoopbackListener.ResponseBytes(404, LoopbackListener.NotFoundText, headOnly: true).Length, length);
+            Assert.True(length > 0);
+        }
+        finally
+        {
+            await listener.CloseAsync();
+        }
+    }
+
+    [Theory]
+    [InlineData("oversized head")]
+    [InlineData("unread body")]
+    public async Task AnEarlyAnswerIsNotLostToAReset(string kind)
+    {
+        // Closing with bytes unread resets the connection, and macOS then drops
+        // the answer the browser had not read; Linux shows the reset.
+        var request = kind == "oversized head"
+            ? Encoding.ASCII.GetBytes("GET /callback?code=" + new string('a', 600_000) + " HTTP/1.1\r\nHost: x\r\n\r\n")
+            : Encoding.ASCII.GetBytes("POST /callback HTTP/1.1\r\nHost: x\r\nContent-Length: 600000\r\n\r\n" + new string('b', 600_000));
+        var listener = new LoopbackListener("the-state");
+        var port = listener.Start();
+        try
+        {
+            using var client = new TcpClient();
+            await client.ConnectAsync(IPAddress.Loopback, port);
+            var stream = client.GetStream();
+            // Sent while the answer is read, as a browser does.
+            var sending = Task.Run(async () =>
+            {
+                try { await stream.WriteAsync(request); } catch (IOException) { }
+            });
+            var data = new MemoryStream();
+            Exception? ended = null;
+            try
+            {
+                await stream.CopyToAsync(data).WaitAsync(Patience);
+            }
+            catch (IOException error)
+            {
+                ended = error;
+            }
+            await sending.WaitAsync(Patience);
+            var line = Encoding.ASCII.GetString(data.ToArray()).Split("\r\n")[0];
+            Assert.Contains(line, new[] { "HTTP/1.1 400 Bad Request", "HTTP/1.1 404 Not Found" });
+            Assert.True(ended is null, $"the connection ended with {ended}");
+        }
+        finally
+        {
+            await listener.CloseAsync();
+        }
+    }
+
+    [Fact]
+    public async Task DrainingAConnectionIsBounded()
+    {
+        // A browser that never closes its side cannot keep a connection alive.
+        var listener = new LoopbackListener("the-state") { DrainTimeout = TimeSpan.FromMilliseconds(200) };
+        var port = listener.Start();
+        try
+        {
+            using var client = new TcpClient();
+            await client.ConnectAsync(IPAddress.Loopback, port);
+            await client.GetStream().WriteAsync(Encoding.ASCII.GetBytes("GET /favicon.ico HTTP/1.1\r\n\r\n"));
+            // The answer ends (the listener shut its side), and ours stays open.
+            Assert.StartsWith("HTTP/1.1 404 ", await ReadToEndAsync(client), StringComparison.Ordinal);
+            await Task.Delay(500);
+            Assert.Equal(0, listener.ConnectionCount);
+        }
+        finally
+        {
+            await listener.CloseAsync();
+        }
+    }
+
+    [Fact]
+    public void TheDrainBoundsAreTheBriefs()
+    {
+        Assert.Equal(TimeSpan.FromSeconds(2), LoopbackListener.DefaultDrainTimeout);
+        Assert.Equal(1024 * 1024, LoopbackListener.DrainLimit);
+        Assert.Equal(TimeSpan.FromSeconds(2), new LoopbackListener("s").DrainTimeout);
     }
 
     [Fact]
@@ -665,9 +968,16 @@ public sealed class BrowserLoginTests
         Assert.Equal(400, LoopbackListener.Classify("GET", "/callback?#state=s", "s").Status);
         Assert.Equal(404, LoopbackListener.Classify("GET", "/%63allback?state=s", "s").Status);
         Assert.Equal(404, LoopbackListener.Classify("GET", "http://127.0.0.1/callback?state=s", "s").Status);
+        // Two errors are a failure; the first is kept only when it is an RFC 6749 code.
         var mixed = LoopbackListener.Classify("GET", "/callback?state=s&error=a&error=access_denied", "s").Callback!;
         Assert.Equal(LoopbackOutcome.Failed, mixed.Outcome);
-        Assert.Equal("a", mixed.Error);
+        Assert.Null(mixed.Error);
+        Assert.Equal("server_error", LoopbackListener.Classify("GET", "/callback?state=s&error=server_error&error=access_denied", "s").Callback!.Error);
+        foreach (var code in LoopbackListener.OAuthErrors.Where(code => code != "access_denied"))
+        {
+            Assert.Equal(code, LoopbackListener.Classify("GET", $"/callback?state=s&error={code}", "s").Callback!.Error);
+        }
+        Assert.Equal(7, LoopbackListener.OAuthErrors.Count);
         Assert.Null(LoopbackListener.RequestLine(Encoding.ASCII.GetBytes("GET  /callback HTTP/1.1\r\n\r\n")));
         Assert.Null(LoopbackListener.RequestLine(Encoding.ASCII.GetBytes("GET /callback FTP/1\r\n\r\n")));
     }
@@ -751,6 +1061,28 @@ public sealed class BrowserLoginTests
     [InlineData("https://dash.thalovant.com/authorize?")]
     [InlineData("ftp://dash.thalovant.com/authorize")]
     [InlineData("")]
+    // A host as written must be an address or a real hostname (each checked
+    // against the reference's _usable_authorization_endpoint at 39e31d8).
+    [InlineData("https://%/authorize")]
+    [InlineData("https://dash_staging.thalovant.com/a")]
+    [InlineData("https://DASH_X.com/a")]
+    [InlineData("https://dash..thalovant.com/a")]
+    [InlineData("https://dash.thalovant.com./a")]
+    [InlineData("https://dash.thalovânt.com/a")]
+    [InlineData("https://999.1.1.1/a")]
+    [InlineData("https://127.1/a")]
+    [InlineData("https://0x7f.0.0.1/a")]
+    [InlineData("https://01.2.3.4/a")]
+    [InlineData("https://1.2.3.4.5/a")]
+    [InlineData("https://example.123/a")]
+    [InlineData("https://[v1.x]/a")]
+    [InlineData("https://[1.2.3.4]/a")]
+    [InlineData("https://x\\y/a")]
+    [InlineData("https://-dash.example/a")]
+    [InlineData("https://dash-.example/a")]
+    // Port 0, as written or padded: no browser can open it.
+    [InlineData("https://dash.thalovant.com:0/a")]
+    [InlineData("https://dash.thalovant.com:00/a")]
     public void AnAuthorizationEndpointNoBrowserCanOpenIsUnusable(string endpoint)
     {
         Assert.Throws<FormatException>(() => NativeSignInConfig.FromPayload(Config("authorization_endpoint", endpoint)));
@@ -764,9 +1096,36 @@ public sealed class BrowserLoginTests
     [InlineData("https://dash.thalovant.com:0443/authorize")]
     [InlineData("https://dash.thalovant.com")]
     [InlineData("https://dash.thalovant.com/a@b")]
+    [InlineData("https://xn--dsh-0na.example/a")]
+    [InlineData("https://192.0.2.10/a")]
+    [InlineData("https://[::ffff:1.2.3.4]/a")]
+    [InlineData("https://123.example/a")]
     public void AnAuthorizationEndpointTheReferenceAcceptsIsUsable(string endpoint)
     {
         Assert.Equal(endpoint, NativeSignInConfig.FromPayload(Config("authorization_endpoint", endpoint)).AuthorizationEndpoint);
+    }
+
+    [Fact]
+    public void AHostnameIsAtMost253CharactersOf63CharacterLabels()
+    {
+        string Endpoint(string host) => $"https://{host}/a";
+        bool Usable(string host)
+        {
+            try
+            {
+                NativeSignInConfig.FromPayload(Config("authorization_endpoint", Endpoint(host)));
+                return true;
+            }
+            catch (FormatException)
+            {
+                return false;
+            }
+        }
+        Assert.True(Usable(new string('a', 63) + ".example"));
+        Assert.False(Usable(new string('a', 64) + ".example"));
+        var label = new string('a', 63);
+        Assert.True(Usable(string.Join(".", label, label, label, new string('a', 61))));   // 253
+        Assert.False(Usable(string.Join(".", label, label, label, new string('a', 62))));  // 254
     }
 
     [Theory]
@@ -775,9 +1134,25 @@ public sealed class BrowserLoginTests
     [InlineData("/v1/auth/native/token ")]
     [InlineData("/v1/auth/native/\u0085token")]
     [InlineData("v1/auth/native/token")]
+    // No colon anywhere, and every % followed by two hex digits.
+    [InlineData("/v1:x")]
+    [InlineData("/https://x/y")]
+    [InlineData("/x:443/y")]
+    [InlineData("/v1/%zz")]
+    [InlineData("/v1/token%")]
+    [InlineData("/v1/%7")]
+    [InlineData("/v1/%G1")]
     public void ATokenEndpointThatIsNotAPathOnTheApiIsUnusable(string endpoint)
     {
         Assert.Throws<FormatException>(() => NativeSignInConfig.FromPayload(Config("token_endpoint", endpoint)));
+    }
+
+    [Theory]
+    [InlineData("/v1/%74oken")]
+    [InlineData("/v1/%2F")]
+    public void ATokenEndpointWithWholePercentEscapesIsUsable(string endpoint)
+    {
+        Assert.Equal(endpoint, NativeSignInConfig.FromPayload(Config("token_endpoint", endpoint)).TokenEndpoint);
     }
 
     [Theory]

@@ -125,8 +125,27 @@ namespace Thalovant
         /// <summary>How long one connection may take to send its request head.</summary>
         internal static readonly TimeSpan RequestReadTimeout = TimeSpan.FromSeconds(10);
 
-        /// <summary>How long an accepted tab waits for its page while the code is exchanged.</summary>
-        internal static readonly TimeSpan DefaultAnswerTimeout = TimeSpan.FromSeconds(60);
+        /// <summary>
+        /// The <c>error</c> values RFC 6749 section 4.1.2.1 defines. Only these are
+        /// kept from a callback: anything else is a value somebody else chose, and
+        /// it could be the state or a code, which must never reach an exception.
+        /// </summary>
+        internal static readonly IReadOnlyCollection<string> OAuthErrors = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "invalid_request", "unauthorized_client", "access_denied", "unsupported_response_type",
+            "invalid_scope", "server_error", "temporarily_unavailable",
+        };
+
+        /// <summary>
+        /// After an answer, how long what the browser still sends is read and
+        /// dropped before the connection closes. A socket closed with bytes unread
+        /// answers them with a reset, and macOS then discards the answer the
+        /// browser had not read yet (an oversized head's 400, say).
+        /// </summary>
+        internal static readonly TimeSpan DefaultDrainTimeout = TimeSpan.FromSeconds(2);
+
+        /// <summary>And how much of it, at most.</summary>
+        internal const int DrainLimit = 1024 * 1024;
 
         /// <summary>How long closing waits for an accepted tab's page to be written.</summary>
         internal static readonly TimeSpan CloseGrace = TimeSpan.FromSeconds(1);
@@ -158,8 +177,8 @@ namespace Thalovant
             _state = state ?? throw new ArgumentNullException(nameof(state));
         }
 
-        /// <summary>How long an accepted tab waits for <see cref="Finish"/> before it is told the sign-in was not completed.</summary>
-        internal TimeSpan AnswerTimeout { get; set; } = DefaultAnswerTimeout;
+        /// <summary>How long an answered connection is drained before it closes (<see cref="DefaultDrainTimeout"/>); tests shorten it.</summary>
+        internal TimeSpan DrainTimeout { get; set; } = DefaultDrainTimeout;
 
         /// <summary>How many connections are open now; never more than <see cref="MaxConnections"/>.</summary>
         internal int ConnectionCount
@@ -344,7 +363,9 @@ namespace Thalovant
                 {
                     return (200, new LoopbackCallback(LoopbackOutcome.Denied, error: "access_denied"));
                 }
-                return (200, new LoopbackCallback(LoopbackOutcome.Failed, error: errors[0].Length > 0 ? errors[0] : null));
+                // Only RFC 6749's codes: a value the page chose could be the
+                // state or a code, and it would be repeated in a message.
+                return (200, new LoopbackCallback(LoopbackOutcome.Failed, error: OAuthErrors.Contains(errors[0]) ? errors[0] : null));
             }
             if (values.TryGetValue("code", out var codes) && codes.Count == 1 && codes[0].Length > 0)
             {
@@ -438,8 +459,12 @@ namespace Thalovant
             + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
             + "<title>Thalovant</title></head><body><p>" + text + "</p></body></html>\n");
 
-        /// <summary>A whole HTTP/1.1 answer: the status, <see cref="PageHeaders"/>, and a small page.</summary>
-        internal static byte[] ResponseBytes(int status, string text)
+        /// <summary>
+        /// A whole HTTP/1.1 answer: the status, <see cref="PageHeaders"/>, and a
+        /// small page. The answer to a <c>HEAD</c> carries no body (RFC 9110
+        /// section 9.3.2); its <c>Content-Length</c> is what the page would have been.
+        /// </summary>
+        internal static byte[] ResponseBytes(int status, string text, bool headOnly = false)
         {
             var body = Page(text);
             var reason = status == 200 ? "OK" : status == 400 ? "Bad Request" : status == 404 ? "Not Found" : "Error";
@@ -452,6 +477,10 @@ namespace Thalovant
             head.Append("Content-Length: ").Append(body.Length.ToString(CultureInfo.InvariantCulture)).Append("\r\n");
             head.Append("Connection: close\r\n\r\n");
             var start = Encoding.ASCII.GetBytes(head.ToString());
+            if (headOnly)
+            {
+                return start;
+            }
             var whole = new byte[start.Length + body.Length];
             Buffer.BlockCopy(start, 0, whole, 0, start.Length);
             Buffer.BlockCopy(body, 0, whole, start.Length, body.Length);
@@ -574,7 +603,7 @@ namespace Thalovant
             }
             if (overrun)
             {
-                await AnswerAsync(client, stream, 400, WrongStateText).ConfigureAwait(false);
+                await AnswerAsync(client, stream, ResponseBytes(400, WrongStateText)).ConfigureAwait(false);
                 return;
             }
             if (head is null)
@@ -584,7 +613,7 @@ namespace Thalovant
             var request = RequestLine(head);
             if (request is null)
             {
-                await AnswerAsync(client, stream, 400, WrongStateText).ConfigureAwait(false);
+                await AnswerAsync(client, stream, ResponseBytes(400, WrongStateText)).ConfigureAwait(false);
                 return;
             }
             var (status, callback) = Classify(request.Value.Method, request.Value.Target, _state);
@@ -608,7 +637,8 @@ namespace Thalovant
                 {
                     status = 400;
                 }
-                await AnswerAsync(client, stream, status, status == 404 ? NotFoundText : WrongStateText).ConfigureAwait(false);
+                await AnswerAsync(client, stream, ResponseBytes(
+                    status, status == 404 ? NotFoundText : WrongStateText, headOnly: request.Value.Method == "HEAD")).ConfigureAwait(false);
                 return;
             }
             try
@@ -618,16 +648,10 @@ namespace Thalovant
                 // of it, so that nothing it does next can still connect.
                 StopListening();
                 _accepted.TrySetResult(callback!);
-                var signedIn = false;
-                using (var stop = new CancellationTokenSource())
-                {
-                    var timer = Task.Delay(AnswerTimeout, stop.Token);
-                    if (await Task.WhenAny(_answer.Task, timer).ConfigureAwait(false) == _answer.Task)
-                    {
-                        signedIn = _answer.Task.Result;
-                    }
-                    stop.Cancel();
-                }
+                // Until the sign-in has ended, however long the exchange takes:
+                // the page says how it ended, so it cannot be written before it
+                // has. CloseAsync always answers, so this never outlives it.
+                var signedIn = await _answer.Task.ConfigureAwait(false);
                 await WriteAsync(stream, ResponseBytes(200, signedIn ? SignedInText : NotCompletedText)).ConfigureAwait(false);
                 EndSending(client);
             }
@@ -698,9 +722,10 @@ namespace Thalovant
             return -1;
         }
 
-        private static async Task AnswerAsync(TcpClient client, NetworkStream stream, int status, string text)
+        /// <summary>Sends an answer, shuts the write side, and drains before the connection closes.</summary>
+        private async Task AnswerAsync(TcpClient client, NetworkStream stream, byte[] response)
         {
-            await WriteAsync(stream, ResponseBytes(status, text)).ConfigureAwait(false);
+            await WriteAsync(stream, response).ConfigureAwait(false);
             EndSending(client);
             await DrainAsync(client, stream).ConfigureAwait(false);
         }
@@ -725,21 +750,22 @@ namespace Thalovant
         }
 
         /// <summary>
-        /// Reads what the tab still sends, briefly, before the socket is closed:
-        /// closing with unread input resets the connection, and a reset can
-        /// discard the answer before the tab has read it (an oversized head is
-        /// the case that leaves input unread).
+        /// Reads and drops what the tab still sends -- the rest of an oversized
+        /// head, a body nobody asked for -- until it closes its side, for at most
+        /// <see cref="DrainTimeout"/> and <see cref="DrainLimit"/> bytes. Closing
+        /// with bytes unread resets the connection, and a reset can discard the
+        /// answer before the tab has read it.
         /// </summary>
-        private static async Task DrainAsync(TcpClient client, NetworkStream stream)
+        private async Task DrainAsync(TcpClient client, NetworkStream stream)
         {
-            var sink = new byte[4096];
+            var sink = new byte[64 * 1024];
             var total = 0;
-            using (var timeout = new CancellationTokenSource(CloseGrace))
+            using (var timeout = new CancellationTokenSource(DrainTimeout))
             using (timeout.Token.Register(() => Close(client)))
             {
                 try
                 {
-                    while (total < 4 * MaxRequestHead)
+                    while (total <= DrainLimit)
                     {
                         var read = await stream.ReadAsync(sink, 0, sink.Length, timeout.Token).ConfigureAwait(false);
                         if (read <= 0)

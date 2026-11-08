@@ -1,6 +1,54 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Answer the CodeRabbit review on #54 (16 threads, 2 nitpicks).
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Port the final browser-login reference (python-sdk #113 at 39e31d8, digest 6dfb3bb31ac7, 119 vectors).
 
 # Maintenance Report
+
+## 2026-11-08 — Browser sign-in against the final reference (python-sdk `39e31d8`)
+
+The producer finished #113 at `39e31d8`. Its porting brief lists what changed since the first head (`49744ee385bf`), each change with the vector case or the Python test that pins it. This entry ports every one.
+
+| # | Change | Implementation | Test |
+| :--- | :--- | :--- | :--- |
+| 1 | No request leaves the API's origin | `ThalovantControlPlane.RequireApiOrigin`, called by `BuildRequest` for every request (ControlPlane.cs) | `sign_ins/a token endpoint that would leave the API is refused before anything is opened`; `NoRequestLeavesTheApiOrigin`, `ARequestOffTheApiOriginIsRefusedWithNoStatus`, `AnOrdinaryApiPathStillReachesTheApi` |
+| 2 | `token_endpoint`: no colon, whole `%` escapes | `NativeSignInConfig.UsableTokenEndpoint` | five new `config` vectors; `ATokenEndpointThatIsNotAPathOnTheApiIsUnusable`, `ATokenEndpointWithWholePercentEscapesIsUsable` |
+| 3 | `authorization_endpoint` openable: no port 0, a real host as written | `UsablePort`, `RealHost`, `DottedQuad`, `DnsLabel`, `BracketedHost` (IPv6 only) | nine new `config` vectors; the endpoint theories, `AHostnameIsAtMost253CharactersOf63CharacterLabels` |
+| 4 | Only RFC 6749's error codes are kept | `LoopbackListener.OAuthErrors` in `Classify` | three new `callbacks` vectors and `sign_ins/an error that repeats the state never reaches the error`; `QueryValuesAreDecodedOnceAsAFormDecodesThem` |
+| 5 | Only a missing device name gets the default | `RunBrowserLoginAsync`, `InteractiveLoginAsync` | `sign_ins/an empty device name keeps the hostname off the consent page`, `chooser/an empty device name is not sent to a device login either` |
+| 6 | No 60 s bound on the accepted tab | `ServeAsync` waits on the answer; `AnswerTimeout` removed | `TheAcceptedTabWaitsAsLongAsTheSignInTakes`, `ClosingTheListenerAnswersATabThatIsStillWaiting` |
+| 7 | `HEAD` answers carry no body | `ResponseBytes(..., headOnly)` | `AHeadRequestGetsTheHeadersAndNoBody` |
+| 8 | Redact before formatting; a new error | `Redactor` (one pass, longest first, never inside `[redacted]`) in `ExchangeBrowserCodeAsync` before `ApiError`; `WithoutSecrets` always new, no inner exception | `AMessageCutToLengthKeepsNoPartOfASecret`, `ScrubbingIsOnePassLongestFirstAndLeavesItsMarkerAlone`, `ATransportFailureDuringTheExchangeCarriesNothingOfTheRequest`, `ARedactedErrorIsAlwaysANewOneWithNothingRidingAlong`, `EverySecretIsWrittenTheSameWayPercentEncoded` |
+| 9 | Drain before closing: 2 s / 1 MiB | `AnswerAsync`/`DrainAsync` with `DrainTimeout` and `DrainLimit` | `AnEarlyAnswerIsNotLostToAReset` (oversized head, unread body), `DrainingAConnectionIsBounded`, `TheDrainBoundsAreTheBriefs` |
+| 10 | Wording: "a link or code sent to someone on another computer delivers nothing to the sender" | README, CHANGELOG, FAQ, XML docs | — |
+| — | The exchange is never retried | `SendExchangeOnceAsync` with a single-use body (`SocketsHttpHandler` can resend a request on a reused connection) | `TheExchangeIsWrittenOnceEvenIfThePipelineResendsIt` (a mutation disabling the guard fails it) |
+
+Two first-round CodeRabbit threads are settled by the final reference:
+
+- `https://%/authorize` is now refused (row 3).
+- The accepted tab no longer has a 60-second bound (row 6).
+
+The first round's own guard against an `error` carrying the state is replaced by the reference's RFC 6749 allow-list.
+
+### Verification
+
+- `dotnet build --configuration Release`: 0 warnings, 0 errors.
+- `DOTNET_ROLL_FORWARD=Major THALOVANT_CONFORMANCE_OUT=$PWD/contracts/conformance-results.json dotnet test --configuration Release --no-build`: net8.0 921/921 and net9.0 921/921.
+- `tests/Thalovant.Sdk.Tests/Fixtures/browser-login-vectors.json` is re-vendored byte for byte from `39e31d8` (sha256 `b0c73f808c4f`, 119 cases).
+- All 119 recorded case digests and the file digest (`855c37cbc055`) equal the reference's `contracts/conformance-results.json`. The 98 earlier cases record exactly what they did, and every other vector file's results are unchanged.
+- `dotnet pack … --no-build`: `Thalovant.Sdk.0.10.0.nupkg` and `.snupkg`.
+- `check-sdk-parity.py --workspace … --consumer thalovant-dotnet-sdk`: verified against a clean clone of the Python PR head (`39e31d8`) and against Python `main` (`44b6e2b`).
+- `contracts/sdk-parity.json`:
+  - `reference_digests` keeps `57c7e71f6456…` and replaces the never-published `49744ee385bf…` with the final `6dfb3bb31ac7…`.
+  - Evidence was refreshed only for the files that changed: `BrowserLogin.cs`, `BrowserLoopback.cs`, the two browser test files and the vectors in `browser-login`.
+  - `ControlPlane.cs` was refreshed in every capability that binds it (`api-errors`, `browser-login`, `connection-admission`, `connection-kinds`, `control`, `device-login`), whose suites were all re-run above.
+
+### Transparency Report
+
+- **AI Model:** Claude Opus 5.5 (claude-opus-5-5), as a Claude Code agent.
+- **Actions Taken:**
+  - read the final brief's change table and the reference's source and test diffs since `e3999cb`, in a fresh clone;
+  - checked every endpoint expectation against the reference's own functions before encoding it;
+  - ported the ten changes and the send-once exchange, with the tests above, and re-vendored and re-recorded the vectors;
+  - refreshed the changed evidence, and updated the README, CHANGELOG, FAQ, QUICK_FACTS, AUDIT and SUGGESTIONS.
+- **Oversight:** hosted CI and CodeRabbit gate the merge; the platform owner's coordinating agent merges. Nothing was merged, tagged or released.
 
 ## 2026-11-08 — CodeRabbit review on #54 (browser sign-in)
 

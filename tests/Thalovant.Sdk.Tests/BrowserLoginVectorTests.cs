@@ -408,7 +408,7 @@ public sealed class BrowserLoginVectorTests
                 .Select(pair => pair.Key),
             StringComparer.Ordinal);
         Assert.Equal(sections, named);
-        Assert.Equal(98, sections.Sum(section => Browser[section]!.AsArray().Count));
+        Assert.Equal(119, sections.Sum(section => Browser[section]!.AsArray().Count));
     }
 
     [Fact]

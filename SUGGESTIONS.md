@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Add the browser sign-in follow-ups.
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Point the digest follow-up at the final candidate.
 
 # Suggestions: thalovant-dotnet-sdk
 
@@ -10,7 +10,7 @@ Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Add the browser sign-in follow
 
 ## Drop the old reference digest once the Python producer merges
 
-- **Problem:** `contracts/sdk-parity.json` accepts both `57c7e71f6456` and the browser-sign-in candidate `49744ee385bf` during the rollout.
+- **Problem:** `contracts/sdk-parity.json` accepts both `57c7e71f6456` and the final browser-sign-in candidate `6dfb3bb31ac7` during the rollout.
 - **Proposal:** once thalovant-python-sdk `main` carries the candidate (python-sdk #113 merged), remove `57c7e71f6456` in a follow-up, re-running `check-sdk-parity.py --consumer thalovant-dotnet-sdk`.
 - **Impact:** low; keeps the acceptance honest about what was reviewed.
 

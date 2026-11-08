@@ -1845,6 +1845,25 @@ namespace Thalovant
         }
 
         /// <summary>Whether two URLs share an origin: scheme, host and port, the scheme's default port spelled out.</summary>
+        /// <summary>
+        /// Refuses, with an error with no status, a request whose URL is not on the
+        /// API's origin (scheme, host, port): the token, or the secrets a request
+        /// carries, go nowhere else.
+        /// </summary>
+        /// <remarks>
+        /// <see cref="BuildRequest"/> appends the path to <see cref="ApiUrl"/>, which
+        /// ends in <c>/</c>, so a path cannot name another authority the way
+        /// Python's <c>urljoin</c> lets <c>/https://elsewhere/x</c> do. This is the
+        /// check that keeps it so, for every request, whatever builds the path.
+        /// </remarks>
+        internal static void RequireApiOrigin(Uri url, string apiUrl)
+        {
+            if (!SameOrigin(url.AbsoluteUri, apiUrl))
+            {
+                throw new ThalovantApiException("Refusing a request off the Thalovant API's origin.");
+            }
+        }
+
         internal static bool SameOrigin(string url, string other)
         {
             if (!Uri.TryCreate(url, UriKind.Absolute, out var a) || !Uri.TryCreate(other, UriKind.Absolute, out var b))
@@ -1933,6 +1952,7 @@ namespace Thalovant
             {
                 throw new ThalovantApiException("Invalid Thalovant API URL.");
             }
+            RequireApiOrigin(url, ApiUrl);
             if (url.Scheme != Uri.UriSchemeHttps && url.Scheme != Uri.UriSchemeHttp) throw new ThalovantApiException("Thalovant API URLs require HTTP or HTTPS.");
             if (!string.IsNullOrEmpty(url.UserInfo) || System.Text.RegularExpressions.Regex.IsMatch(ApiUrl, @"^[a-zA-Z][a-zA-Z0-9+.-]*://[^/?#]*@")) throw new ThalovantApiException("Thalovant API URLs must not contain userinfo credentials.");
             var secretHeaders = new[] { "Authorization", "Proxy-Authorization", "Cookie" };

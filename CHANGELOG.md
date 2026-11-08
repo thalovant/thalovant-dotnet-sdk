@@ -1,7 +1,50 @@
 # Changelog
 
-## Unreleased
+## 0.10.0
 
+Ports the Python reference's 0.11.0 browser sign-in (thalovant/thalovant-python-sdk#113, final head `39e31d8`): the OAuth authorization code grant with PKCE (RFC 7636, S256 only) on a loopback redirect (RFC 8252 section 7.3). A device code can be read off one screen and approved by somebody else (device-code phishing). With a loopback redirect, the browser that approves delivers the code to its own computer's `127.0.0.1`, so a link or code sent to someone on another computer delivers nothing to the sender. That is all it promises: a forwarded callback port (`ssh -L`, a port-forwarding tool) or another user of the same computer can still complete a sign-in. Device login is unchanged and stays the fallback for a machine with no browser. Needs thalovant-api #501 (`GET /v1/auth/native/config`, now live); an API without it answers 404 and `InteractiveLoginAsync` uses a device login.
+
+- **`ThalovantControlPlane.BrowserLoginAsync(BrowserLoginOptions?, CancellationToken)`** reads `GET /v1/auth/native/config` (no auth), binds `127.0.0.1` on a port the system picks (exclusively on Windows) before building the URL, prints `Opening your browser to sign in to Thalovant. If it does not open, visit:` and the URL, opens the browser on a background thread (`ShellExecute` on Windows, `open` on macOS, `xdg-open` elsewhere; never `cmd /c start`), and waits for `http://127.0.0.1:<port>/callback`. It returns a `DeviceLoginResult` and keeps the token exactly as a device login does (`AccessToken`, `TokenId`), so `RevokeApiTokenAsync` revokes it the same way; the answer's `ai_disclosure` stays in `Raw`. Options:
+  - `Scopes`: none leaves `scope` out, and the API grants `hubs:read clients:write`.
+  - `DeviceName`: null means `thalovant-dotnet-sdk on <hostname>`, an empty string sends none, and a name is cut to 120 code points.
+  - `OpenBrowser`: false only shows the URL.
+  - `Timeout`: 300 s.
+  - `Prompt`: receives the URL in place of the print; it does not stop the browser opening.
+  - `Opener`: replaces the platform's browser.
+- **`ThalovantControlPlane.InteractiveLoginAsync(InteractiveLoginOptions?, CancellationToken)`** chooses the method:
+  - `LoginMethod.Auto` signs in through the browser when the machine can show one and the configuration is usable, and with `LoginWithBrowserAsync` otherwise. The device name is sent as `client_name`, and an empty one sends none.
+  - "Can show one" means: never with `CI`, `SSH_CONNECTION` or `SSH_TTY` set; always on Windows and macOS; elsewhere only with `DISPLAY` or `WAYLAND_DISPLAY`. An empty variable is not set. Android and iOS follow the rule for elsewhere, and a phone sets neither variable.
+  - A 404, any other failure, an unusable answer or a cleartext API URL all mean a device login, and nothing has been opened by then.
+  - `LoginMethod.Browser` and `LoginMethod.Device` force one. A forced browser sign-in throws a configuration failure rather than turning into a device login, and once the browser is opened its outcome stands.
+  - A null `Timeout` is each method's own default (300 s, 15 minutes).
+- **The configuration** must be safe to use, or it is an error with no status:
+  - `authorization_endpoint` is https, or http on a loopback host. It carries no credentials, query, fragment, white space or control characters, and no port 0 or port above 65535. Its host, as written, is an IPv6 address in brackets, a dotted-quad IPv4 address (which a numeric last label must be), or ASCII DNS labels. Each label is 1-63 letters, digits or inner hyphens, the whole host is at most 253 characters, and an international name is written in its `xn--` form.
+  - `token_endpoint` is a path on the API: one leading `/`, every `%` followed by two hex digits, and no `:`, `?`, `#`, `\` or white space.
+- **No control-plane request leaves the API's origin.** `BuildRequest` refuses, with an error with no status, any request whose scheme, host or port is not the API's. This SDK appends paths to the API's address, so a path cannot name another host; the check keeps it so.
+- **The listener:**
+  - It serves only `GET /callback`; anything else is a 404, and a `HEAD` answer carries the headers without the body.
+  - A missing, repeated or wrong `state` (compared in constant time as UTF-8 bytes) is a 400 and the wait goes on, so a stray tab cannot end a real sign-in. A head with no request line, or over 16 KiB, is also a 400.
+  - The first right-state callback is accepted and the port stops listening.
+  - Its tab waits as long as the sign-in takes, then gets `Signed in to Thalovant. You can close this tab.` or `Sign-in was not completed.`. Closing the listener answers it at once.
+  - Every answer carries `Content-Type: text/html; charset=utf-8`, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, `Content-Security-Policy: default-src 'none'` and `X-Content-Type-Options: nosniff`, with a page that loads nothing.
+  - After each answer the listener shuts its write side and drains what the browser still sends, for at most 2 s and 1 MiB, so a reset cannot discard the answer.
+  - It holds at most 32 connections. To make room it closes an answered one first, then the oldest silent one with nothing waiting; never one whose bytes arrived. Connections that never send anything are closed, not waited for. Nothing is logged.
+- **Outcomes reuse the device-login types, with no status:**
+  - Denied in the browser is `ThalovantDeviceAccessDeniedException`.
+  - No callback within the timeout (measured with `Stopwatch`, never cut short) is `ThalovantDeviceCodeExpiredException`.
+  - Another `error`, or no single code, is a `ThalovantApiException`. Its `ErrorCode` is the page's `error` only when that is one of RFC 6749's seven codes.
+  - A refused exchange (`400 invalid_grant`) carries the api-errors fields, and a 2xx that is not a JSON object with an `access_token` has no status.
+  - An http API that is not loopback is refused before anything is asked or opened, and cancelling closes the port.
+- **The exchange is sent once.** Its body refuses a second write, so a pipeline that resends it fails instead of presenting the code twice: a code presented twice revokes the token the first exchange minted.
+- **Secrets never reach an exception.** The code (also as a URL or form spells it), the verifier, the state, and any token value a failed answer carries are redacted before the error's message is made, so a message cut to 200 characters keeps no part of one. A failed answer that is not JSON is withheld, and an answer System.Text.Json cannot read (a lone surrogate escape) is an error rather than a crash. Redaction is one pass, longest secret first, never inside an existing `[redacted]`, and covers bodies that are JSON of any shape, escaped spellings included. The error is always a new one with no inner exception, and an answer that cannot be read leaves no token on the client.
+- **The pieces, public on their own:**
+  - `BrowserSignIn.AuthorizationUrl` (parameters in the contract's order, RFC 3986 percent-encoding with upper-case hex and `%20`), `LoopbackRedirectUri` (1024-65535 only), `NewVerifier` (86 characters), `NewState` (192 bits), `ChallengeFor`, `CanOpenBrowser(environment, platform)` and `DefaultDeviceName()`.
+  - The constants `SdkClientId`, `DefaultTimeout`, `MaxDeviceNameLength` and `LoopbackCallbackPath`.
+  - `NativeSignInConfig.FromPayload`, which refuses a configuration it cannot safely use with `FormatException`.
+- **Vectors:** all 119 cases of the reference's `browser-login-vectors.json` (vendored byte for byte) run on net8.0 and net9.0, and every recorded case digest matches the reference's.
+  - The pure sections run against the functions that decide them, and the 27 callbacks also run through a real listener.
+  - The 18 sign-ins and 13 chooser cases run for real, against a loopback API that checks every request and a raw HTTP client playing the browser.
+  - `contracts/sdk-parity.json` binds `browser-login` and accepts the current reference digest and the final candidate.
 - The README's install line no longer pins `--version 0.7.1`, two minor versions behind: the README ships inside the NuGet package, so the quick start installed an old release. It now installs the latest. Documentation only. A CodeRabbit follow-up of #12.
 
 ## 0.9.6

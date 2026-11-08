@@ -1,3 +1,5 @@
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Add the browser sign-in rules (0.10.0).
+
 # Repository instructions
 
 This repository owns the published .NET client and agent SDK for supported
@@ -24,6 +26,14 @@ Rules:
 - Do not create a release for internal platform changes with no .NET SDK
   impact; record `no SDK impact` in the coordinated change instead.
 - Update affected `docs.thalovant.com` SDK pages in the same release train.
+
+Browser sign-in (`src/Thalovant.Sdk/BrowserLogin.cs`, `BrowserLoopback.cs`)
+ports the Python reference's `browser-login` capability (its
+`docs/browser-login-porting.md`) and runs `browser-login-vectors.json`,
+vendored byte for byte. Keep device login unchanged; keep the listener on
+`127.0.0.1` only and never log a request line (it carries the code and the
+state). No test may open a real browser: pass `Opener` or `OpenBrowser = false`,
+and give the chooser an injected `Environment` and `Platform`.
 
 Validate with `dotnet build` and `dotnet test` (CI runs both on ubuntu-latest
 and windows-latest, plus `dotnet pack`). The test suite must stay

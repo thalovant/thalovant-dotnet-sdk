@@ -1,4 +1,4 @@
-<!-- Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: Stop pinning the install line to 0.7.1 (CodeRabbit follow-up of #12). -->
+<!-- Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Document browser sign-in (BrowserLoginAsync, InteractiveLoginAsync) for 0.10.0. -->
 
 <p align="center">
   <picture>
@@ -73,6 +73,53 @@ clear, so never log or print that form.
 | Product documentation | <https://docs.thalovant.com> |
 
 ## Not in the docs yet
+
+### Sign in through the browser
+
+On a machine with a browser, sign a person in through it. The SDK listens on
+`127.0.0.1` on a port the system picks, opens the consent page, and the browser
+that approves hands the code back to this computer (PKCE on a loopback
+redirect, RFC 8252). Unlike a device code, the link cannot be relayed to
+somebody else.
+
+```csharp
+var api = new ThalovantControlPlane();
+
+// The browser where there is one, a device login otherwise.
+var signedIn = await api.InteractiveLoginAsync();
+
+// Or force one: LoginMethod.Browser, or LoginMethod.Device.
+await api.InteractiveLoginAsync(new InteractiveLoginOptions { Method = LoginMethod.Device });
+
+// Or the browser sign-in on its own, with every option.
+await api.BrowserLoginAsync(new BrowserLoginOptions
+{
+    Scopes = new[] { "hubs:read", "clients:write" }, // none: the API's default
+    DeviceName = "Build agent",      // default: thalovant-dotnet-sdk on <hostname>
+    OpenBrowser = true,              // false only prints the URL
+    Timeout = TimeSpan.FromMinutes(5),
+    Prompt = url => Console.WriteLine(url), // replaces the printed prompt
+}, cancellationToken);
+
+await api.RevokeApiTokenAsync(); // signs out, as after a device login
+```
+
+| What | How |
+| :--- | :--- |
+| Chooser (`LoginMethod.Auto`) | the browser when this machine can show one and `GET /v1/auth/native/config` answers; never with `CI`, `SSH_CONNECTION` or `SSH_TTY` set; Windows and macOS yes; Linux and the BSDs only with `DISPLAY` or `WAYLAND_DISPLAY`; Android and iOS never. Otherwise `LoginWithBrowserAsync` (a device login), the device name as its `client_name` |
+| Fallback | a 404 (an API without browser sign-in), any other failure, an unusable answer or a cleartext API URL means a device login, before anything is opened. Once the browser is opened, its outcome stands |
+| The URL | always printed as well (`Opening your browser to sign in to Thalovant. If it does not open, visit:` and the URL); the browser opens on a background thread (`ShellExecute`, `open` or `xdg-open`), and `Opener` replaces it |
+| Result | the `DeviceLoginResult` a device login returns; the token is kept on `AccessToken` and `TokenId`, and `ai_disclosure` stays in `Raw` |
+| Denied, timed out | `ThalovantDeviceAccessDeniedException`, `ThalovantDeviceCodeExpiredException` (300 s by default), with no status |
+| Refused exchange | `ThalovantApiException` with `StatusCode` 400 and `Detail` `invalid_grant`; start a new sign-in, never reuse a code |
+| Secrets | the code, the verifier, the state and the token never appear in an exception; cancelling closes the port |
+
+A tab that answers with another sign-in's `state` gets a 400 and the wait goes
+on. The pieces are public for a caller that runs its own flow:
+`BrowserSignIn.AuthorizationUrl`, `LoopbackRedirectUri`, `NewVerifier`,
+`NewState`, `ChallengeFor`, `CanOpenBrowser` and `DefaultDeviceName`, and
+`NativeSignInConfig.FromPayload`. An app on a phone signs in through its own
+flow (`NativeSignIn.Begin` and `CompleteNativeSignInAsync`).
 
 ### Durable memory
 

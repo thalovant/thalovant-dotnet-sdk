@@ -1,6 +1,40 @@
-Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: Record the CodeRabbit review-body items on #10, #11, #12, #26, #37, #41 and #42 as checked against main.
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in (PKCE on a loopback redirect), the browser-login parity binding, 0.10.0.
 
 # Maintenance Report
+
+## 2026-11-08 — Browser sign-in (`browser-login`, 0.10.0)
+
+**What changed:** a port of the Python reference's browser sign-in (thalovant-python-sdk#113, `e3999cb`, porting brief `docs/browser-login-porting.md`).
+
+| Area | Change |
+| :--- | :--- |
+| `src/Thalovant.Sdk/BrowserLogin.cs` (new) | `ThalovantControlPlane.BrowserLoginAsync` and `InteractiveLoginAsync` (a partial of the class), `BrowserLoginOptions`, `InteractiveLoginOptions`, `LoginMethod`, `NativeSignInConfig.FromPayload`, and `BrowserSignIn` (URL, redirect, state, verifier, challenge, browser rule, device name, opener) |
+| `src/Thalovant.Sdk/BrowserLoopback.cs` (new) | the internal `LoopbackListener`: `TcpListener` on `127.0.0.1` port 0 (exclusive on Windows), `Classify` without a socket, the page and its headers, the accepted tab answered after the sign-in ends |
+| `src/Thalovant.Sdk/Thalovant.Sdk.csproj` | `<Version>` 0.10.0 (next minor) |
+| Unchanged | `ControlPlane.cs`, `DeviceLogin.cs`, `Errors.cs`, `NativeSignIn.cs`: the new code reuses `AcceptDeviceToken`/`KeepToken`, `SendAsync`, `ApiError`, `LoginWithBrowserAsync`, the device-login exception types and `RequireSecureTokenExchange` from the partial, so no evidence another capability binds was touched |
+| Tests (new) | `BrowserLoginVectorTests.cs` (126 test cases: all 98 vectors, the 24 callbacks through a real listener as well, and 4 checks of the file itself) and `BrowserLoginTests.cs` (60 test cases beyond the vectors); `Fixtures/browser-login-vectors.json` vendored byte for byte (sha256 `9058adf2ad30`) |
+| Contracts | `sdk-parity.json`: `reference_digests` keeps `57c7e71f6456` and adds the candidate `49744ee385bf`; `capabilities["browser-login"]` is `required` with implementation, test and vector evidence. `conformance-results.json`: the browser-login results (98 cases), every other file's results unchanged |
+| Docs | README "Sign in through the browser", CHANGELOG 0.10.0, AGENTS.md rule, QUICK_FACTS, FAQ, AUDIT, SUGGESTIONS |
+
+**Why:** a device code can be relayed to somebody else (device-code phishing); a loopback redirect cannot. On a machine with a browser the SDK now signs in through it, and keeps device login for machines with none.
+
+**How each porting-brief decision is met:** listener on `127.0.0.1:0` before the URL, `ExclusiveAddressUse` on Windows; only `GET /callback`, a 400 that keeps waiting for a missing, repeated or wrong state (`CryptographicOperations.FixedTimeEquals` over UTF-8), a 400 for a head with no request line or over 16 KiB; error before code, form decoding once; the port stops on the first accepted callback; the tab is answered after the sign-in ends (60 s cap, 1 s grace on close), idle connections closed without waiting, the five page headers on every answer, nothing logged. URL parameters in the contract's order with RFC 3986 encoding (upper-case hex, `%20`), scope left out when empty, device name cut to 120 code points; the URL always printed, the browser opened on a background thread (`ShellExecute`, `open`, `xdg-open`, never `cmd /c start`), `Prompt` and `Opener` injectable. The exchange sends exactly four fields and is never retried; results are `DeviceLoginResult`; denied and expired reuse the device-login types with no status; the code, verifier and state are redacted from any error. The chooser follows the rule (CI, SSH, display; Android and iOS get a device login), falls back only before anything is opened, and a null timeout is each method's own default. The timeout is measured with `Stopwatch`, and every waiting call takes a `CancellationToken` (a cancelled sign-in closes its port).
+
+### Verification
+
+- `dotnet build --configuration Release`: 0 warnings, 0 errors (net8.0 and netstandard2.1 library; net8.0 and net9.0 tests).
+- `DOTNET_ROLL_FORWARD=Major THALOVANT_CONFORMANCE_OUT=$PWD/contracts/conformance-results.json dotnet test --configuration Release --no-build`: net8.0 837 passed, 0 failed; net9.0 837 passed, 0 failed (651 before this change). The workstation has only the .NET 9 runtime, so the net8.0 build ran on it by roll-forward; CI runs both on ubuntu-latest and windows-latest.
+- The 186 browser-login tests passed 10 runs in a row on net9.0. A mutation that skips the secret redaction fails `AnEchoedCodeAndVerifierNeverReachTheError` and `ARedactedErrorKeepsItsKindAndItsFields`.
+- Every recorded `browser-login-vectors.json` case digest (98) and the file digest (`b17cb43466c0`) equal the Python reference's `contracts/conformance-results.json` on `feat/browser-sign-in`.
+- `dotnet pack src/Thalovant.Sdk/Thalovant.Sdk.csproj --configuration Release --no-build`: `Thalovant.Sdk.0.10.0.nupkg` and `.snupkg`; the packed README carries the new section.
+- `check-sdk-parity.py --workspace <checkouts> --consumer thalovant-dotnet-sdk`: verified against the Python PR head (`e3999cb`, candidate reference) and against Python `main` (`44b6e2b`, where `browser-login` is reported as not known yet, the expected rollout state).
+- Not run locally: the `interop` CI job (Node Noise peer; no transport code changed) and a real .NET 8 runtime. No test opened a real browser.
+
+### Transparency Report
+
+- **AI Model:** Claude Opus 5.5 (claude-opus-5-5), as a Claude Code agent.
+- **Actions Taken:** read the porting brief, the Python reference (`native_auth.py`, `_loopback.py`, `control.py`, both test files, the vectors and the parity checker) and this SDK's device login; probed the reference's parsing edges (`urlsplit`, `parse_qsl`) in Python to mirror them; wrote `BrowserLogin.cs`, `BrowserLoopback.cs`, both test files and the docs; vendored the vectors; recorded the conformance results by running the suite; computed the evidence hashes the checker's way; ran the build, tests, pack and parity checker.
+- **Oversight:** hosted CI and the CodeRabbit review gate the merge; the platform owner's coordinating agent merges. Nothing was merged, tagged or released.
 
 ## 2026-11-07 — CodeRabbit review-body items (#10, #11, #12, #26, #37, #41, #42)
 

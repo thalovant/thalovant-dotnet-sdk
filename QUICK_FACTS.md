@@ -1,12 +1,17 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Create the quick facts.
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in (0.10.0) and the browser-login parity binding.
 
 # Quick facts: thalovant-dotnet-sdk
 
 | Fact | Value |
 | :--- | :--- |
 | Package | Thalovant.Sdk (NuGet) |
-| Version | 0.9.6 (src/Thalovant.Sdk/Thalovant.Sdk.csproj) |
+| Version | 0.10.0 (src/Thalovant.Sdk/Thalovant.Sdk.csproj) |
+| Targets | net8.0, netstandard2.1 (Unity 2021+); tests on net8.0 and net9.0 |
 | Public surface | ThalovantClient, ThalovantControlPlane (src/Thalovant.Sdk) |
-| Parity | consumer of the Python reference; acknowledges digest `1e56099da5db` in `contracts/sdk-parity.json` |
+| Sign-in | `BrowserLoginAsync` (PKCE on a loopback redirect), `InteractiveLoginAsync` (`LoginMethod.Auto`/`Browser`/`Device`), `LoginWithBrowserAsync` (device login), `LoginAsync` (password) |
+| Browser sign-in pieces | `BrowserSignIn` (URL, redirect, state, browser rule, device name), `NativeSignInConfig` (BrowserLogin.cs); `LoopbackListener` (internal, BrowserLoopback.cs) |
+| Browser sign-in API | `GET /v1/auth/native/config`, `POST {token_endpoint}` (thalovant-api #501); a 404 means device login |
+| Parity | consumer of the Python reference; acknowledges `57c7e71f6456` and the candidate `49744ee385bf` in `contracts/sdk-parity.json` |
+| Conformance | `contracts/conformance-results.json`, written by `THALOVANT_CONFORMANCE_OUT=... dotnet test`; browser-login: 98 cases |
 | Chat apps (`/v1/bridges`) | not covered (`chat-apps` not applicable); see the Python, Node, Go or Rust SDK or the MCP server |
 | Release | merge to `main` with release-relevant changes -> `auto-release.yml` |

@@ -1,6 +1,12 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Answer the CodeRabbit re-review of #54 at b36a198 (11 threads, 1 nitpick).
+Last Edit: Claude Sonnet 5.5 - 2026-11-11 - Motive: Record the intercom parity capability as not applicable, and the Python reference digest 690784dbb9af.
 
 # Maintenance Report
+
+## 2026-11-11: intercom (no SDK impact)
+
+The Python reference moved to digest `690784dbb9af` (thalovant-python-sdk 0.12.0, the `intercom` capability). This SDK records the digest and marks `intercom` `not-applicable` in `contracts/sdk-parity.json`, with the reason written there: announcements are sent from the console, the Python, Node, Go and Rust SDKs and the MCP server (intercom contract, section F), never from this SDK. No source, test, documentation or version change; `scripts/check-sdk-parity.py --workspace <checkouts> --consumer thalovant-dotnet-sdk` passes.
+
+Transparency Report: AI model Claude Sonnet 5.5; actions: edited `contracts/sdk-parity.json` and this report; oversight: none yet, review pending.
 
 ## 2026-11-08 — CodeRabbit re-review of #54 at `b36a198`
 

@@ -178,7 +178,54 @@ namespace Thalovant
             {
                 return new ThalovantAlreadyLinkedException(message, statusCode, body, problem, LinkedClientId(problem));
             }
+            switch (statusCode, code)
+            {
+                case (422, ConnectionProblemCode.ConnectionTypeUnavailable):
+                    return new ThalovantConnectionTypeUnavailableException(message, statusCode, body, problem);
+                case (422, ConnectionProblemCode.ConnectorsInvalid):
+                    return new ThalovantConnectorsInvalidException(message, statusCode, body, problem);
+                case (403, ConnectionProblemCode.DeviceOwnerOnly):
+                case (403, ConnectionProblemCode.SetupSessionOwnerOnly):
+                case (403, ConnectionProblemCode.DeviceIdentityOwnerOnly):
+                    return new ThalovantOwnerOnlyBesideLinkException(message, statusCode, body, problem);
+                case (409, ConnectionProblemCode.HubScaleOutBreaksLinks):
+                    return new ThalovantHubScaleOutBreaksLinksException(message, statusCode, body, problem);
+                case (409, ConnectionProblemCode.IdempotencyKeySpent):
+                    return new ThalovantIdempotencyKeySpentException(message, statusCode, body, problem);
+                case (422, ConnectionProblemCode.SkillConfigPrivateHubOnly):
+                    return new ThalovantPrivateHubOnlyException(message, statusCode, body, problem);
+            }
             return new ThalovantApiException(message, statusCode, body, null, problem);
+        }
+
+        /// <summary>A member of the problem, at its top or inside its <c>detail</c> object; null when absent or JSON null.</summary>
+        private protected JsonNode? ProblemMember(string member)
+        {
+            if (_problem is null)
+            {
+                return null;
+            }
+            return _problem[member] ?? (_problem["detail"] as JsonObject)?[member];
+        }
+
+        /// <summary>A string member of the problem (see <see cref="ProblemMember"/>), or null.</summary>
+        private protected string? ProblemString(string member) => Text(ProblemMember(member));
+
+        /// <summary>The strings of an array member of the problem; empty when it is not an array.</summary>
+        private protected IReadOnlyList<string> ProblemStrings(string member)
+        {
+            var list = new List<string>();
+            if (ProblemMember(member) is JsonArray items)
+            {
+                foreach (var item in items)
+                {
+                    if (item is JsonValue value && value.TryGetValue<string>(out var text))
+                    {
+                        list.Add(text);
+                    }
+                }
+            }
+            return list;
         }
 
         /// <summary>The connection a <c>home_assistant_already_linked</c> refusal names, when it names one.</summary>
@@ -380,7 +427,7 @@ namespace Thalovant
     /// connection. The SDK deletes such a connection before throwing, and
     /// <see cref="ThalovantApiException.StatusCode"/> is then null.
     /// </remarks>
-    public sealed class ThalovantUnsupportedConnectionTypeException : ThalovantApiException
+    public class ThalovantUnsupportedConnectionTypeException : ThalovantApiException
     {
         public ThalovantUnsupportedConnectionTypeException(string message, int? statusCode = null, string? body = null, string? errorCode = null)
             : base(message, statusCode, body, errorCode)
@@ -390,6 +437,196 @@ namespace Thalovant
         internal ThalovantUnsupportedConnectionTypeException(string message, ThalovantApiException refusal)
             : base(message, refusal.StatusCode, refusal.Body, null, refusal.Problem)
         {
+        }
+
+        private protected ThalovantUnsupportedConnectionTypeException(string message, int statusCode, string body, JsonObject? problem)
+            : base(message, statusCode, body, null, problem)
+        {
+        }
+    }
+
+    /// <summary>
+    /// The <c>code</c> of every refusal the connection routes gained with home
+    /// links and home bridges. A code the SDK does not list is a plain
+    /// <see cref="ThalovantApiException"/>, with <see cref="ThalovantApiException.ErrorCode"/>
+    /// and <see cref="ThalovantApiException.Problem"/> either way.
+    /// </summary>
+    public static class ConnectionProblemCode
+    {
+        /// <summary>422: no link on this hub; <c>reason</c> is <c>hub_operated_by_another_account</c>. Devices are not affected.</summary>
+        public const string ConnectionTypeUnavailable = "connection_type_unavailable";
+
+        /// <summary>422: the kind is not one the API creates; <c>known</c> lists the ones it does.</summary>
+        public const string ConnectionTypeUnknown = "connection_type_unknown";
+
+        /// <summary>422: <c>connection_type</c> and <c>connectionType</c> were both sent and differ.</summary>
+        public const string ConnectionTypeAmbiguous = "connection_type_ambiguous";
+
+        /// <summary>422: the home bridge's connector list is empty, repeated or names an id it may not serve; <c>reason</c> says which.</summary>
+        public const string ConnectorsInvalid = "connectors_invalid";
+
+        /// <summary>403: only the account owner, from their own session, may add a device beside a home link.</summary>
+        public const string DeviceOwnerOnly = "device_owner_only_beside_home_link";
+
+        /// <summary>403: the same, for a device's setup session.</summary>
+        public const string SetupSessionOwnerOnly = "setup_session_owner_only_beside_home_link";
+
+        /// <summary>403: the same, for downloading a device's identity.</summary>
+        public const string DeviceIdentityOwnerOnly = "device_identity_owner_only_beside_home_link";
+
+        /// <summary>409: a hub with links does not scale out; <c>links</c> counts them.</summary>
+        public const string HubScaleOutBreaksLinks = "hub_scale_out_breaks_links";
+
+        /// <summary>409: the <c>Idempotency-Key</c> made something that was since removed; send a new key.</summary>
+        public const string IdempotencyKeySpent = "idempotency_key_spent";
+
+        /// <summary>422: the setting is not for a public hub (the music skill's direct route); <c>settings</c> names them.</summary>
+        public const string SkillConfigPrivateHubOnly = "skill_config_private_hub_only";
+
+        /// <summary>Not an error code: the <c>replay.code</c> of a connection answered from an earlier request with the same key.</summary>
+        public const string IdempotentReplay = "idempotent_replay";
+    }
+
+    /// <summary>A link cannot be made on this hub (422 <c>connection_type_unavailable</c>).</summary>
+    /// <remarks>
+    /// A kind of <see cref="ThalovantUnsupportedConnectionTypeException"/>, so a
+    /// handler for that keeps working. <see cref="Reason"/> is
+    /// <c>hub_operated_by_another_account</c> when another account runs the hub: a
+    /// link (<c>home_assistant</c> or <c>connector</c>) is made only on the
+    /// caller's own hub or one Thalovant runs. Devices are not affected.
+    /// </remarks>
+    public sealed class ThalovantConnectionTypeUnavailableException : ThalovantUnsupportedConnectionTypeException
+    {
+        public ThalovantConnectionTypeUnavailableException(string message, int? statusCode = null, string? body = null)
+            : base(message, statusCode, body, ConnectionProblemCode.ConnectionTypeUnavailable)
+        {
+        }
+
+        internal ThalovantConnectionTypeUnavailableException(string message, int statusCode, string body, JsonObject? problem)
+            : base(message, statusCode, body, problem)
+        {
+        }
+
+        /// <summary>Why (an open value), or null when the body did not say.</summary>
+        public string? Reason => ProblemString("reason");
+    }
+
+    /// <summary>A home bridge's <c>spec.connectors</c> is refused (422 <c>connectors_invalid</c>).</summary>
+    public sealed class ThalovantConnectorsInvalidException : ThalovantApiException
+    {
+        public ThalovantConnectorsInvalidException(string message, int? statusCode = null, string? body = null)
+            : base(message, statusCode, body, ConnectionProblemCode.ConnectorsInvalid)
+        {
+        }
+
+        internal ThalovantConnectorsInvalidException(string message, int statusCode, string body, JsonObject? problem)
+            : base(message, statusCode, body, null, problem)
+        {
+        }
+
+        /// <summary><c>duplicate</c>, <c>own_kind</c> or <c>unknown_or_malformed</c> (an open value), or null.</summary>
+        public string? Reason => ProblemString("reason");
+
+        /// <summary>The connector ids a bridge may serve; empty when the body did not say.</summary>
+        public IReadOnlyList<string> Known => ProblemStrings("known");
+    }
+
+    /// <summary>A device is added beside a home link by anybody but the account owner (403).</summary>
+    /// <remarks>
+    /// Codes <c>device_owner_only_beside_home_link</c>,
+    /// <c>setup_session_owner_only_beside_home_link</c> and
+    /// <c>device_identity_owner_only_beside_home_link</c>; read which on
+    /// <see cref="ThalovantApiException.ErrorCode"/>.
+    /// </remarks>
+    public sealed class ThalovantOwnerOnlyBesideLinkException : ThalovantApiException
+    {
+        public ThalovantOwnerOnlyBesideLinkException(string message, int? statusCode = null, string? body = null, string? errorCode = null)
+            : base(message, statusCode, body, errorCode)
+        {
+        }
+
+        internal ThalovantOwnerOnlyBesideLinkException(string message, int statusCode, string body, JsonObject? problem)
+            : base(message, statusCode, body, null, problem)
+        {
+        }
+
+        /// <summary>The link that closes this, or null when the body did not say.</summary>
+        public string? LinkClientId => ProblemString("link_client_id");
+    }
+
+    /// <summary>A hub's change would scale it out while it carries links (409 <c>hub_scale_out_breaks_links</c>).</summary>
+    public sealed class ThalovantHubScaleOutBreaksLinksException : ThalovantApiException
+    {
+        public ThalovantHubScaleOutBreaksLinksException(string message, int? statusCode = null, string? body = null)
+            : base(message, statusCode, body, ConnectionProblemCode.HubScaleOutBreaksLinks)
+        {
+        }
+
+        internal ThalovantHubScaleOutBreaksLinksException(string message, int statusCode, string body, JsonObject? problem)
+            : base(message, statusCode, body, null, problem)
+        {
+        }
+
+        /// <summary>How many links the hub carries, or null when the body did not say.</summary>
+        public int? Links =>
+            ProblemMember("links") is JsonValue value && value.GetValueKind() == JsonValueKind.Number && value.TryGetValue<int>(out var count)
+                ? count
+                : null;
+    }
+
+    /// <summary>An <c>Idempotency-Key</c> made something that has since been removed (409 <c>idempotency_key_spent</c>). Send the request again with a new key.</summary>
+    public sealed class ThalovantIdempotencyKeySpentException : ThalovantApiException
+    {
+        public ThalovantIdempotencyKeySpentException(string message, int? statusCode = null, string? body = null)
+            : base(message, statusCode, body, ConnectionProblemCode.IdempotencyKeySpent)
+        {
+        }
+
+        internal ThalovantIdempotencyKeySpentException(string message, int statusCode, string body, JsonObject? problem)
+            : base(message, statusCode, body, null, problem)
+        {
+        }
+    }
+
+    /// <summary>A setting is for a private hub only (422 <c>skill_config_private_hub_only</c>).</summary>
+    public sealed class ThalovantPrivateHubOnlyException : ThalovantApiException
+    {
+        public ThalovantPrivateHubOnlyException(string message, int? statusCode = null, string? body = null)
+            : base(message, statusCode, body, ConnectionProblemCode.SkillConfigPrivateHubOnly)
+        {
+        }
+
+        internal ThalovantPrivateHubOnlyException(string message, int statusCode, string body, JsonObject? problem)
+            : base(message, statusCode, body, null, problem)
+        {
+        }
+
+        /// <summary>The refused settings by name; empty when the body did not say.</summary>
+        public IReadOnlyList<string> Settings => ProblemStrings("settings");
+    }
+
+    /// <summary>A connection create was answered from an earlier request with the same key.</summary>
+    /// <remarks>
+    /// The connection exists, but its credentials were in the first answer only:
+    /// the platform does not store them, so a replay carries none. The SDK does
+    /// not hand back an identity it generated itself, because the platform
+    /// issues the connection's real credentials. <see cref="Client"/> is the
+    /// replayed resource (no credentials); download the identity from the
+    /// owner's own session, or delete the connection and create it again with a
+    /// new key.
+    /// </remarks>
+    public sealed class ThalovantCredentialsNotReplayedException : ThalovantException
+    {
+        /// <summary>The replayed connection resource, with no credentials.</summary>
+        public JsonObject Client { get; }
+
+        /// <summary>The connection's id, or null.</summary>
+        public string? ClientId => JsonUtil.GetString(Client["id"]);
+
+        public ThalovantCredentialsNotReplayedException(string message, JsonObject? client = null)
+            : base(message)
+        {
+            Client = client ?? new JsonObject();
         }
     }
 

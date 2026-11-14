@@ -882,7 +882,7 @@ namespace Thalovant
         /// <summary><c>GET /v1/auth/native/config</c>: where to send the browser, where to exchange the code.</summary>
         private async Task<NativeSignInConfig> NativeSignInConfigAsync(CancellationToken cancellationToken)
         {
-            var (statusCode, text, retryAfter) = await SendAsync("GET", NativeSignInConfigPath, null, null, auth: false, cancellationToken)
+            var (statusCode, text, retryAfter, _) = await SendAsync("GET", NativeSignInConfigPath, null, null, auth: false, cancellationToken)
                 .ConfigureAwait(false);
             if (statusCode == 404)
             {

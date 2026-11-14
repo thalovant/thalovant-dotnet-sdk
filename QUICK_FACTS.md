@@ -5,7 +5,7 @@ Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Qualify the origin guarantee f
 | Fact | Value |
 | :--- | :--- |
 | Package | Thalovant.Sdk (NuGet) |
-| Version | 0.10.0 (src/Thalovant.Sdk/Thalovant.Sdk.csproj) |
+| Version | 0.11.0 (src/Thalovant.Sdk/Thalovant.Sdk.csproj) |
 | Targets | net8.0, netstandard2.1 (Unity 2021+); tests on net8.0 and net9.0 |
 | Public surface | ThalovantClient, ThalovantControlPlane (src/Thalovant.Sdk) |
 | Sign-in | `BrowserLoginAsync` (PKCE on a loopback redirect), `InteractiveLoginAsync` (`LoginMethod.Auto`/`Browser`/`Device`), `LoginWithBrowserAsync` (device login), `LoginAsync` (password) |

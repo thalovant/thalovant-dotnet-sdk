@@ -110,6 +110,27 @@ namespace Thalovant
         public string? ConnectionType => JsonUtil.GetString((Client["spec"] as JsonObject)?["connection_type"]);
 
         /// <summary>
+        /// What a new link will serve: <c>devices</c> (<c>id</c>, <c>name</c>,
+        /// <c>connection_type</c>, <c>active</c>), <c>count</c> and <c>warning</c>.
+        /// Present for a <c>home_assistant</c> or <c>connector</c> link; null for
+        /// any other kind, and from an API that does not say. A copy: changing it
+        /// changes nothing on the result.
+        /// </summary>
+        public JsonObject? Serves => Client["serves"] is JsonObject serves ? (JsonObject)serves.DeepClone() : null;
+
+        /// <summary>The warning in <see cref="Serves"/>: this link will serve none of the account's devices. Null when there is none.</summary>
+        public string? ServesWarning => (Client["serves"] as JsonObject)?["warning"] is JsonValue value
+            && value.TryGetValue<string>(out var warning) && warning.Length > 0 ? warning : null;
+
+        /// <summary>
+        /// Always false on a result you hold: an answer to a replayed
+        /// <c>Idempotency-Key</c> carries no credentials, so
+        /// <see cref="ThalovantControlPlane.CreateClientIdentityAsync(JsonObject, CreateClientIdentityOptions, CancellationToken)"/>
+        /// throws <see cref="ThalovantCredentialsNotReplayedException"/> instead.
+        /// </summary>
+        public bool Replayed => false;
+
+        /// <summary>
         /// The operation that carries the new connection to its hub, when the API
         /// returned one: the hub admits it about ninety seconds after it is
         /// created. <see cref="ThalovantControlPlane.WaitForAdmissionAsync(BootstrapIdentityResult, TimeSpan?, TimeSpan?, CancellationToken)"/>
@@ -1464,6 +1485,20 @@ namespace Thalovant
         /// token that cannot do it, <see cref="ThalovantAuthenticationException"/>.
         /// </para>
         /// <para>
+        /// <see cref="ThalovantConnectionTypes.Connector"/> makes a home bridge; name
+        /// what it serves in <c>Spec["connectors"]</c> (each id once; see
+        /// <see cref="ThalovantConnectorsInvalidException"/>). A link of either kind
+        /// is made only on your own hub or one Thalovant runs
+        /// (<see cref="ThalovantConnectionTypeUnavailableException"/>, a kind of
+        /// <see cref="ThalovantUnsupportedConnectionTypeException"/>), and serves
+        /// only your own devices there: read <see cref="BootstrapIdentityResult.Serves"/>.
+        /// The platform issues the connection's access key and password (an
+        /// <c>apiKey</c> or <c>password</c> in the spec is ignored by an API that
+        /// does so), and the identity returned is the one in the answer. A create
+        /// answered from an earlier request with the same idempotency key carries no
+        /// credentials and throws <see cref="ThalovantCredentialsNotReplayedException"/>.
+        /// </para>
+        /// <para>
         /// The result's <see cref="BootstrapIdentityResult.Operation"/> tracks the
         /// hub admitting the connection, about ninety seconds;
         /// <see cref="WaitForAdmissionAsync(BootstrapIdentityResult, TimeSpan?, TimeSpan?, CancellationToken)"/>
@@ -1505,14 +1540,34 @@ namespace Thalovant
             }
 
             JsonObject client;
+            bool replayedByHeader;
             try
             {
-                client = await CreateClientAsync(payload, options.IdempotencyKey, cancellationToken).ConfigureAwait(false);
+                (client, replayedByHeader) = await RequestObjectWithReplayAsync(
+                    "POST",
+                    "/v1/clients",
+                    payload,
+                    new Dictionary<string, string> { ["Idempotency-Key"] = options.IdempotencyKey ?? NewIdempotencyKey() },
+                    true,
+                    cancellationToken).ConfigureAwait(false);
             }
-            catch (ThalovantApiException error) when (connectionType is not null && RefusesConnectionType(error))
+            catch (ThalovantApiException error) when (connectionType is not null
+                && error is not ThalovantConnectionTypeUnavailableException
+                && RefusesConnectionType(error))
             {
                 throw new ThalovantUnsupportedConnectionTypeException(
                     $"The Thalovant API cannot create a '{connectionType}' connection yet.", error);
+            }
+            if (replayedByHeader || IsReplayMarker(client))
+            {
+                var scrubbed = JsonUtil.CloneObject(client);
+                JsonUtil.RedactSecretsInPlace(scrubbed);
+                throw new ThalovantCredentialsNotReplayedException(
+                    "This create was answered from an earlier request with the same Idempotency-Key. "
+                    + "The connection exists, but its credentials were in the first answer only and are "
+                    + "not stored. Download its identity from the owner's session, or delete it and "
+                    + "create it again with a new key.",
+                    scrubbed);
             }
             if (connectionType is not null)
             {
@@ -1546,6 +1601,11 @@ namespace Thalovant
             var identity = new ThalovantIdentity(identityJson);
             return new BootstrapIdentityResult(identity, hub, client, endpoint);
         }
+
+        /// <summary>An answer whose <c>replay</c> marker has code <c>idempotent_replay</c>.</summary>
+        private static bool IsReplayMarker(JsonObject client) =>
+            client["replay"] is JsonObject marker
+            && JsonUtil.GetString(marker["code"]) == ConnectionProblemCode.IdempotentReplay;
 
         /// <summary>A 422 whose problem is about <c>connection_type</c>.</summary>
         /// <remarks>
@@ -2002,7 +2062,7 @@ namespace Thalovant
             bool auth = true,
             CancellationToken cancellationToken = default)
         {
-            var (statusCode, text, _) = await SendAsync(method, path, body, headers, auth, cancellationToken).ConfigureAwait(false);
+            var (statusCode, text, _, _) = await SendAsync(method, path, body, headers, auth, cancellationToken).ConfigureAwait(false);
             return (statusCode, text);
         }
 
@@ -2012,7 +2072,7 @@ namespace Thalovant
         /// API never answered -- DNS, the connection, TLS, a proxy -- throws
         /// <see cref="ThalovantApiUnreachableException"/>.
         /// </summary>
-        private async Task<(int StatusCode, string Body, TimeSpan? RetryAfter)> SendAsync(
+        private async Task<(int StatusCode, string Body, TimeSpan? RetryAfter, bool Replayed)> SendAsync(
             string method,
             string path,
             JsonObject? body,
@@ -2035,7 +2095,9 @@ namespace Thalovant
                 var bytes = response.Content is null
                     ? Array.Empty<byte>()
                     : await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
-                return ((int)response.StatusCode, DecodeBody(bytes), RetryAfterHeader(response));
+                var replayed = response.Headers.TryGetValues("Idempotent-Replayed", out var marks)
+                    && marks.Any(mark => string.Equals(mark.Trim(), "true", StringComparison.OrdinalIgnoreCase));
+                return ((int)response.StatusCode, DecodeBody(bytes), RetryAfterHeader(response), replayed);
             }
         }
 
@@ -2080,13 +2142,27 @@ namespace Thalovant
             bool auth = true,
             CancellationToken cancellationToken = default)
         {
-            var (statusCode, text, retryAfter) = await SendAsync(method, path, body, headers, auth, cancellationToken)
+            var (text, _) = await RequestDataWithReplayAsync(method, path, body, headers, auth, cancellationToken)
+                .ConfigureAwait(false);
+            return text;
+        }
+
+        /// <summary>A successful answer's body and whether it carried <c>Idempotent-Replayed: true</c>.</summary>
+        private async Task<(string Body, bool Replayed)> RequestDataWithReplayAsync(
+            string method,
+            string path,
+            JsonObject? body,
+            IReadOnlyDictionary<string, string>? headers,
+            bool auth,
+            CancellationToken cancellationToken)
+        {
+            var (statusCode, text, retryAfter, replayed) = await SendAsync(method, path, body, headers, auth, cancellationToken)
                 .ConfigureAwait(false);
             if (statusCode < 200 || statusCode >= 300)
             {
                 throw ApiError(statusCode, text).WithRetryAfterHeader(retryAfter);
             }
-            return text;
+            return (text, replayed);
         }
 
         internal async Task<JsonObject> RequestObjectAsync(
@@ -2097,14 +2173,27 @@ namespace Thalovant
             bool auth = true,
             CancellationToken cancellationToken = default)
         {
-            var text = await RequestDataAsync(method, path, body, headers, auth, cancellationToken).ConfigureAwait(false);
+            var (client, _) = await RequestObjectWithReplayAsync(method, path, body, headers, auth, cancellationToken).ConfigureAwait(false);
+            return client;
+        }
+
+        /// <summary>An object answer and whether it carried <c>Idempotent-Replayed: true</c>.</summary>
+        private async Task<(JsonObject Body, bool Replayed)> RequestObjectWithReplayAsync(
+            string method,
+            string path,
+            JsonObject? body,
+            IReadOnlyDictionary<string, string>? headers,
+            bool auth,
+            CancellationToken cancellationToken)
+        {
+            var (text, replayed) = await RequestDataWithReplayAsync(method, path, body, headers, auth, cancellationToken).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(text))
             {
-                return new JsonObject();
+                return (new JsonObject(), replayed);
             }
             try
             {
-                return JsonUtil.ParseObject(text);
+                return (JsonUtil.ParseObject(text), replayed);
             }
             catch (Exception)
             {

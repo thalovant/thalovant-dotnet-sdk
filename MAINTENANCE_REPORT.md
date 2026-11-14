@@ -2,6 +2,12 @@ Last Edit: Claude Sonnet 5.5 - 2026-11-12 - Motive: Record the Python revision a
 
 # Maintenance Report
 
+## 2026-11-14: connector-connections (0.11.0)
+
+Ports the Python reference's `connector-connections` capability (digest `8687c8429e28`, thalovant-python-sdk 0.13.0; thalovant-api #521, not deployed yet). Changed: `Errors.cs` (typed refusals, `ConnectionProblemCode`, `ThalovantUnsupportedConnectionTypeException` unsealed), `ControlPlane.cs` (replay detection from the `Idempotent-Replayed` header or `replay.code`, `Serves`, `ServesWarning`, `Replayed`), `Home.cs` (`ThalovantConnectionTypes.Connector`), `BrowserLogin.cs` (one call-site tuple), and `tests/Thalovant.Sdk.Tests/ConnectorConnectionsTests.cs`. The version is 0.11.0. `contracts/sdk-parity.json` gains the digest and the `connector-connections` capability.
+
+Transparency Report: AI model Claude Sonnet 5.5; actions: ported the capability and wrote its tests and the parity entry; oversight: none yet, review pending.
+
 ## 2026-11-12: Python reference digests acknowledged on the intercom branch
 
 `contracts/sdk-parity.json` lists five reference digests that thalovant-python-sdk `feature/intercom-v1` (PR 114) published while it moved. Each is the digest of the `reference` object of that repository's `contracts/sdk-parity.json` (`scripts/check-sdk-parity.py`, `digest(reference)`), and each was reviewed by reading the Python diff of the `intercom` capability for impact on this SDK, then confirmed with `check-sdk-parity.py --workspace <checkouts> --consumer thalovant-dotnet-sdk`. This SDK has no control-plane announce client, so the `intercom` capability stays `not-applicable` (the reason is in the file) and every acknowledgement is a review, not a port:

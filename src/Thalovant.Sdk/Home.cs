@@ -33,6 +33,13 @@ namespace Thalovant
         /// (<see cref="ThalovantHome"/>). A hub takes one.
         /// </summary>
         public const string HomeAssistant = "home_assistant";
+
+        /// <summary>
+        /// A home bridge: a link that serves the connector ids named in
+        /// <c>spec.connectors</c> (<c>music_assistant</c> today). Home Assistant has
+        /// the kind above and is never one of a bridge's connectors.
+        /// </summary>
+        public const string Connector = "connector";
     }
 
     /// <summary>The <c>response_type</c> values a <c>thalovant.home.response</c> may carry.</summary>

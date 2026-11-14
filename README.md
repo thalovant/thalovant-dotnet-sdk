@@ -1,5 +1,3 @@
-<!-- Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in docs for the final reference (python-sdk 39e31d8): wording, device name, origin, configuration rules. -->
-
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/thalovant/.github/main/profile/assets/thalovant-logo-dark.png">

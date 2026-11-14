@@ -1,5 +1,3 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Point the digest follow-up at the final candidate.
-
 # Suggestions: thalovant-dotnet-sdk
 
 ## Decide whether this SDK should manage chat apps

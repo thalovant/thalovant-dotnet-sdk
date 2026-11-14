@@ -1,5 +1,3 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in answers for the final reference (python-sdk 39e31d8).
-
 # FAQ: thalovant-dotnet-sdk
 
 **Can I manage chat apps (Telegram, Discord, Matrix, Mattermost, Twitch bridges) with this SDK?**

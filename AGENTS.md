@@ -1,5 +1,3 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Add the browser sign-in rules (0.10.0).
-
 # Repository instructions
 
 This repository owns the published .NET client and agent SDK for supported

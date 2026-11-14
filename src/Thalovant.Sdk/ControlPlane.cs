@@ -1551,8 +1551,10 @@ namespace Thalovant
                     true,
                     cancellationToken).ConfigureAwait(false);
             }
+            // Only an error no typed mapping claimed gets the text check: a connectors_invalid
+            // whose detail names connection_type stays itself.
             catch (ThalovantApiException error) when (connectionType is not null
-                && error is not ThalovantConnectionTypeUnavailableException
+                && error.GetType() == typeof(ThalovantApiException)
                 && RefusesConnectionType(error))
             {
                 throw new ThalovantUnsupportedConnectionTypeException(

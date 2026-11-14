@@ -282,6 +282,17 @@ namespace Thalovant.Sdk.Tests
         }
 
         [Fact]
+        public async Task AConnectorsRefusalThatNamesConnectionTypeStaysItself()
+        {
+            var body = Problem("connectors_invalid", new JsonObject { ["reason"] = "duplicate", ["known"] = Strings("music_assistant") });
+            body["detail"] = "spec.connectors is required when connection_type is connector";
+            var (api, _) = Plane(422, body);
+            var caught = await Assert.ThrowsAsync<ThalovantConnectorsInvalidException>(() => Create(api, "connector"));
+            Assert.Equal("duplicate", caught.Reason);
+            Assert.Equal(new[] { "music_assistant" }, caught.Known);
+        }
+
+        [Fact]
         public async Task AnUnlistedCodeStaysAPlainApiError()
         {
             var (api, _) = Plane(409, Problem("something_new"));

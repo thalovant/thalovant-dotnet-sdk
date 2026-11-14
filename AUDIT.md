@@ -1,5 +1,3 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in: the CodeRabbit re-review of #54 at b36a198 (11 threads).
-
 # Audit
 
 Known issues, technical debt and review decisions, each tied to the code and the test that shows it.

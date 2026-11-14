@@ -1,5 +1,3 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Qualify the origin guarantee for a caller's own handler (CodeRabbit re-review of #54).
-
 # Quick facts: thalovant-dotnet-sdk
 
 | Fact | Value |

@@ -2,6 +2,10 @@
 
 Known issues, technical debt and review decisions, each tied to the code and the test that shows it.
 
+## 2026-11-15: fixed in 0.11.1, public-property serializers wrote secrets
+
+`JsonSerializer.Serialize(result)` wrote `Identity.AccessKey` and `Password`, the raw `Hub` and `Client` records, `ThalovantControlPlane.AccessToken`, `DeviceAuthorization.DeviceCode` and `DeviceLoginResult.AccessToken` (`BootstrapIdentityResult` in `ControlPlane.cs`, `ThalovantIdentity` in `Identity.cs`). Fixed by `[JsonIgnore, IgnoreDataMember]`; `SerializationRedactionTests` pins it. Open: `result.Client.ToString()` and `result.Hub.ToString()` are raw `JsonObject`s that print what the API sent; log `result.ToJsonObject()` instead.
+
 ## Fixed
 
 - **2^63 reached an out-of-range cast in quota parsing** (fixed 2026-11-03). `ThalovantPolicyDeniedException.WholeInRange` in [`src/Thalovant.Sdk/Errors.cs`](src/Thalovant.Sdk/Errors.cs) compared a double with `long.MaxValue`, which rounds to 2^63. Masked by `WholeCount`'s 2^53 - 1 ceiling, so no denial reported a wrong count. Test: `RefusalVectorTests.AWholeDoubleIsReadOnlyWhileItFitsInALong` in [`tests/Thalovant.Sdk.Tests/RefusalVectorTests.cs`](tests/Thalovant.Sdk.Tests/RefusalVectorTests.cs).

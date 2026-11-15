@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Runtime.Serialization;
 using System.Security.Cryptography;
+using System.Text.Json.Serialization;
 using System.Text;
 
 namespace Thalovant
@@ -50,9 +52,11 @@ namespace Thalovant
         public string AuthorizationUrl { get; }
 
         /// <summary>Proves the redirect answers <em>this</em> attempt, not a replayed one.</summary>
+        [JsonIgnore, IgnoreDataMember]
         public string State { get; }
 
         /// <summary>Never send this to the browser. Exchanged with the code, once.</summary>
+        [JsonIgnore, IgnoreDataMember]
         public string Verifier { get; }
 
         /// <summary>

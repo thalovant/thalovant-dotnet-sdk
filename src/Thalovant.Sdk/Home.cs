@@ -36,7 +36,7 @@ namespace Thalovant
 
         /// <summary>
         /// A home bridge: a link that serves the connector ids named in
-        /// <c>spec.connectors</c> (<c>music_assistant</c> today). Home Assistant has
+        /// <c>spec.connectors</c> (<c>jellyfin</c> and <c>music_assistant</c> today). Home Assistant has
         /// the kind above and is never one of a bridge's connectors.
         /// </summary>
         public const string Connector = "connector";

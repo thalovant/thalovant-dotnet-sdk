@@ -43,6 +43,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="ListingData/*.json" LogicalName="Thalovant.ListingData.%(Filename)%(Extension)" />
+    <None Include="../../LICENSE" Pack="true" PackagePath="/" />
     <None Include="../../LICENSE-langcodes" Pack="true" PackagePath="/" />
     <None Include="../../LICENSE-languages" Pack="true" PackagePath="/" />
   </ItemGroup>

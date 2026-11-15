@@ -183,7 +183,8 @@ namespace Thalovant
             if (Endpoint is not null)
             {
                 data["selectedProtocol"] = Endpoint.Protocol.WireName();
-                data["selectedEndpoint"] = Endpoint.Endpoint;
+                // The endpoint can be written user:pass@host; only includeSecrets keeps that.
+                data["selectedEndpoint"] = includeSecrets ? Endpoint.Endpoint : HubEndpoints.RedactedCredentials(Endpoint.Endpoint);
             }
             return data;
         }

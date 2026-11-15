@@ -17,7 +17,7 @@ namespace Thalovant.Sdk.Tests
         private static readonly string[] Secrets =
         {
             "LEAK-ACCESS-KEY", "LEAK-PASSWORD", "LEAK-CRYPTO", "LEAK-MQTT-USER", "LEAK-MQTT-PASSWORD",
-            "LEAK-SPEC-KEY", "LEAK-TOKEN", "LEAK-DEVICE-CODE", "LEAK-VERIFIER", "LEAK-STATE", "LEAK-RAW", "LEAK-MASTER",
+            "LEAK-SPEC-KEY", "LEAK-TOKEN", "LEAK-DEVICE-CODE", "LEAK-VERIFIER", "LEAK-STATE", "LEAK-RAW", "LEAK-MASTER", "LEAK-ENDPOINT",
         };
 
         private static BootstrapIdentityResult MakeResult()
@@ -36,7 +36,7 @@ namespace Thalovant.Sdk.Tests
               "initial_identify": { "access_key": "LEAK-ACCESS-KEY", "password": "LEAK-PASSWORD" },
               "initial_identify_token": "LEAK-TOKEN" }
             """)!;
-            return new BootstrapIdentityResult(identity, hub, client, endpoint: null);
+            return new BootstrapIdentityResult(identity, hub, client, new SelectedHubEndpoint(HubProtocol.Wss, "wss://u:LEAK-ENDPOINT@home.example.com"));
         }
 
         private static void AssertClean(string label, string text)

@@ -6,6 +6,8 @@ Serializing a secret-bearing type no longer writes its secrets. Found by install
 
 - The secret members carry `[JsonIgnore, IgnoreDataMember]` (System.Text.Json and Newtonsoft.Json both honour it): `ThalovantIdentity.AccessKey`, `Password`, `CryptoKey`, `DataPlaneEndpoints`, `Metadata`, `Mqtt`; `MqttBrokerCredentials.Endpoint`, `Username`, `Password`, `TopicPrefix`; `BootstrapIdentityResult.Identity`, `Hub`, `Client`, `Endpoint`; `ThalovantControlPlane.AccessToken`; `DeviceAuthorization.DeviceCode`, `Raw`; `DeviceLoginResult.AccessToken`, `Raw`; `NativeSignIn.State`, `Verifier`. The properties still return their values; `ToJsonObject(includeSecrets: true)` is the way to persist an identity.
 - `ThalovantIdentity.ToJsonObject()` (the default, redacted form) strips `user:pass@` from `default_master`, as it already did for the data-plane endpoints; only `includeSecrets: true` keeps it. `DefaultMaster` is `[JsonIgnore, IgnoreDataMember]` too.
+- The NuGet package now carries the `LICENSE` file (0.11.0 had only `LICENSE-langcodes` and `LICENSE-languages`) and no source file has a `Last Edit:` header.
+- Security hardening: upgrading from 0.11.0 is advised; 0.11.0 stays published.
 - Evidence: `tests/Thalovant.Sdk.Tests/SerializationRedactionTests.cs`.
 
 ## 0.11.0

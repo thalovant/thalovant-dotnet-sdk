@@ -111,6 +111,8 @@ namespace Thalovant
         public string AccessKey { get; }
         [JsonIgnore, IgnoreDataMember]
         public string Password { get; }
+        // A hub address can carry user:pass@; ToJsonObject() strips it.
+        [JsonIgnore, IgnoreDataMember]
         public string DefaultMaster { get; }
         public int DefaultPort { get; }
         public string DefaultPath { get; }
@@ -296,7 +298,8 @@ namespace Thalovant
             var data = new JsonObject
             {
                 ["site_id"] = SiteId,
-                ["default_master"] = DefaultMaster,
+                // A hub address can carry user:pass@; only includeSecrets keeps it.
+                ["default_master"] = includeSecrets ? DefaultMaster : HubEndpoints.RedactedCredentials(DefaultMaster),
                 ["default_port"] = DefaultPort,
                 ["default_path"] = DefaultPath,
             };

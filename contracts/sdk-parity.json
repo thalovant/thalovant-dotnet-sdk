@@ -195,7 +195,7 @@
     },
     "identity": {
       "implementation": {
-        "src/Thalovant.Sdk/Identity.cs": "25a35e043a301d6756c2a5b0d3eb5b7f729af9e14bc1fa166eb8db7a19367f08",
+        "src/Thalovant.Sdk/Identity.cs": "8f430686ce830bd90cfde19b539dda5c42e3b2fb4564663da29b6bd10b8a9440",
         "src/Thalovant.Sdk/NoiseStore.cs": "3f6e8dc9f58673c3e194d0bf543b2ff5f2ab6d6ca83fbdbf3f56460472c6e9a9",
         "src/Thalovant.Sdk/Protocols.cs": "2c951c8d24b2600433c069dcb5248c4b6a1cf1089a982e7f2f20720522c6265d",
         "src/Thalovant.Sdk/Transport.cs": "d56c7265ae249ac4d2e22fd94111b77492064bc300693f089fa4ec9657d6f277"

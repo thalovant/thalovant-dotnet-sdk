@@ -17,7 +17,7 @@ namespace Thalovant.Sdk.Tests
         private static readonly string[] Secrets =
         {
             "LEAK-ACCESS-KEY", "LEAK-PASSWORD", "LEAK-CRYPTO", "LEAK-MQTT-USER", "LEAK-MQTT-PASSWORD",
-            "LEAK-SPEC-KEY", "LEAK-TOKEN", "LEAK-DEVICE-CODE", "LEAK-VERIFIER", "LEAK-STATE", "LEAK-RAW",
+            "LEAK-SPEC-KEY", "LEAK-TOKEN", "LEAK-DEVICE-CODE", "LEAK-VERIFIER", "LEAK-STATE", "LEAK-RAW", "LEAK-MASTER",
         };
 
         private static BootstrapIdentityResult MakeResult()
@@ -25,7 +25,7 @@ namespace Thalovant.Sdk.Tests
             var identity = new ThalovantIdentity((JsonObject)JsonNode.Parse("""
             {
               "access_key": "LEAK-ACCESS-KEY", "password": "LEAK-PASSWORD", "crypto_key": "LEAK-CRYPTO",
-              "site_id": "bridge", "default_master": "wss://home.example.com", "default_port": 443,
+              "site_id": "bridge", "default_master": "wss://hubuser:LEAK-MASTER@home.example.com", "default_port": 443,
               "mqtt": { "endpoint": "mqtts://m.example.com:8883", "username": "LEAK-MQTT-USER", "password": "LEAK-MQTT-PASSWORD" },
               "metadata": { "password": "LEAK-RAW" }
             }

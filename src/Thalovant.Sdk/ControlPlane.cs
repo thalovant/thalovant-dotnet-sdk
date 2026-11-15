@@ -6,10 +6,12 @@ using System.Globalization;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -96,9 +98,13 @@ namespace Thalovant
     /// </remarks>
     public sealed class BootstrapIdentityResult
     {
+        [JsonIgnore, IgnoreDataMember]
         public ThalovantIdentity Identity { get; }
+        [JsonIgnore, IgnoreDataMember]
         public JsonObject Hub { get; }
+        [JsonIgnore, IgnoreDataMember]
         public JsonObject Client { get; }
+        [JsonIgnore, IgnoreDataMember]
         public SelectedHubEndpoint? Endpoint { get; }
 
         public HubProtocol? SelectedProtocol => Endpoint?.Protocol;
@@ -177,7 +183,8 @@ namespace Thalovant
             if (Endpoint is not null)
             {
                 data["selectedProtocol"] = Endpoint.Protocol.WireName();
-                data["selectedEndpoint"] = Endpoint.Endpoint;
+                // The endpoint can be written user:pass@host; only includeSecrets keeps that.
+                data["selectedEndpoint"] = includeSecrets ? Endpoint.Endpoint : HubEndpoints.RedactedCredentials(Endpoint.Endpoint);
             }
             return data;
         }
@@ -187,6 +194,7 @@ namespace Thalovant
     public sealed partial class ThalovantControlPlane
     {
         public string ApiUrl { get; }
+        [JsonIgnore, IgnoreDataMember]
         public string? AccessToken { get; set; }
         public string UserAgent { get; }
 

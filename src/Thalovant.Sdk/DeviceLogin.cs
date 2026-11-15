@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.Serialization;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 
 namespace Thalovant
 {
@@ -51,6 +53,7 @@ namespace Thalovant
     /// </summary>
     public sealed class DeviceAuthorization
     {
+        [JsonIgnore, IgnoreDataMember]
         public string DeviceCode { get; }
         public string UserCode { get; }
         public string VerificationUri { get; }
@@ -65,6 +68,7 @@ namespace Thalovant
         public TimeSpan Interval { get; }
 
         /// <summary>The raw authorization payload as returned by the API.</summary>
+        [JsonIgnore, IgnoreDataMember]
         public JsonObject Raw { get; }
 
         public DeviceAuthorization(
@@ -168,6 +172,7 @@ namespace Thalovant
     /// </summary>
     public sealed class DeviceLoginResult
     {
+        [JsonIgnore, IgnoreDataMember]
         public string AccessToken { get; }
         public string? TokenType { get; }
         public IReadOnlyList<string> Scopes { get; }
@@ -175,6 +180,7 @@ namespace Thalovant
         public string? TokenId { get; }
 
         /// <summary>The raw token payload as returned by the API.</summary>
+        [JsonIgnore, IgnoreDataMember]
         public JsonObject Raw { get; }
 
         public DeviceLoginResult(

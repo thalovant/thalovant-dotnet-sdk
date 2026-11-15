@@ -1,6 +1,8 @@
 using System;
 using System.IO;
+using System.Runtime.Serialization;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 
 namespace Thalovant
 {
@@ -18,9 +20,13 @@ namespace Thalovant
     /// </remarks>
     public sealed class MqttBrokerCredentials
     {
+        [JsonIgnore, IgnoreDataMember]
         public string Endpoint { get; }
+        [JsonIgnore, IgnoreDataMember]
         public string Username { get; }
+        [JsonIgnore, IgnoreDataMember]
         public string Password { get; }
+        [JsonIgnore, IgnoreDataMember]
         public string? TopicPrefix { get; }
         public int Qos { get; }
         public bool Tls { get; }
@@ -101,17 +107,25 @@ namespace Thalovant
     /// </remarks>
     public sealed class ThalovantIdentity
     {
+        [JsonIgnore, IgnoreDataMember]
         public string AccessKey { get; }
+        [JsonIgnore, IgnoreDataMember]
         public string Password { get; }
+        // A hub address can carry user:pass@; ToJsonObject() strips it.
+        [JsonIgnore, IgnoreDataMember]
         public string DefaultMaster { get; }
         public int DefaultPort { get; }
         public string DefaultPath { get; }
         public string SiteId { get; }
+        [JsonIgnore, IgnoreDataMember]
         public string? CryptoKey { get; }
+        [JsonIgnore, IgnoreDataMember]
         public HubDataPlaneEndpoints DataPlaneEndpoints { get; }
         public HubProtocolSettings Protocols { get; }
         public string? PublicKey { get; }
+        [JsonIgnore, IgnoreDataMember]
         public JsonObject Metadata { get; }
+        [JsonIgnore, IgnoreDataMember]
         public MqttBrokerCredentials? Mqtt { get; }
 
         /// <summary>
@@ -284,7 +298,8 @@ namespace Thalovant
             var data = new JsonObject
             {
                 ["site_id"] = SiteId,
-                ["default_master"] = DefaultMaster,
+                // A hub address can carry user:pass@; only includeSecrets keeps it.
+                ["default_master"] = includeSecrets ? DefaultMaster : HubEndpoints.RedactedCredentials(DefaultMaster),
                 ["default_port"] = DefaultPort,
                 ["default_path"] = DefaultPath,
             };

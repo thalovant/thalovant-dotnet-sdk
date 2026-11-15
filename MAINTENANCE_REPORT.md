@@ -1,5 +1,13 @@
 # Maintenance Report
 
+## 2026-11-15: serializers no longer write secrets (0.11.1)
+
+Installed `Thalovant.Sdk` 0.11.0 from NuGet and ran the connector flow against a local mock. `ToString()` and `ToJsonObject()` were safe, but `System.Text.Json.JsonSerializer.Serialize` of `BootstrapIdentityResult`, `ThalovantIdentity`, `ThalovantControlPlane`, `DeviceAuthorization` and `DeviceLoginResult` wrote their secrets (`ControlPlane.cs`, `Identity.cs`, `DeviceLogin.cs`, `NativeSignIn.cs`). Fix: `[JsonIgnore, IgnoreDataMember]` on the secret properties; values are still readable and `ToJsonObject(includeSecrets: true)` still persists. `contracts/sdk-parity.json` has the new hashes for the four changed files (no error-path change); the parity check passes. The csproj `<Version>` is bumped by the Auto Release workflow.
+
+Verification: `dotnet test` on net9.0: 954 passed, 0 failed (net8.0 not runnable on this machine, which has the 9.0 runtime only; CI runs it); `netstandard2.1` builds; four new tests in `SerializationRedactionTests.cs`. Not verified against a live API.
+
+Transparency Report: AI model Claude Sonnet 5.5; actions: reproduced the leak from the NuGet package, added the attributes, tests and docs; oversight: PR review and CI only.
+
 ## 2026-11-14: connector-connections (0.11.0)
 
 Ports the Python reference's `connector-connections` capability (digest `8687c8429e28`, thalovant-python-sdk 0.13.0; thalovant-api #521, not deployed yet). Changed: `Errors.cs` (typed refusals, `ConnectionProblemCode`, `ThalovantUnsupportedConnectionTypeException` unsealed), `ControlPlane.cs` (replay detection from the `Idempotent-Replayed` header or `replay.code`, `Serves`, `ServesWarning`, `Replayed`), `Home.cs` (`ThalovantConnectionTypes.Connector`), `BrowserLogin.cs` (one call-site tuple), and `tests/Thalovant.Sdk.Tests/ConnectorConnectionsTests.cs`. The version is 0.11.0. `contracts/sdk-parity.json` gains the digest and the `connector-connections` capability.

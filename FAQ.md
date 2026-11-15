@@ -27,3 +27,7 @@ Pass `DeviceName = ""` (to `BrowserLoginOptions` or `InteractiveLoginOptions`). 
 **Why was my API's browser sign-in configuration refused?**
 `NativeSignInConfig.FromPayload` refuses an address a browser could not safely open: a host that is not an IPv6 literal in brackets, a dotted-quad IPv4 address or ASCII DNS labels (write an international name in its `xn--` form; `%`, `_` and empty labels are refused), port 0, or a token endpoint with a `:` or a broken `%` escape. In `LoginMethod.Auto` that means a device login; `BrowserLoginAsync` throws it as an error with no status.
 
+
+## Does `JsonSerializer.Serialize(result)` write the access key?
+
+No (0.11.1 and later). The secret properties are `[JsonIgnore, IgnoreDataMember]`; `ToString()` is the type name. Read `result.Identity.AccessKey` or `result.ToJsonObject(includeSecrets: true)` on purpose to persist an identity. 0.11.0 wrote them.

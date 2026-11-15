@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.11.1
+
+Serializing a secret-bearing type no longer writes its secrets. Found by installing 0.11.0 from NuGet: `JsonSerializer.Serialize(result)` of a `CreateClientIdentityAsync` result (and of its `Identity`, of a `ThalovantControlPlane`, a `DeviceAuthorization` and a `DeviceLoginResult`) walked the public properties and wrote the access key, password, bearer token, device code and the raw hub and client records. `ToString()` was already the type name and `ToJsonObject()` already redacted. No signature changes.
+
+- The secret members carry `[JsonIgnore, IgnoreDataMember]` (System.Text.Json and Newtonsoft.Json both honour it): `ThalovantIdentity.AccessKey`, `Password`, `CryptoKey`, `DataPlaneEndpoints`, `Metadata`, `Mqtt`; `MqttBrokerCredentials.Endpoint`, `Username`, `Password`, `TopicPrefix`; `BootstrapIdentityResult.Identity`, `Hub`, `Client`, `Endpoint`; `ThalovantControlPlane.AccessToken`; `DeviceAuthorization.DeviceCode`, `Raw`; `DeviceLoginResult.AccessToken`, `Raw`; `NativeSignIn.State`, `Verifier`. The properties still return their values; `ToJsonObject(includeSecrets: true)` is the way to persist an identity.
+- `ThalovantIdentity.ToJsonObject()` (the default, redacted form) strips `user:pass@` from `default_master`, as it already did for the data-plane endpoints; only `includeSecrets: true` keeps it. `DefaultMaster` is `[JsonIgnore, IgnoreDataMember]` too.
+- The NuGet package now carries the `LICENSE` file (0.11.0 had only `LICENSE-langcodes` and `LICENSE-languages`) and no source file has a `Last Edit:` header.
+- Security hardening: upgrading from 0.11.0 is advised; 0.11.0 stays published.
+- Evidence: `tests/Thalovant.Sdk.Tests/SerializationRedactionTests.cs`.
+
 ## 0.11.0
 
 Ports the Python reference's 0.13.0 `connector-connections` capability (home bridges and the rules the API enforces around links). It follows thalovant-api #521, which is not deployed yet; everything here is additive and safe against the API as it is today (unknown fields are ignored, and an answer without the new fields behaves as before).

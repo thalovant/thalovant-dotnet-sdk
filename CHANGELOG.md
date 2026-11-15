@@ -2,6 +2,10 @@
 
 ## 0.11.1
 
+- Automated patch release of the unreleased changes on `main` since v0.11.0.
+
+## 0.11.1
+
 Serializing a secret-bearing type no longer writes its secrets. Found by installing 0.11.0 from NuGet: `JsonSerializer.Serialize(result)` of a `CreateClientIdentityAsync` result (and of its `Identity`, of a `ThalovantControlPlane`, a `DeviceAuthorization` and a `DeviceLoginResult`) walked the public properties and wrote the access key, password, bearer token, device code and the raw hub and client records. `ToString()` was already the type name and `ToJsonObject()` already redacted. No signature changes.
 
 - The secret members carry `[JsonIgnore, IgnoreDataMember]` (System.Text.Json and Newtonsoft.Json both honour it): `ThalovantIdentity.AccessKey`, `Password`, `CryptoKey`, `DataPlaneEndpoints`, `Metadata`, `Mqtt`; `MqttBrokerCredentials.Endpoint`, `Username`, `Password`, `TopicPrefix`; `BootstrapIdentityResult.Identity`, `Hub`, `Client`, `Endpoint`; `ThalovantControlPlane.AccessToken`; `DeviceAuthorization.DeviceCode`, `Raw`; `DeviceLoginResult.AccessToken`, `Raw`; `NativeSignIn.State`, `Verifier`. The properties still return their values; `ToJsonObject(includeSecrets: true)` is the way to persist an identity.
